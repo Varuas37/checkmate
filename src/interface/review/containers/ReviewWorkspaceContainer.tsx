@@ -1410,9 +1410,6 @@ export function ReviewWorkspaceContainer() {
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="rounded-sm border border-accent/35 bg-accent/12 px-2 py-0.5 font-mono text-[10px] tracking-[0.14em] text-accent">
-              {APP_NAME}
-            </span>
             {state.commit && <Badge tone="accent">{state.commit.shortSha}</Badge>}
             <Badge tone="positive">+{totalAdditions}</Badge>
             <Badge tone="danger">-{totalDeletions}</Badge>
@@ -1420,9 +1417,6 @@ export function ReviewWorkspaceContainer() {
 
           <p className="truncate text-sm font-semibold tracking-tight text-text">
             {state.commit ? state.commit.title : "Code Review Workspace"}
-          </p>
-          <p className="truncate font-mono text-[11px] text-muted" title={activeRepositoryPath}>
-            {activeRepositoryPath}
           </p>
         </div>
 
