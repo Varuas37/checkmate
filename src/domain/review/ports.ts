@@ -65,6 +65,19 @@ export interface StandardsEvaluator {
   evaluate(input: StandardsEvaluationInput): StandardsEvaluationOutput;
 }
 
+export interface AnalyseStandardsInput {
+  readonly commitId: string;
+  readonly commit: CommitReview;
+  readonly files: readonly ChangedFile[];
+  readonly hunks: readonly DiffHunk[];
+  readonly ruleText: string;
+  readonly standardsSourcePath: string;
+}
+
+export interface StandardsAnalyser {
+  analyseStandards(input: AnalyseStandardsInput): Promise<StandardsEvaluationOutput>;
+}
+
 export type ReviewPublishProvider = "claude-sdk";
 
 export interface PublishReviewRequest {
@@ -102,7 +115,10 @@ export interface AiOverviewCard {
 }
 
 export interface AiSequenceStep {
+  readonly token?: string;
+  readonly sourceId?: string;
   readonly sourceLabel: string;
+  readonly targetId?: string;
   readonly targetLabel: string;
   readonly message: string;
   readonly filePath: string;

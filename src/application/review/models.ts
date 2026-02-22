@@ -91,6 +91,7 @@ export type ReviewPublishStatus = "idle" | "ready" | "publishing" | "published" 
 
 export type AiAnalysisStatus = "idle" | "analysing" | "analysed" | "error";
 export type AiSequenceStatus = "idle" | "generating" | "ready" | "error";
+export type StandardsAnalysisStatus = "idle" | "analysing" | "ready" | "error";
 
 export type DiffViewMode = "changes" | "old" | "new";
 
@@ -118,6 +119,8 @@ export interface ReviewUiState {
   aiAnalysisError: string | null;
   aiSequenceStatus: AiSequenceStatus;
   aiSequenceError: string | null;
+  standardsAnalysisStatus: StandardsAnalysisStatus;
+  standardsAnalysisError: string | null;
 }
 
 export interface ReviewRootState {

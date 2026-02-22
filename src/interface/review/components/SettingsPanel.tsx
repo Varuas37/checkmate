@@ -1,13 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button, Input, Modal, ThemeSwitcher } from "../../../design-system/index.ts";
 import { cn } from "../../../shared/index.ts";
-import type { RecentProjectEntry } from "../../../shared/index.ts";
+import type { CliAgentConfig, CliAgentsSettings, RecentProjectEntry } from "../../../shared/index.ts";
 
 export interface SettingsPanelProps {
   readonly open: boolean;
   readonly initialApiKey: string;
   readonly initialMaxChurn: number;
+  readonly initialProjectStandardsPath: string;
+  readonly initialCliAgents: CliAgentsSettings;
   readonly activeRepositoryPath: string;
   readonly recentProjects: readonly RecentProjectEntry[];
   readonly onOpenProjectInCurrentWindow: () => void | Promise<void>;
@@ -16,10 +18,12 @@ export interface SettingsPanelProps {
   readonly onOpenRecentProjectInNewWindow: (repositoryPath: string) => void | Promise<void>;
   readonly onSave: (apiKey: string) => void;
   readonly onSaveMaxChurn: (maxChurn: number) => void;
+  readonly onSaveProjectStandardsPath: (standardsPath: string) => void;
+  readonly onSaveCliAgents: (settings: CliAgentsSettings) => void;
   readonly onClose: () => void;
 }
 
-type SettingsSectionId = "projects" | "appearance" | "analysis" | "integrations";
+type SettingsSectionId = "projects" | "appearance" | "analysis" | "integrations" | "cli-agents";
 
 interface SettingsSection {
   readonly id: SettingsSectionId;
@@ -48,6 +52,11 @@ const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     label: "Integrations",
     detail: "API credentials",
   },
+  {
+    id: "cli-agents",
+    label: "CLI Agents",
+    detail: "Command-line AI tools",
+  },
 ];
 
 function maskApiKey(value: string): string {
@@ -66,10 +75,18 @@ function maskApiKey(value: string): string {
   return `${prefix}${"*".repeat(hiddenLength)}${suffix}`;
 }
 
+interface AgentEditDraft {
+  readonly name: string;
+  readonly command: string;
+  readonly promptArgs: string;
+}
+
 export function SettingsPanel({
   open,
   initialApiKey,
   initialMaxChurn,
+  initialProjectStandardsPath,
+  initialCliAgents,
   activeRepositoryPath,
   recentProjects,
   onOpenProjectInCurrentWindow,
@@ -78,15 +95,21 @@ export function SettingsPanel({
   onOpenRecentProjectInNewWindow,
   onSave,
   onSaveMaxChurn,
+  onSaveProjectStandardsPath,
+  onSaveCliAgents,
   onClose,
 }: SettingsPanelProps) {
   const [draft, setDraft] = useState(initialApiKey);
   const [isApiKeyVisible, setIsApiKeyVisible] = useState(false);
   const [isApiKeyEditing, setIsApiKeyEditing] = useState(false);
   const [churnDraft, setChurnDraft] = useState(String(initialMaxChurn));
+  const [projectStandardsPathDraft, setProjectStandardsPathDraft] = useState(initialProjectStandardsPath);
   const [isProjectActionRunning, setIsProjectActionRunning] = useState(false);
   const [projectActionError, setProjectActionError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("projects");
+  const [draftCliAgents, setDraftCliAgents] = useState<CliAgentsSettings>(initialCliAgents);
+  const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+  const [agentEditDraft, setAgentEditDraft] = useState<AgentEditDraft | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -97,9 +120,13 @@ export function SettingsPanel({
     setIsApiKeyVisible(false);
     setIsApiKeyEditing(false);
     setChurnDraft(String(initialMaxChurn));
+    setProjectStandardsPathDraft(initialProjectStandardsPath);
+    setDraftCliAgents(initialCliAgents);
+    setEditingAgentId(null);
+    setAgentEditDraft(null);
     setProjectActionError(null);
     setActiveSection("projects");
-  }, [initialApiKey, initialMaxChurn, open]);
+  }, [initialApiKey, initialCliAgents, initialMaxChurn, initialProjectStandardsPath, open]);
 
   const getErrorMessage = (error: unknown): string => {
     if (!error) {
@@ -136,8 +163,82 @@ export function SettingsPanel({
     setIsApiKeyEditing(false);
   };
 
+  const setActiveCliAgent = (agentId: string) => {
+    const next: CliAgentsSettings = { ...draftCliAgents, activeAgentId: agentId };
+    setDraftCliAgents(next);
+    onSaveCliAgents(next);
+  };
+
+  const togglePreferCli = () => {
+    const next: CliAgentsSettings = {
+      ...draftCliAgents,
+      preferCliOverApi: !draftCliAgents.preferCliOverApi,
+    };
+    setDraftCliAgents(next);
+    onSaveCliAgents(next);
+  };
+
+  const startEditingAgent = (agent: CliAgentConfig) => {
+    setEditingAgentId(agent.id);
+    setAgentEditDraft({
+      name: agent.name,
+      command: agent.command,
+      promptArgs: agent.promptArgs.join(" "),
+    });
+  };
+
+  const saveAgentEdit = () => {
+    if (!editingAgentId || !agentEditDraft) {
+      return;
+    }
+
+    const updatedAgents = draftCliAgents.agents.map((agent) =>
+      agent.id === editingAgentId
+        ? {
+            ...agent,
+            name: agentEditDraft.name.trim() || agent.name,
+            command: agentEditDraft.command.trim() || agent.command,
+            promptArgs: agentEditDraft.promptArgs
+              .trim()
+              .split(/\s+/)
+              .filter((arg) => arg.length > 0),
+          }
+        : agent,
+    );
+
+    const next: CliAgentsSettings = { ...draftCliAgents, agents: updatedAgents };
+    setDraftCliAgents(next);
+    onSaveCliAgents(next);
+    setEditingAgentId(null);
+    setAgentEditDraft(null);
+  };
+
+  const currentBackendLabel = useMemo(() => {
+    const hasApiKey = draft.trim().length > 0;
+    const activeAgent = draftCliAgents.activeAgentId
+      ? draftCliAgents.agents.find((a) => a.id === draftCliAgents.activeAgentId)
+      : null;
+
+    if (draftCliAgents.preferCliOverApi && activeAgent) {
+      return `${activeAgent.name} CLI (preferred over API)`;
+    }
+
+    if (hasApiKey) {
+      if (activeAgent) {
+        return `Anthropic SDK API (${activeAgent.name} as fallback)`;
+      }
+      return "Anthropic SDK API";
+    }
+
+    if (activeAgent) {
+      return `${activeAgent.name} CLI (no API key set)`;
+    }
+
+    return "Claude CLI hardcoded fallback (no API key, no agent configured)";
+  }, [draft, draftCliAgents]);
+
   return (
-    <Modal open={open} onClose={onClose} title="Settings" panelClassName="max-w-5xl">
+    <Modal open={open} onClose={onClose} title="Settings" panelClassName="max-w-2xl">
       <div className="grid min-h-[32rem] gap-0 md:grid-cols-[15rem_minmax(0,1fr)]">
         <aside className="border-b border-border/60 pb-2 md:border-b-0 md:border-r md:pb-0 md:pr-3">
           <p className="px-1 pb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-muted">Preferences</p>
@@ -268,7 +369,9 @@ export function SettingsPanel({
             <section className="space-y-3">
               <header>
                 <h3 className="text-base font-semibold text-text">AI Analysis</h3>
-                <p className="text-sm text-muted">Control which files are sent for summary generation.</p>
+                <p className="text-sm text-muted">
+                  Control file-analysis limits and project standards configuration.
+                </p>
               </header>
               <div className="space-y-2 border-y border-border/60 py-3">
                 <label className="block text-xs text-text-subtle">
@@ -302,6 +405,40 @@ export function SettingsPanel({
                   receive a placeholder summary. Set to <strong>0</strong> to disable the limit.
                 </p>
               </div>
+              <div className="space-y-2 border-b border-border/60 pb-3">
+                <label className="block text-xs text-text-subtle">
+                  Coding standards file path (current project)
+                </label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={projectStandardsPathDraft}
+                    onChange={(event) => {
+                      setProjectStandardsPathDraft(event.target.value);
+                    }}
+                    placeholder="coding_standards.md"
+                    aria-label="Coding standards file path"
+                    className="font-mono text-xs"
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      const normalized = projectStandardsPathDraft.trim();
+                      onSaveProjectStandardsPath(normalized);
+                      setProjectStandardsPathDraft(normalized);
+                    }}
+                  >
+                    Save
+                  </Button>
+                </div>
+                <p className="text-xs text-muted">
+                  If empty, Checkmate first tries{" "}
+                  <code className="rounded bg-surface-subtle/70 px-1 py-0.5 font-mono text-[11px]">
+                    coding_standards.md
+                  </code>{" "}
+                  in the repo root, then falls back to the built-in project standards baseline.
+                </p>
+              </div>
             </section>
           )}
 
@@ -316,31 +453,45 @@ export function SettingsPanel({
                   Anthropic API Key
                 </label>
                 {isApiKeyEditing ? (
-                  <Input
-                    autoFocus
-                    value={draft}
-                    onChange={(event) => {
-                      setDraft(event.target.value);
-                    }}
-                    onBlur={saveApiKeyDraft}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        saveApiKeyDraft();
-                        return;
-                      }
+                  <div className="flex items-center gap-2">
+                    <Input
+                      autoFocus
+                      value={draft}
+                      onChange={(event) => {
+                        setDraft(event.target.value);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          saveApiKeyDraft();
+                          return;
+                        }
 
-                      if (event.key === "Escape") {
+                        if (event.key === "Escape") {
+                          setDraft(initialApiKey);
+                          setIsApiKeyEditing(false);
+                        }
+                      }}
+                      placeholder="sk-ant-..."
+                      aria-label="Anthropic API key"
+                      className="font-mono text-xs"
+                    />
+                    <Button variant="secondary" size="sm" onClick={saveApiKeyDraft}>
+                      Save
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
                         setDraft(initialApiKey);
                         setIsApiKeyEditing(false);
-                      }
-                    }}
-                    placeholder="sk-ant-..."
-                    aria-label="Anthropic API key"
-                    className="font-mono text-xs"
-                  />
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
                 ) : (
-                  <div className="group relative">
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => {
@@ -350,86 +501,228 @@ export function SettingsPanel({
                         setIsApiKeyVisible((current) => !current);
                       }}
                       className={cn(
-                        "flex h-11 w-full items-center rounded-md border border-border bg-canvas px-3 pr-20 text-left font-mono text-xs text-text transition-colors",
+                        "flex h-9 min-w-0 flex-1 items-center rounded-md border border-border bg-canvas px-3 text-left font-mono text-xs text-text transition-colors",
                         "hover:border-border-strong",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
                       )}
                       aria-label={isApiKeyVisible ? "Hide API key" : "Show API key"}
-                      title={draft.trim().length > 0 ? "Click to toggle key visibility" : "No API key set"}
+                      title={draft.trim().length > 0 ? "Click to toggle visibility" : "No API key set"}
                     >
                       <span className="truncate">
                         {isApiKeyVisible ? draft.trim() || "No API key set" : maskApiKey(draft)}
                       </span>
                     </button>
-
-                    <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="pointer-events-auto h-7 w-7 px-0"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setIsApiKeyEditing(true);
-                          setIsApiKeyVisible(false);
-                        }}
-                        aria-label="Edit API key"
-                        title="Edit API key"
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-9 w-9 shrink-0 px-0"
+                      onClick={() => {
+                        setIsApiKeyEditing(true);
+                        setIsApiKeyVisible(false);
+                      }}
+                      aria-label="Edit API key"
+                      title="Edit API key"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
                       >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          aria-hidden="true"
-                        >
-                          <path d="M12 20h9" />
-                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                        </svg>
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="pointer-events-auto h-7 w-7 px-0 text-danger hover:text-danger"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setDraft("");
-                          setIsApiKeyVisible(false);
-                          setIsApiKeyEditing(false);
-                          onSave("");
-                        }}
-                        aria-label="Delete API key"
-                        title="Delete API key"
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                      </svg>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-9 w-9 shrink-0 px-0 text-danger hover:text-danger"
+                      onClick={() => {
+                        setDraft("");
+                        setIsApiKeyVisible(false);
+                        onSave("");
+                      }}
+                      aria-label="Delete API key"
+                      title="Delete API key"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
                       >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          aria-hidden="true"
-                        >
-                          <path d="M3 6h18" />
-                          <path d="M8 6V4h8v2" />
-                          <path d="M19 6l-1 14H6L5 6" />
-                          <path d="M10 11v6" />
-                          <path d="M14 11v6" />
-                        </svg>
-                      </Button>
-                    </div>
+                        <path d="M3 6h18" />
+                        <path d="M8 6V4h8v2" />
+                        <path d="M19 6l-1 14H6L5 6" />
+                        <path d="M10 11v6" />
+                        <path d="M14 11v6" />
+                      </svg>
+                    </Button>
                   </div>
                 )}
                 <p className="text-xs text-muted">
-                  Stored in localStorage. Click the key to toggle visibility. Hover the field for edit or delete.
+                  Stored in localStorage. Click the key to toggle visibility.
                 </p>
+              </div>
+            </section>
+          )}
+
+          {activeSection === "cli-agents" && (
+            <section className="space-y-4">
+              <header>
+                <h3 className="text-base font-semibold text-text">CLI Agents</h3>
+                <p className="text-sm text-muted">
+                  Configure command-line AI tools for analysis and review.
+                </p>
+              </header>
+
+              <div className="border-y border-border/60 py-2.5">
+                <p className="pb-1 text-[11px] uppercase tracking-[0.08em] text-muted">
+                  Current backend
+                </p>
+                <p className="font-mono text-xs text-text">{currentBackendLabel}</p>
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-[0.08em] text-muted">Available agents</p>
+                {draftCliAgents.agents.map((agent) => {
+                  const isActive = agent.id === draftCliAgents.activeAgentId;
+                  const isEditing = agent.id === editingAgentId;
+
+                  return (
+                    <div
+                      key={agent.id}
+                      className="rounded-sm border border-border/60 bg-surface-subtle/30 px-2.5 py-2"
+                    >
+                      {isEditing && agentEditDraft ? (
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1.5">
+                            <label className="text-xs text-muted">Name</label>
+                            <Input
+                              value={agentEditDraft.name}
+                              onChange={(event) => {
+                                setAgentEditDraft({ ...agentEditDraft, name: event.target.value });
+                              }}
+                              className="h-7 font-mono text-xs"
+                              placeholder="e.g. Claude Code"
+                            />
+                            <label className="text-xs text-muted">Command</label>
+                            <Input
+                              value={agentEditDraft.command}
+                              onChange={(event) => {
+                                setAgentEditDraft({ ...agentEditDraft, command: event.target.value });
+                              }}
+                              className="h-7 font-mono text-xs"
+                              placeholder="e.g. claude"
+                            />
+                            <label className="text-xs text-muted">Args</label>
+                            <Input
+                              value={agentEditDraft.promptArgs}
+                              onChange={(event) => {
+                                setAgentEditDraft({
+                                  ...agentEditDraft,
+                                  promptArgs: event.target.value,
+                                });
+                              }}
+                              className="h-7 font-mono text-xs"
+                              placeholder="-p  (space-separated, placed before the prompt)"
+                            />
+                          </div>
+                          <div className="flex gap-2">
+                            <Button variant="secondary" size="sm" onClick={saveAgentEdit}>
+                              Save
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setEditingAgentId(null);
+                                setAgentEditDraft(null);
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="whitespace-nowrap text-sm font-medium text-text">{agent.name}</span>
+                              {isActive && (
+                                <span className="rounded-sm border border-accent/40 bg-accent/12 px-1.5 py-0.5 font-mono text-[10px] tracking-wide text-accent">
+                                  active
+                                </span>
+                              )}
+                            </div>
+                            <p className="truncate font-mono text-xs text-muted">
+                              {agent.command}
+                              {agent.promptArgs.length > 0
+                                ? ` ${agent.promptArgs.join(" ")}`
+                                : ""}
+                              {" <prompt>"}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 gap-1.5">
+                            {!isActive && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => {
+                                  setActiveCliAgent(agent.id);
+                                }}
+                              >
+                                Set active
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              onClick={() => {
+                                startEditingAgent(agent);
+                              }}
+                            >
+                              Edit
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="border-t border-border/60 pt-3">
+                <p className="pb-2 text-[11px] uppercase tracking-[0.08em] text-muted">Preferences</p>
+                <label className="flex cursor-pointer items-start gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={draftCliAgents.preferCliOverApi}
+                    onChange={togglePreferCli}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                  />
+                  <div>
+                    <p className="text-sm font-medium text-text">Prefer CLI over Anthropic API</p>
+                    <p className="mt-0.5 text-xs text-muted">
+                      When enabled, the active CLI agent is tried first before the API key.
+                      Falls back to the API if the CLI fails.
+                    </p>
+                  </div>
+                </label>
               </div>
             </section>
           )}

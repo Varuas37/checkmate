@@ -3,7 +3,11 @@ import type {
   PublishReviewResult,
   ReviewPublisher,
 } from "../../domain/review/index.ts";
-import { readApiKeyFromStorage } from "../../shared/index.ts";
+import {
+  readActiveCliAgentFromStorage,
+  readApiKeyFromStorage,
+  readCliPreferenceFromStorage,
+} from "../../shared/index.ts";
 
 interface ClaudeSdkClient {
   readonly messages: {
@@ -58,6 +62,21 @@ function resolveDefaultApiKey(): string | null {
 }
 
 function createDefaultPrompt(input: PublishReviewRequest): string {
+  const threadPrompt = resolveThreadReviewPrompt(input.payloadJson);
+  if (threadPrompt) {
+    return [
+      "You are Checkmate, an expert AI teammate helping with code review threads.",
+      "Do not echo or restate the input prompt.",
+      "Respond in markdown and stay focused on the specific diff context.",
+      "Respond directly using this exact structure:",
+      "1. Root cause.",
+      "2. Risk/impact.",
+      "3. Concrete patch suggestion.",
+      "Thread context:",
+      threadPrompt,
+    ].join("\n\n");
+  }
+
   return [
     "A reviewer is publishing a structured code-review package.",
     `Request ID: ${input.requestId}`,
@@ -70,12 +89,31 @@ function createDefaultPrompt(input: PublishReviewRequest): string {
   ].join("\n\n");
 }
 
-function truncateSummary(summary: string, maxLength = 800): string {
-  if (summary.length <= maxLength) {
-    return summary;
+function resolveThreadReviewPrompt(payloadJson: string): string | null {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(payloadJson);
+  } catch {
+    return null;
   }
 
-  return `${summary.slice(0, maxLength - 3)}...`;
+  if (!parsed || typeof parsed !== "object") {
+    return null;
+  }
+
+  const payloadType = (parsed as { readonly type?: unknown }).type;
+  if (payloadType !== "thread-review") {
+    return null;
+  }
+
+  const prompt = (parsed as { readonly prompt?: unknown }).prompt;
+  if (typeof prompt !== "string") {
+    return null;
+  }
+
+  const trimmed = prompt.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function extractSummaryFromResponse(response: unknown): string {
@@ -173,6 +211,19 @@ async function runClaudePromptViaTauri(prompt: string): Promise<string> {
   });
 }
 
+async function runCliAgentPromptViaTauri(
+  command: string,
+  args: readonly string[],
+  prompt: string,
+): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error("CLI agent is available only in Tauri runtime.");
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("run_cli_agent_prompt", { command, args: [...args], prompt });
+}
+
 export interface ClaudeSdkReviewPublisherOptions {
   readonly apiKey?: string;
   readonly model?: string;
@@ -206,26 +257,53 @@ export class ClaudeSdkReviewPublisher implements ReviewPublisher {
   async publishReview(input: PublishReviewRequest): Promise<PublishReviewResult> {
     const prompt = this.#createPrompt(input);
     const resolvedApiKey = this.#resolveApiKey();
+    const preferCli = readCliPreferenceFromStorage();
+    const activeCliAgent = readActiveCliAgentFromStorage();
+
+    const runViaCli = async (): Promise<string> => {
+      if (activeCliAgent && isTauriRuntime()) {
+        return runCliAgentPromptViaTauri(activeCliAgent.command, activeCliAgent.promptArgs, prompt);
+      }
+      return runClaudePromptViaTauri(prompt);
+    };
+
+    const buildCliResult = (raw: string): PublishReviewResult => {
+      const summary = raw.trim();
+      return {
+        provider: "claude-sdk",
+        requestId: input.requestId,
+        publicationId: `cli-${input.requestId}`,
+        publishedAtIso: this.#nowIso(),
+        summary:
+          summary.length > 0
+            ? summary
+            : `Review package for ${input.commitSha} accepted by CLI agent.`,
+      };
+    };
+
+    // Prefer CLI over API: try configured CLI first, fall back to SDK.
+    if (preferCli && activeCliAgent && isTauriRuntime()) {
+      try {
+        const cliResponse = await runViaCli();
+        return buildCliResult(cliResponse);
+      } catch {
+        if (!resolvedApiKey) {
+          throw new Error(
+            `${activeCliAgent.name} CLI failed and no API key is available for fallback.`,
+          );
+        }
+        // CLI failed — fall through to SDK.
+      }
+    }
 
     if (!resolvedApiKey) {
       try {
-        const cliResponse = await runClaudePromptViaTauri(prompt);
-        const cliSummary = truncateSummary(cliResponse.trim());
-
-        return {
-          provider: "claude-sdk",
-          requestId: input.requestId,
-          publicationId: `claude-cli-${input.requestId}`,
-          publishedAtIso: this.#nowIso(),
-          summary:
-            cliSummary.length > 0
-              ? cliSummary
-              : `Review package for ${input.commitSha} accepted by Claude CLI adapter.`,
-        };
+        const cliResponse = await runViaCli();
+        return buildCliResult(cliResponse);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Claude CLI fallback failed.";
+        const message = error instanceof Error ? error.message : "CLI fallback failed.";
         throw new Error(
-          `Claude publish requires ANTHROPIC_API_KEY/VITE_ANTHROPIC_API_KEY or a working Claude CLI login in Tauri (${message}).`,
+          `Publish requires ANTHROPIC_API_KEY or a configured CLI agent (${message}).`,
         );
       }
     }
@@ -247,7 +325,7 @@ export class ClaudeSdkReviewPublisher implements ReviewPublisher {
       const summaryText = extractSummaryFromResponse(response);
       const summary =
         summaryText.length > 0
-          ? truncateSummary(summaryText)
+          ? summaryText
           : `Review package for ${input.commitSha} accepted by Claude adapter.`;
 
       return {
@@ -263,24 +341,13 @@ export class ClaudeSdkReviewPublisher implements ReviewPublisher {
       }
 
       try {
-        const cliResponse = await runClaudePromptViaTauri(prompt);
-        const cliSummary = truncateSummary(cliResponse.trim());
-
-        return {
-          provider: "claude-sdk",
-          requestId: input.requestId,
-          publicationId: `claude-cli-${input.requestId}`,
-          publishedAtIso: this.#nowIso(),
-          summary:
-            cliSummary.length > 0
-              ? cliSummary
-              : `Review package for ${input.commitSha} accepted by Claude CLI adapter.`,
-        };
+        const cliResponse = await runViaCli();
+        return buildCliResult(cliResponse);
       } catch (cliError) {
         const sdkMessage = error instanceof Error ? error.message : "Claude SDK client setup failed.";
-        const cliMessage = cliError instanceof Error ? cliError.message : "Claude CLI fallback failed.";
+        const cliMessage = cliError instanceof Error ? cliError.message : "CLI fallback failed.";
         throw new Error(
-          `Claude publish failed in SDK path (${sdkMessage}) and CLI fallback (${cliMessage}).`,
+          `Publish failed in SDK path (${sdkMessage}) and CLI fallback (${cliMessage}).`,
         );
       }
     }

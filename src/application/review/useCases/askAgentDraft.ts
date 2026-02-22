@@ -6,6 +6,7 @@ export interface CreateAskAgentDraftInput {
   readonly thread: CommentThread;
   readonly comments: readonly ReviewComment[];
   readonly reviewerPrompt?: string;
+  readonly additionalContext?: readonly string[];
 }
 
 function getLatestHumanComment(comments: readonly ReviewComment[]): ReviewComment | null {
@@ -36,6 +37,12 @@ export function createAskAgentDraft(input: CreateAskAgentDraftInput): string {
     "1. Root cause.",
     "2. Risk/impact.",
     "3. Concrete patch suggestion.",
+    ...(input.additionalContext && input.additionalContext.length > 0
+      ? [
+          "Additional context:",
+          ...input.additionalContext,
+        ]
+      : []),
   ];
 
   return promptLines.join("\n");

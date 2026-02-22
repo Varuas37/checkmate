@@ -48,6 +48,14 @@ export const analyseCommitRequested = createAction<AnalyseCommitRequestedPayload
   "review/analyseCommitRequested",
 );
 
+export interface AnalyseStandardsRequestedPayload {
+  readonly commitId: string;
+}
+
+export const analyseStandardsRequested = createAction<AnalyseStandardsRequestedPayload>(
+  "review/analyseStandardsRequested",
+);
+
 export interface RegenerateSequenceRequestedPayload {
   readonly commitId: string;
 }

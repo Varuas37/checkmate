@@ -23,6 +23,7 @@ import type {
   FileVersionsLoadStatus,
   PublishReviewPackage,
   ReviewPublishStatus,
+  StandardsAnalysisStatus,
 } from "../../application/review/index.ts";
 
 export type ReviewTabId = "overview" | "files" | "summary" | "standards";
@@ -71,7 +72,9 @@ export interface SequencePair {
 export interface CodeSequenceStep {
   readonly id: string;
   readonly token: string;
+  readonly sourceId: string;
   readonly sourceLabel: string;
+  readonly targetId: string;
   readonly targetLabel: string;
   readonly message: string;
   readonly fileIds: readonly string[];
@@ -140,6 +143,8 @@ export interface ReviewWorkspaceState {
   readonly aiAnalysisStatus: AiAnalysisStatus;
   readonly aiSequenceStatus: AiSequenceStatus;
   readonly aiSequenceError: string | null;
+  readonly standardsAnalysisStatus: StandardsAnalysisStatus;
+  readonly standardsAnalysisError: string | null;
 }
 
 export interface ReviewWorkspaceActions {
@@ -157,5 +162,6 @@ export interface ReviewWorkspaceActions {
   readonly deleteComment: (commentId: string) => void;
   readonly publishReview: () => void;
   readonly refreshAiAnalysis: () => void;
+  readonly refreshStandardsAnalysis: () => void;
   readonly retrySequenceGeneration: () => void;
 }

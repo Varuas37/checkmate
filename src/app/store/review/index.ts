@@ -1,5 +1,6 @@
 export {
   analyseCommitRequested,
+  analyseStandardsRequested,
   askAgentDraftRequested,
   createCommentThreadRequested,
   deleteCommentRequested,

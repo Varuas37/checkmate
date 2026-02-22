@@ -1,4 +1,5 @@
 export { cn } from "./cn.ts";
+export { APP_NAME } from "./appConfig.ts";
 export {
   selectRepositoryFolder,
   type SelectRepositoryFolderDependencies,
@@ -30,9 +31,40 @@ export {
   type OpenProjectInNewWindowInput,
 } from "./openProjectInNewWindow.ts";
 export { projectLabelFromPath } from "./projectLabelFromPath.ts";
+export { readRepositoryBranch } from "./readRepositoryBranch.ts";
+export { readRepositoryBranches } from "./readRepositoryBranches.ts";
+export { readTextFile } from "./readTextFile.ts";
 export {
   DEFAULT_AI_ANALYSIS_CONFIG,
   readAiAnalysisConfigFromStorage,
   writeAiAnalysisConfigToStorage,
   type AiAnalysisConfig,
 } from "./settings/aiAnalysisConfig.ts";
+export {
+  readProjectStandardsPathFromStorage,
+  writeProjectStandardsPathToStorage,
+} from "./settings/projectStandardsPathStorage.ts";
+export {
+  applyCheckmateMentionSuggestion,
+  getCheckmateMentionSuggestion,
+  hasCheckmateMention,
+  splitTextByCheckmateMention,
+  stripCheckmateMentions,
+  type MentionSegment,
+  type MentionSuggestion,
+} from "./checkmateMention.ts";
+export {
+  DEFAULT_CLI_AGENTS,
+  readActiveCliAgentFromStorage,
+  readCliAgentsSettingsFromStorage,
+  readCliPreferenceFromStorage,
+  writeCliAgentsSettingsToStorage,
+  type CliAgentConfig,
+  type CliAgentsSettings,
+} from "./settings/cliAgentConfig.ts";
+export {
+  readAndSyncAppSettingsFile,
+  readAppSettingsFile,
+  writeAppSettingsFile,
+  type AppSettingsFile,
+} from "./settings/appSettingsFile.ts";

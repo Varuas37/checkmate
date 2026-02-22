@@ -16,10 +16,12 @@ import type {
   CommitReviewDataSource,
   ReviewPublisher,
   SequenceDiagramGenerator,
+  StandardsAnalyser,
   StandardsEvaluator,
 } from "../../../domain/review/index.ts";
 import {
   analyseCommitRequested,
+  analyseStandardsRequested,
   askAgentDraftRequested,
   createCommentThreadRequested,
   deleteCommentRequested,
@@ -30,14 +32,40 @@ import {
 import { reviewEntitiesActions } from "./reviewEntitiesSlice.ts";
 import { reviewUiActions } from "./reviewUiSlice.ts";
 import {
+  hasCheckmateMention,
   readAiAnalysisFromStorage,
+  readProjectStandardsPathFromStorage,
+  readTextFile,
+  stripCheckmateMentions,
   writeAiAnalysisToStorage,
   type CachedAiAnalysisData,
 } from "../../../shared/index.ts";
 
+const DEFAULT_PROJECT_CODING_STANDARDS_RULE_TEXT = `# Project Coding Standards
+
+Use these standards as the default quality baseline for commit reviews when a project-specific standards file is not configured.
+
+1. Follow SOLID principles and keep responsibilities focused per module.
+2. Keep domain and application layers free of infrastructure dependencies (dependency direction inward only).
+3. Prefer composition over inheritance unless inheritance is clearly justified.
+4. Avoid duplicated logic; extract reusable units when behavior repeats.
+5. Keep functions small, deterministic, and easy to test.
+6. Validate all external input at boundaries and fail with explicit errors.
+7. Never log secrets, tokens, or PII; redact sensitive values in logs and errors.
+8. Handle errors with actionable messages and avoid swallowing exceptions.
+9. Add or update tests for behavior changes, especially critical workflows and regressions.
+10. Keep naming explicit and intention-revealing; avoid ambiguous abbreviations.
+11. Keep changes cohesive: each commit should have a clear, single reviewable intent.
+12. Limit public API surface; keep internals private unless external access is required.
+13. Use type-safe contracts and avoid \`any\` or unsafe casts unless strictly necessary.
+14. Prefer immutable data flow and explicit state transitions over hidden mutation.
+15. Document non-obvious tradeoffs, constraints, and security considerations in code or docs.
+`;
+
 export interface ReviewListenerDependencies {
   readonly reviewDataSource: CommitReviewDataSource;
   readonly standardsEvaluator: StandardsEvaluator;
+  readonly standardsAnalyser: StandardsAnalyser;
   readonly reviewPublisher: ReviewPublisher;
   readonly commitAnalyser: CommitAnalyser;
   readonly sequenceDiagramGenerator: SequenceDiagramGenerator;
@@ -110,7 +138,10 @@ export function createReviewListenerMiddleware(
         filePaths: [...pair.filePaths],
       })),
       sequenceSteps: input.sequenceSteps.map((step) => ({
+        ...(step.token ? { token: step.token } : {}),
+        ...(step.sourceId ? { sourceId: step.sourceId } : {}),
         sourceLabel: step.sourceLabel,
+        ...(step.targetId ? { targetId: step.targetId } : {}),
         targetLabel: step.targetLabel,
         message: step.message,
         filePath: step.filePath,
@@ -120,6 +151,88 @@ export function createReviewListenerMiddleware(
         summary: summary.summary,
         riskNote: summary.riskNote,
       })),
+    };
+  };
+
+  const hunkPreview = (
+    hunk: NonNullable<ReviewRootState["reviewEntities"]["hunksById"][string]>,
+    maxLines = 40,
+  ): string => {
+    const previewLines = hunk.lines.slice(0, maxLines).map((line) => {
+      const prefix = line.kind === "add" ? "+" : line.kind === "remove" ? "-" : " ";
+      return `${prefix}${line.text}`;
+    });
+
+    if (hunk.lines.length > maxLines) {
+      previewLines.push(`... (${hunk.lines.length - maxLines} more lines omitted)`);
+    }
+
+    return previewLines.join("\n");
+  };
+
+  const resolveRelatedHunkHeaders = (
+    state: ReviewRootState,
+    fileId: string,
+    currentHunkId: string,
+    maxCount = 4,
+  ): readonly string[] => {
+    const hunkIds = state.reviewEntities.hunkIdsByFileId[fileId] ?? [];
+    const headers = hunkIds
+      .filter((hunkId) => hunkId !== currentHunkId)
+      .map((hunkId) => state.reviewEntities.hunksById[hunkId]?.header ?? "")
+      .filter((header) => header.trim().length > 0)
+      .slice(0, maxCount);
+    return headers;
+  };
+
+  const isAbsolutePath = (path: string): boolean => {
+    if (path.startsWith("/") || path.startsWith("\\")) {
+      return true;
+    }
+
+    return /^[a-zA-Z]:[\\/]/.test(path);
+  };
+
+  const joinRepositoryPath = (repositoryPath: string, relativePath: string): string => {
+    const sanitizedRepositoryPath = repositoryPath.replace(/[\\/]+$/, "");
+    const sanitizedRelativePath = relativePath.replace(/^[\\/]+/, "");
+    return `${sanitizedRepositoryPath}/${sanitizedRelativePath}`;
+  };
+
+  const resolveStandardsSource = async (
+    repositoryPath: string,
+  ): Promise<{
+    readonly sourcePath: string;
+    readonly ruleText: string;
+  }> => {
+    const configuredPath = readProjectStandardsPathFromStorage(repositoryPath);
+    const configuredPathResolved =
+      configuredPath && configuredPath.length > 0
+        ? isAbsolutePath(configuredPath)
+          ? configuredPath
+          : joinRepositoryPath(repositoryPath, configuredPath)
+        : null;
+
+    const defaultRepositoryStandardsPath = joinRepositoryPath(repositoryPath, "coding_standards.md");
+
+    const candidatePaths = [
+      configuredPathResolved,
+      configuredPathResolved ? null : defaultRepositoryStandardsPath,
+    ].filter((value): value is string => value !== null);
+
+    for (const candidatePath of candidatePaths) {
+      const content = await readTextFile(candidatePath);
+      if (content && content.trim().length > 0) {
+        return {
+          sourcePath: candidatePath,
+          ruleText: content,
+        };
+      }
+    }
+
+    return {
+      sourcePath: "src/project_coding_standards.md",
+      ruleText: DEFAULT_PROJECT_CODING_STANDARDS_RULE_TEXT,
     };
   };
 
@@ -142,20 +255,7 @@ export function createReviewListenerMiddleware(
         });
         const repositoryCommits = await repositoryCommitsPromise;
 
-        const standardsEvaluation = deps.standardsEvaluator.evaluate({
-          commitId: aggregate.commit.id,
-          ruleText: action.payload.standardsRuleText,
-          files: aggregate.files,
-          hunks: aggregate.hunks,
-        });
-
-        listenerApi.dispatch(
-          reviewEntitiesActions.hydrateFromAggregate({
-            ...aggregate,
-            standardsRules: standardsEvaluation.rules,
-            standardsResults: standardsEvaluation.results,
-          }),
-        );
+        listenerApi.dispatch(reviewEntitiesActions.hydrateFromAggregate(aggregate));
 
         listenerApi.dispatch(
           reviewUiActions.hydrateForCommit({
@@ -206,6 +306,16 @@ export function createReviewListenerMiddleware(
       const state = listenerApi.getState();
       if (state.reviewUi.activeFileId === null) {
         listenerApi.dispatch(reviewUiActions.setActiveFileId({ fileId: created.thread.fileId }));
+      }
+
+      if (hasCheckmateMention(action.payload.body)) {
+        const reviewerPrompt = stripCheckmateMentions(action.payload.body);
+        listenerApi.dispatch(
+          askAgentDraftRequested({
+            threadId: created.thread.id,
+            ...(reviewerPrompt.length > 0 ? { reviewerPrompt } : {}),
+          }),
+        );
       }
     },
   });
@@ -311,7 +421,7 @@ export function createReviewListenerMiddleware(
 
   startListening({
     actionCreator: askAgentDraftRequested,
-    effect: (action, listenerApi) => {
+    effect: async (action, listenerApi) => {
       const state = listenerApi.getState();
       const thread = selectThreadById(state, action.payload.threadId);
 
@@ -326,10 +436,45 @@ export function createReviewListenerMiddleware(
         return;
       }
 
+      const commit = state.reviewEntities.commitsById[thread.commitId];
       const comments = selectThreadComments(state, thread.id);
       const prompt = action.payload.reviewerPrompt?.trim();
+      const relatedHunkHeaders = resolveRelatedHunkHeaders(state, file.id, hunk.id);
+      const matchingFileSummary =
+        state.reviewUi.aiAnalysis?.commitId === thread.commitId
+          ? state.reviewUi.aiAnalysis.fileSummaries.find((summary) => summary.filePath === file.path) ?? null
+          : null;
 
-      const draft =
+      const standardsResultIds =
+        state.reviewEntities.standardsResultIdsByCommitId[thread.commitId] ?? [];
+      const failingOrWarnStandards = standardsResultIds
+        .map((resultId) => state.reviewEntities.standardsResultsById[resultId])
+        .filter((result): result is NonNullable<typeof result> => result !== undefined)
+        .filter((result) => result.status !== "pass")
+        .slice(0, 4);
+
+      const additionalContext = [
+        commit ? `Commit title: ${commit.title}` : null,
+        commit && commit.description.trim().length > 0
+          ? `Commit description: ${commit.description.trim()}`
+          : null,
+        `File status: ${file.status}, additions: ${file.additions}, deletions: ${file.deletions}.`,
+        matchingFileSummary
+          ? `AI file summary: ${matchingFileSummary.summary} Risk note: ${matchingFileSummary.riskNote}`
+          : null,
+        relatedHunkHeaders.length > 0
+          ? `Other hunks in this file:\n${relatedHunkHeaders.map((header) => `- ${header}`).join("\n")}`
+          : null,
+        failingOrWarnStandards.length > 0
+          ? `Non-pass standards findings:\n${failingOrWarnStandards
+              .map((result) => `- ${result.status.toUpperCase()} ${result.summary}`)
+              .join("\n")}`
+          : null,
+        "Focused hunk preview:",
+        hunkPreview(hunk),
+      ].filter((line): line is string => line !== null && line.trim().length > 0);
+
+      const askPrompt =
         prompt && prompt.length > 0
           ? createAskAgentDraft({
               file,
@@ -337,20 +482,100 @@ export function createReviewListenerMiddleware(
               thread,
               comments,
               reviewerPrompt: prompt,
+              additionalContext,
             })
           : createAskAgentDraft({
               file,
               hunk,
               thread,
               comments,
+              additionalContext,
             });
 
       listenerApi.dispatch(
         reviewUiActions.setAskAgentDraft({
           threadId: thread.id,
-          draft,
+          draft: "Checkmate is reviewing this thread...",
         }),
       );
+
+      try {
+        const requestId = deps.createId();
+        const requestedAtIso = deps.nowIso();
+        const response = await deps.reviewPublisher.publishReview({
+          requestId,
+          requestedBy: "checkmate-agent",
+          requestedAtIso,
+          commitId: thread.commitId,
+          commitSha: commit?.commitSha ?? thread.commitId,
+          payloadJson: JSON.stringify(
+            {
+              type: "thread-review",
+              prompt: askPrompt,
+              thread: {
+                id: thread.id,
+                side: thread.anchor.side,
+                lineNumber: thread.anchor.lineNumber,
+              },
+              file: {
+                path: file.path,
+                status: file.status,
+                additions: file.additions,
+                deletions: file.deletions,
+              },
+              hunk: {
+                id: hunk.id,
+                header: hunk.header,
+              },
+              additionalContext,
+              comments: comments.map((comment) => ({
+                authorType: comment.authorType,
+                authorId: comment.authorId,
+                body: comment.body,
+                createdAtIso: comment.createdAtIso,
+              })),
+            },
+            null,
+            2,
+          ),
+        });
+
+        const body = response.summary.trim();
+        listenerApi.dispatch(
+          reviewEntitiesActions.commentAdded({
+            comment: {
+              id: deps.createId(),
+              threadId: thread.id,
+              authorType: "agent",
+              authorId: "checkmate",
+              body: body.length > 0 ? body : "No response returned by Checkmate.",
+              createdAtIso: deps.nowIso(),
+              isDraft: false,
+            },
+          }),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Checkmate could not generate a response.";
+        listenerApi.dispatch(
+          reviewEntitiesActions.commentAdded({
+            comment: {
+              id: deps.createId(),
+              threadId: thread.id,
+              authorType: "agent",
+              authorId: "checkmate",
+              body: `Unable to generate response: ${message}`,
+              createdAtIso: deps.nowIso(),
+              isDraft: false,
+            },
+          }),
+        );
+      } finally {
+        listenerApi.dispatch(
+          reviewUiActions.clearAskAgentDraft({
+            threadId: thread.id,
+          }),
+        );
+      }
     },
   });
 
@@ -419,6 +644,58 @@ export function createReviewListenerMiddleware(
         const message =
           error instanceof Error ? error.message : "Failed to analyse commit with AI.";
         listenerApi.dispatch(reviewUiActions.aiAnalysisFailed({ errorMessage: message }));
+      }
+    },
+  });
+
+  startListening({
+    actionCreator: analyseStandardsRequested,
+    effect: async (action, listenerApi) => {
+      const context = resolveCommitContext(listenerApi.getState(), action.payload.commitId);
+      if (!context) {
+        return;
+      }
+
+      listenerApi.dispatch(reviewUiActions.standardsAnalysisStarted());
+
+      try {
+        const standardsSource = await resolveStandardsSource(context.commit.repositoryPath);
+
+        let standardsEvaluation;
+        try {
+          standardsEvaluation = await deps.standardsAnalyser.analyseStandards({
+            commitId: action.payload.commitId,
+            commit: context.commit,
+            files: context.files,
+            hunks: context.hunks,
+            ruleText: standardsSource.ruleText,
+            standardsSourcePath: standardsSource.sourcePath,
+          });
+        } catch {
+          standardsEvaluation = deps.standardsEvaluator.evaluate({
+            commitId: action.payload.commitId,
+            ruleText: standardsSource.ruleText,
+            files: context.files,
+            hunks: context.hunks,
+          });
+        }
+
+        listenerApi.dispatch(
+          reviewEntitiesActions.standardsEvaluated({
+            commitId: action.payload.commitId,
+            rules: standardsEvaluation.rules,
+            results: standardsEvaluation.results,
+          }),
+        );
+        listenerApi.dispatch(reviewUiActions.standardsAnalysisSucceeded());
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to generate standards insights.";
+        listenerApi.dispatch(
+          reviewUiActions.standardsAnalysisFailed({
+            errorMessage: message,
+          }),
+        );
       }
     },
   });

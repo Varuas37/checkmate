@@ -55,6 +55,8 @@ export function createInitialReviewUiState(): ReviewUiState {
     aiAnalysisError: null,
     aiSequenceStatus: "idle",
     aiSequenceError: null,
+    standardsAnalysisStatus: "idle",
+    standardsAnalysisError: null,
   };
 }
 

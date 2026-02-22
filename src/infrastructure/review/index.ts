@@ -22,6 +22,11 @@ export {
   createClaudeSdkSequenceDiagramGenerator,
   type ClaudeSdkSequenceDiagramGeneratorOptions,
 } from "./claudeSdkSequenceDiagramGenerator.ts";
+export {
+  ClaudeSdkStandardsAnalyser,
+  createClaudeSdkStandardsAnalyser,
+  type ClaudeSdkStandardsAnalyserOptions,
+} from "./claudeSdkStandardsAnalyser.ts";
 export { createMockCommitReviewDataSource, MockCommitReviewDataSource } from "./mockDataSource.ts";
 export {
   createRuleTextStandardsEvaluator,

@@ -45,4 +45,6 @@ export type {
   StandardsEvaluationInput,
   StandardsEvaluationOutput,
   StandardsEvaluator,
+  AnalyseStandardsInput,
+  StandardsAnalyser,
 } from "./ports.ts";

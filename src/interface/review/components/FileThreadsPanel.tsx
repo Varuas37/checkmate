@@ -3,7 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 import { Badge, Button, Card, CardBody, CardDescription, CardHeader, CardTitle, Input, Textarea } from "../../../design-system/index.ts";
 import type { PublishReviewPackage } from "../../../application/review/index.ts";
 import type { ChangedFile, CommentSide, DiffHunk } from "../../../domain/review/index.ts";
+import {
+  applyCheckmateMentionSuggestion,
+  getCheckmateMentionSuggestion,
+  hasCheckmateMention,
+  stripCheckmateMentions,
+} from "../../../shared/index.ts";
 
+import { MarkdownComment } from "./MarkdownComment.tsx";
 import type { CreateThreadInput, ThreadViewModel } from "../types.ts";
 
 export interface FileThreadsPanelProps {
@@ -20,8 +27,6 @@ export interface FileThreadsPanelProps {
 function toneForThread(status: "open" | "resolved"): "accent" | "positive" {
   return status === "open" ? "accent" : "positive";
 }
-
-const CHECKMATE_MENTION_PATTERN = /^@checkmate\b\s*/i;
 
 export function FileThreadsPanel({
   commitId,
@@ -80,6 +85,8 @@ export function FileThreadsPanel({
   }, [activeFilePublishPayload, publishPackage]);
 
   const canCreateThread = Boolean(commitId && file && selectedHunkId.length > 0);
+  const bodyMentionSuggestion = useMemo(() => getCheckmateMentionSuggestion(body), [body]);
+  const bodyHasMention = useMemo(() => hasCheckmateMention(body), [body]);
 
   return (
     <Card>
@@ -168,8 +175,39 @@ export function FileThreadsPanel({
               rows={4}
               value={body}
               onChange={(event) => setBody(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.key === "Tab" || event.key === "ArrowDown") && bodyMentionSuggestion) {
+                  event.preventDefault();
+                  setBody(applyCheckmateMentionSuggestion(body, bodyMentionSuggestion));
+                }
+              }}
               placeholder="Describe risk, expected behavior, or requested change..."
             />
+            {bodyMentionSuggestion && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded border border-border/70 bg-surface-subtle/60 px-2 py-1 text-[10px] text-text transition-colors hover:border-accent/45 hover:text-accent"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                }}
+                onClick={() => {
+                  setBody(applyCheckmateMentionSuggestion(body, bodyMentionSuggestion));
+                }}
+              >
+                <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
+                  @checkmate
+                </span>
+                <span>Use mention</span>
+              </button>
+            )}
+            {bodyHasMention && (
+              <p className="text-[10px] text-muted">
+                Agent mention detected:{" "}
+                <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
+                  @checkmate
+                </span>
+              </p>
+            )}
           </label>
 
           <div className="flex items-center justify-between gap-2">
@@ -217,54 +255,107 @@ export function FileThreadsPanel({
                 <Badge tone="neutral">{thread.comments.length} comments</Badge>
               </div>
 
-              <div className="space-y-2">
-                {thread.comments.map((comment) => (
-                  <div key={comment.id} className="rounded-md bg-elevated/50 px-2 py-2">
-                    <p className="mb-1 text-xs text-muted">
-                      {comment.authorType} · {comment.authorId} · {new Date(comment.createdAtIso).toLocaleString()}
-                    </p>
-                    <p className="text-sm text-text">{comment.body}</p>
-                  </div>
-                ))}
-              </div>
+	          <div className="space-y-2">
+	            {thread.comments.map((comment) => (
+	                  <div key={comment.id} className="rounded-md bg-elevated/50 px-2 py-2">
+	                    <p className="mb-1 text-xs text-muted">
+	                      {comment.authorType} · {comment.authorId} · {new Date(comment.createdAtIso).toLocaleString()}
+	                    </p>
+	                    <MarkdownComment body={comment.body} className="text-sm leading-6 text-text" />
+	                  </div>
+	                ))}
+	              </div>
 
-              <div className="mt-3 space-y-2">
-                <Input
-                  value={agentPromptByThreadId[thread.thread.id] ?? ""}
-                  onChange={(event) => {
-                    const nextPrompt = event.target.value;
+	              <div className="mt-3 space-y-2">
+	                {(() => {
+	                  const promptValue = agentPromptByThreadId[thread.thread.id] ?? "";
+	                  const mentionSuggestion = getCheckmateMentionSuggestion(promptValue);
+	                  const hasMention = hasCheckmateMention(promptValue);
 
-                    setAgentPromptByThreadId((current) => ({
-                      ...current,
-                      [thread.thread.id]: nextPrompt,
-                    }));
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") {
-                      return;
-                    }
+	                  return (
+	                    <>
+	                      <Input
+	                        value={promptValue}
+	                  onChange={(event) => {
+	                    const nextPrompt = event.target.value;
 
-                    const rawPrompt = agentPromptByThreadId[thread.thread.id] ?? "";
-                    if (!CHECKMATE_MENTION_PATTERN.test(rawPrompt.trim())) {
-                      return;
-                    }
+	                    setAgentPromptByThreadId((current) => ({
+	                      ...current,
+	                      [thread.thread.id]: nextPrompt,
+	                    }));
+	                  }}
+	                  onKeyDown={(event) => {
+	                    if ((event.key === "Tab" || event.key === "ArrowDown") && mentionSuggestion) {
+	                      event.preventDefault();
+	                      setAgentPromptByThreadId((current) => ({
+	                        ...current,
+	                        [thread.thread.id]: applyCheckmateMentionSuggestion(promptValue, mentionSuggestion),
+	                      }));
+	                      return;
+	                    }
 
-                    event.preventDefault();
-                    const prompt = rawPrompt.trim().replace(CHECKMATE_MENTION_PATTERN, "").trim();
-                    onAskAgent(thread.thread.id, prompt);
-                    setAgentPromptByThreadId((current) => ({
-                      ...current,
-                      [thread.thread.id]: "",
-                    }));
-                  }}
-                  placeholder="Reply... Use @checkmate <question> and press Enter"
-                />
+	                    if (event.key !== "Enter") {
+	                      return;
+	                    }
 
-                {thread.askAgentDraft.length > 0 && (
-                  <pre className="max-h-40 overflow-auto rounded-md bg-elevated p-2 font-mono text-xs text-text">
-                    {thread.askAgentDraft}
-                  </pre>
-                )}
+	                    if (mentionSuggestion) {
+	                      event.preventDefault();
+	                      setAgentPromptByThreadId((current) => ({
+	                        ...current,
+	                        [thread.thread.id]: applyCheckmateMentionSuggestion(promptValue, mentionSuggestion),
+	                      }));
+	                      return;
+	                    }
+
+	                    if (!hasMention) {
+	                      return;
+	                    }
+
+	                    event.preventDefault();
+	                    const prompt = stripCheckmateMentions(promptValue);
+	                    onAskAgent(thread.thread.id, prompt);
+	                    setAgentPromptByThreadId((current) => ({
+	                      ...current,
+	                      [thread.thread.id]: "",
+	                    }));
+	                  }}
+	                  placeholder="Reply... Use @checkmate <question> and press Enter"
+	                      />
+	                      {mentionSuggestion && (
+	                        <button
+	                          type="button"
+	                          className="inline-flex items-center gap-1 rounded border border-border/70 bg-surface-subtle/60 px-2 py-1 text-[10px] text-text transition-colors hover:border-accent/45 hover:text-accent"
+	                          onMouseDown={(event) => {
+	                            event.preventDefault();
+	                          }}
+	                          onClick={() => {
+	                            setAgentPromptByThreadId((current) => ({
+	                              ...current,
+	                              [thread.thread.id]: applyCheckmateMentionSuggestion(promptValue, mentionSuggestion),
+	                            }));
+	                          }}
+	                        >
+	                          <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
+	                            @checkmate
+	                          </span>
+	                          <span>Use mention</span>
+	                        </button>
+	                      )}
+	                      {hasMention && (
+	                        <p className="text-[10px] text-muted">
+	                          Agent mention detected:{" "}
+	                          <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
+	                            @checkmate
+	                          </span>
+	                        </p>
+	                      )}
+	                    </>
+	                  );
+	                })()}
+
+	                {thread.askAgentDraft.startsWith("Checkmate is reviewing") && (
+	                  <p className="text-xs text-muted">{thread.askAgentDraft}</p>
+	                )}
               </div>
             </div>
           ))}

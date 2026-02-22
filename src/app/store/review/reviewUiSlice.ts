@@ -164,6 +164,8 @@ export const reviewUiSlice = createSlice({
       state.aiAnalysisError = null;
       state.aiSequenceStatus = "idle";
       state.aiSequenceError = null;
+      state.standardsAnalysisStatus = "idle";
+      state.standardsAnalysisError = null;
     },
     markLoadFailed(state, action: PayloadAction<{ readonly errorMessage: string }>): void {
       state.loadStatus = "error";
@@ -266,7 +268,10 @@ export const reviewUiSlice = createSlice({
           filePaths: [...pair.filePaths],
         })),
         sequenceSteps: output.sequenceSteps.map((s) => ({
+          ...(s.token ? { token: s.token } : {}),
+          ...(s.sourceId ? { sourceId: s.sourceId } : {}),
           sourceLabel: s.sourceLabel,
+          ...(s.targetId ? { targetId: s.targetId } : {}),
           targetLabel: s.targetLabel,
           message: s.message,
           filePath: s.filePath,
@@ -313,7 +318,10 @@ export const reviewUiSlice = createSlice({
       state.aiAnalysis = {
         ...state.aiAnalysis,
         sequenceSteps: action.payload.sequenceSteps.map((step) => ({
+          ...(step.token ? { token: step.token } : {}),
+          ...(step.sourceId ? { sourceId: step.sourceId } : {}),
           sourceLabel: step.sourceLabel,
+          ...(step.targetId ? { targetId: step.targetId } : {}),
           targetLabel: step.targetLabel,
           message: step.message,
           filePath: step.filePath,
@@ -332,6 +340,18 @@ export const reviewUiSlice = createSlice({
 
       state.aiSequenceStatus = "error";
       state.aiSequenceError = action.payload.errorMessage;
+    },
+    standardsAnalysisStarted(state): void {
+      state.standardsAnalysisStatus = "analysing";
+      state.standardsAnalysisError = null;
+    },
+    standardsAnalysisSucceeded(state): void {
+      state.standardsAnalysisStatus = "ready";
+      state.standardsAnalysisError = null;
+    },
+    standardsAnalysisFailed(state, action: PayloadAction<{ readonly errorMessage: string }>): void {
+      state.standardsAnalysisStatus = "error";
+      state.standardsAnalysisError = action.payload.errorMessage;
     },
   },
 });

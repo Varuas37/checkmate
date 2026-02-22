@@ -11,6 +11,7 @@ import {
 } from "../../../application/review/index.ts";
 import {
   analyseCommitRequested,
+  analyseStandardsRequested,
   askAgentDraftRequested,
   createCommentThreadRequested,
   deleteCommentRequested,
@@ -20,6 +21,7 @@ import {
   reviewUiActions,
 } from "../../../app/store/review/index.ts";
 import type { FileChangeStatus, ThreadStatus } from "../../../domain/review/index.ts";
+import { stripCheckmateMentions } from "../../../shared/index.ts";
 import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT } from "../constants.ts";
 import type {
   CodeSequenceStep,
@@ -53,6 +55,16 @@ function fileNameForPath(path: string): string {
   return segments[segments.length - 1] ?? path;
 }
 
+function normalizeSequenceId(value: string, fallback: string): string {
+  const normalized = value
+    .trim()
+    .replaceAll(/[^A-Za-z0-9_-]/g, "_")
+    .replaceAll(/_+/g, "_")
+    .replaceAll(/^_+|_+$/g, "");
+
+  return normalized.length > 0 ? normalized.slice(0, 48) : fallback;
+}
+
 function summarizeRisk(additions: number, deletions: number): string {
   const churn = additions + deletions;
 
@@ -78,8 +90,6 @@ function normalizeReloadInput(input: ReloadReviewWorkspaceInput): ReloadReviewWo
     standardsRuleText: standardsRuleText.length > 0 ? standardsRuleText : DEFAULT_STANDARDS_RULE_TEXT,
   };
 }
-
-const CHECKMATE_MENTION_PATTERN = /^@checkmate\b\s*/i;
 
 export function useReviewWorkspace(): {
   readonly state: ReviewWorkspaceState;
@@ -262,10 +272,14 @@ export function useReviewWorkspace(): {
     if (hasAiAnalysis && ui.aiAnalysis !== null) {
       return ui.aiAnalysis.sequenceSteps.slice(0, 12).map((step, index) => {
         const matchedFile = allFiles.find((f) => f.path === step.filePath);
+        const sourceId = normalizeSequenceId(step.sourceId ?? step.sourceLabel, `source_${index + 1}`);
+        const targetId = normalizeSequenceId(step.targetId ?? step.targetLabel, `target_${index + 1}`);
         return {
           id: `ai-step-${index + 1}`,
-          token: `F${index + 1}`,
+          token: normalizeSequenceId(step.token ?? `S${index + 1}`, `S${index + 1}`),
+          sourceId,
           sourceLabel: step.sourceLabel,
+          targetId,
           targetLabel: step.targetLabel,
           message: step.message,
           fileIds: matchedFile ? [matchedFile.id] : [],
@@ -296,7 +310,9 @@ export function useReviewWorkspace(): {
       const step: CodeSequenceStep = {
         id: `sequence-step-${file.id}`,
         token,
+        sourceId: normalizeSequenceId(previousActor, "reviewer"),
         sourceLabel: previousActor,
+        targetId: normalizeSequenceId(targetLabel, `target_${index + 1}`),
         targetLabel,
         message,
         fileIds: [file.id],
@@ -597,7 +613,7 @@ export function useReviewWorkspace(): {
         return;
       }
 
-      const normalizedPrompt = prompt.trim().replace(CHECKMATE_MENTION_PATTERN, "").trim();
+      const normalizedPrompt = stripCheckmateMentions(prompt.trim());
 
       if (normalizedPrompt.length === 0) {
         dispatch(
@@ -666,6 +682,18 @@ export function useReviewWorkspace(): {
     );
   }, [dispatch, ui.activeCommitId]);
 
+  const refreshStandardsAnalysis = useCallback(() => {
+    if (!ui.activeCommitId) {
+      return;
+    }
+
+    dispatch(
+      analyseStandardsRequested({
+        commitId: ui.activeCommitId,
+      }),
+    );
+  }, [dispatch, ui.activeCommitId]);
+
   return {
     state: {
       loadStatus: ui.loadStatus,
@@ -699,6 +727,8 @@ export function useReviewWorkspace(): {
       aiAnalysisStatus: ui.aiAnalysisStatus,
       aiSequenceStatus: ui.aiSequenceStatus,
       aiSequenceError: ui.aiSequenceError,
+      standardsAnalysisStatus: ui.standardsAnalysisStatus,
+      standardsAnalysisError: ui.standardsAnalysisError,
     },
     actions: {
       reloadReviewWorkspace,
@@ -715,6 +745,7 @@ export function useReviewWorkspace(): {
       deleteComment,
       publishReview,
       refreshAiAnalysis,
+      refreshStandardsAnalysis,
       retrySequenceGeneration,
     },
   };
