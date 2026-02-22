@@ -94,6 +94,15 @@ export interface StandardsCheck {
   readonly result: StandardsResult | null;
 }
 
+export interface FileStandardsInsight {
+  readonly fileId: string;
+  readonly path: string;
+  readonly pass: number;
+  readonly warn: number;
+  readonly fail: number;
+  readonly linkedRuleIds: readonly string[];
+}
+
 export interface ThreadViewModel {
   readonly thread: CommentThread;
   readonly comments: readonly ReviewComment[];
@@ -129,6 +138,7 @@ export interface ReviewWorkspaceState {
   readonly sequencePairs: readonly SequencePair[];
   readonly codeSequenceSteps: readonly CodeSequenceStep[];
   readonly standardsChecks: readonly StandardsCheck[];
+  readonly fileStandardsInsights: readonly FileStandardsInsight[];
   readonly threadModels: readonly ThreadViewModel[];
   readonly threadCounts: {
     readonly all: number;

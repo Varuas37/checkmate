@@ -146,14 +146,13 @@ export const reviewEntitiesSlice = createSlice({
     standardsEvaluated(state, action: PayloadAction<StandardsEvaluatedPayload>): void {
       const { commitId, rules, results } = action.payload;
 
-      state.standardsRulesById = {};
-      state.standardsRuleIds = [];
       rules.forEach((rule) => {
         state.standardsRulesById[rule.id] = rule;
-        state.standardsRuleIds.push(rule.id);
+        if (!state.standardsRuleIds.includes(rule.id)) {
+          state.standardsRuleIds.push(rule.id);
+        }
       });
 
-      state.standardsResultsById = {};
       const resultIds: string[] = [];
       results.forEach((result) => {
         state.standardsResultsById[result.id] = {

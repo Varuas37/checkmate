@@ -3,7 +3,11 @@ import test from "node:test";
 
 import type { CommitReviewAggregate, PublishReviewRequest } from "../../../domain/review/index.ts";
 import { createReviewStore } from "./reviewStore.ts";
-import { analyseCommitRequested, publishReviewRequested } from "./reviewActions.ts";
+import {
+  analyseCommitRequested,
+  loadCommitReviewRequested,
+  publishReviewRequested,
+} from "./reviewActions.ts";
 import { reviewEntitiesActions } from "./reviewEntitiesSlice.ts";
 import { reviewUiActions } from "./reviewUiSlice.ts";
 
@@ -87,6 +91,36 @@ function createDeferred<T>() {
       rejectPromise?.(reason);
     },
   };
+}
+
+function installMockLocalStorage(): void {
+  const storage = new Map<string, string>();
+  const localStorageMock: Storage = {
+    get length() {
+      return storage.size;
+    },
+    clear() {
+      storage.clear();
+    },
+    getItem(key: string) {
+      return storage.has(key) ? storage.get(key) ?? null : null;
+    },
+    key(index: number) {
+      return [...storage.keys()][index] ?? null;
+    },
+    removeItem(key: string) {
+      storage.delete(key);
+    },
+    setItem(key: string, value: string) {
+      storage.set(key, String(value));
+    },
+  };
+
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: localStorageMock,
+  });
 }
 
 test("publish listener transitions through publishing then stores Claude result", async () => {
@@ -201,6 +235,8 @@ test("analyse listener skips sequence regeneration when analysis already has seq
             },
           ],
           fileSummaries: [],
+          standardsRules: [],
+          standardsResults: [],
         }),
       },
       sequenceDiagramGenerator: {
@@ -239,6 +275,8 @@ test("analyse listener regenerates sequence when analysis response has no sequen
           flowComparisons: [],
           sequenceSteps: [],
           fileSummaries: [],
+          standardsRules: [],
+          standardsResults: [],
         }),
       },
       sequenceDiagramGenerator: {
@@ -271,4 +309,96 @@ test("analyse listener regenerates sequence when analysis response has no sequen
 
   assert.equal(sequenceGenerationCalls, 1);
   assert.equal(store.getState().reviewUi.aiSequenceStatus, "ready");
+});
+
+test("load listener analyses once per commit and reuses cached analysis on reload", async () => {
+  installMockLocalStorage();
+
+  let analysisCalls = 0;
+  const aggregate = createCommitAggregateFixture();
+
+  const store = createReviewStore({
+    dependencies: {
+      reviewDataSource: {
+        loadCommitReview: async () => aggregate,
+        listRepositoryCommits: async () => [],
+        readCommitFileVersions: async () => ({
+          oldContent: null,
+          newContent: null,
+        }),
+      },
+      commitAnalyser: {
+        analyseCommit: async () => {
+          analysisCalls += 1;
+          return {
+            commitId: aggregate.commit.id,
+            overviewCards: [],
+            flowComparisons: [],
+            sequenceSteps: [],
+            fileSummaries: [
+              {
+                filePath: aggregate.files[0]?.path ?? "",
+                summary: "Cached file summary",
+                riskNote: "Low risk.",
+              },
+            ],
+            standardsRules: [
+              {
+                id: "rule-1",
+                title: "Add tests",
+                description: "Add tests for behavior changes.",
+                severity: "medium",
+              },
+            ],
+            standardsResults: [
+              {
+                id: `result-${aggregate.commit.id}-rule-1`,
+                commitId: aggregate.commit.id,
+                ruleId: "rule-1",
+                status: "pass",
+                summary: "Tests were updated in this commit.",
+                evidence: [
+                  {
+                    filePath: aggregate.files[0]?.path ?? "src/app/store/review/reviewListeners.ts",
+                    note: "Test file was changed.",
+                  },
+                ],
+              },
+            ],
+          };
+        },
+      },
+    },
+  });
+
+  store.dispatch(
+    loadCommitReviewRequested({
+      repositoryPath: aggregate.commit.repositoryPath,
+      commitSha: aggregate.commit.commitSha,
+      standardsRuleText: "1. Add tests for behavior changes.",
+    }),
+  );
+
+  await waitForListener();
+  await waitForListener();
+  await waitForListener();
+
+  assert.equal(analysisCalls, 1);
+  assert.equal(store.getState().reviewUi.aiAnalysisStatus, "analysed");
+  assert.equal(store.getState().reviewUi.standardsAnalysisStatus, "ready");
+
+  store.dispatch(
+    loadCommitReviewRequested({
+      repositoryPath: aggregate.commit.repositoryPath,
+      commitSha: aggregate.commit.commitSha,
+      standardsRuleText: "1. Add tests for behavior changes.",
+    }),
+  );
+
+  await waitForListener();
+  await waitForListener();
+
+  assert.equal(analysisCalls, 1);
+  assert.equal(store.getState().reviewUi.aiAnalysisStatus, "analysed");
+  assert.equal(store.getState().reviewUi.standardsAnalysisStatus, "ready");
 });

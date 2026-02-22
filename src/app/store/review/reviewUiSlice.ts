@@ -296,6 +296,26 @@ export const reviewUiSlice = createSlice({
           summary: f.summary,
           riskNote: f.riskNote,
         })),
+        standardsRules: output.standardsRules.map((rule) => ({
+          id: rule.id,
+          title: rule.title,
+          description: rule.description,
+          severity: rule.severity,
+        })),
+        standardsResults: output.standardsResults.map((result) => ({
+          id: result.id,
+          commitId: result.commitId,
+          ruleId: result.ruleId,
+          status: result.status,
+          summary: result.summary,
+          evidence: result.evidence.map((item) => ({
+            ...(item.fileId ? { fileId: item.fileId } : {}),
+            ...(item.filePath ? { filePath: item.filePath } : {}),
+            ...(item.hunkId ? { hunkId: item.hunkId } : {}),
+            ...(item.lineNumber ? { lineNumber: item.lineNumber } : {}),
+            note: item.note,
+          })),
+        })),
       };
       state.aiAnalysisError = null;
       state.aiSequenceStatus = output.sequenceSteps.length > 0 ? "ready" : "idle";

@@ -106,6 +106,8 @@ export interface AnalyseCommitInput {
   readonly commit: CommitReview;
   readonly files: readonly ChangedFile[];
   readonly hunks: readonly DiffHunk[];
+  readonly standardsRuleText?: string;
+  readonly standardsSourcePath?: string;
   readonly abortSignal?: AbortSignal;
 }
 
@@ -145,6 +147,8 @@ export interface AnalyseCommitOutput {
   readonly sequenceSteps: readonly AiSequenceStep[];
   readonly flowComparisons: readonly AiFlowComparison[];
   readonly fileSummaries: readonly AiFileSummary[];
+  readonly standardsRules: readonly StandardsRule[];
+  readonly standardsResults: readonly StandardsResult[];
 }
 
 export interface CommitAnalyser {

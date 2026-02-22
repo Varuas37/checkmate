@@ -3,6 +3,8 @@ import type {
   AiFlowComparison,
   AiOverviewCard,
   AiSequenceStep,
+  StandardsResult,
+  StandardsRule,
 } from "../../domain/review/index.ts";
 
 const STORAGE_KEY = "codelens-ai-analysis-cache.v1";
@@ -13,6 +15,8 @@ export interface CachedAiAnalysisData {
   readonly flowComparisons: readonly AiFlowComparison[];
   readonly sequenceSteps: readonly AiSequenceStep[];
   readonly fileSummaries: readonly AiFileSummary[];
+  readonly standardsRules: readonly StandardsRule[];
+  readonly standardsResults: readonly StandardsResult[];
 }
 
 interface AiAnalysisCacheEntry extends CachedAiAnalysisData {
@@ -144,6 +148,99 @@ function normalizeFileSummary(value: unknown): AiFileSummary | null {
   };
 }
 
+function normalizeStandardsRule(value: unknown): StandardsRule | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const rule = value as Partial<StandardsRule>;
+  const id = normalizeText(rule.id);
+  const title = normalizeText(rule.title);
+  const description = normalizeText(rule.description);
+  const severity = normalizeText(rule.severity);
+
+  if (id.length === 0 || title.length === 0 || description.length === 0) {
+    return null;
+  }
+
+  if (!["low", "medium", "high"].includes(severity)) {
+    return null;
+  }
+
+  return {
+    id,
+    title,
+    description,
+    severity: severity as StandardsRule["severity"],
+  };
+}
+
+function normalizeStandardsResult(value: unknown): StandardsResult | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const result = value as Partial<StandardsResult>;
+  const id = normalizeText(result.id);
+  const commitId = normalizeText(result.commitId);
+  const ruleId = normalizeText(result.ruleId);
+  const status = normalizeText(result.status);
+  const summary = normalizeText(result.summary);
+
+  if (
+    id.length === 0 ||
+    commitId.length === 0 ||
+    ruleId.length === 0 ||
+    summary.length === 0 ||
+    !["pass", "warn", "fail"].includes(status)
+  ) {
+    return null;
+  }
+
+  const evidence = Array.isArray(result.evidence)
+    ? result.evidence
+        .map((entry) => {
+          if (!entry || typeof entry !== "object") {
+            return null;
+          }
+
+          const input = entry as Record<string, unknown>;
+          const note = normalizeText(input.note);
+          if (note.length === 0) {
+            return null;
+          }
+
+          const fileId = normalizeText(input.fileId);
+          const filePath = normalizeText(input.filePath);
+          const hunkId = normalizeText(input.hunkId);
+          const lineNumber =
+            typeof input.lineNumber === "number" &&
+            Number.isFinite(input.lineNumber) &&
+            input.lineNumber > 0
+              ? Math.floor(input.lineNumber)
+              : undefined;
+
+          return {
+            ...(fileId.length > 0 ? { fileId } : {}),
+            ...(filePath.length > 0 ? { filePath } : {}),
+            ...(hunkId.length > 0 ? { hunkId } : {}),
+            ...(lineNumber !== undefined ? { lineNumber } : {}),
+            note,
+          };
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    : [];
+
+  return {
+    id,
+    commitId,
+    ruleId,
+    status: status as StandardsResult["status"],
+    summary,
+    evidence,
+  };
+}
+
 function normalizeCachedData(value: unknown): CachedAiAnalysisData | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -170,8 +267,24 @@ function normalizeCachedData(value: unknown): CachedAiAnalysisData | null {
         .map((summary) => normalizeFileSummary(summary))
         .filter((summary): summary is AiFileSummary => summary !== null)
     : [];
+  const standardsRules = Array.isArray(input.standardsRules)
+    ? input.standardsRules
+        .map((rule) => normalizeStandardsRule(rule))
+        .filter((rule): rule is StandardsRule => rule !== null)
+    : [];
+  const standardsResults = Array.isArray(input.standardsResults)
+    ? input.standardsResults
+        .map((result) => normalizeStandardsResult(result))
+        .filter((result): result is StandardsResult => result !== null)
+    : [];
 
-  if (overviewCards.length === 0 && flowComparisons.length === 0 && fileSummaries.length === 0) {
+  if (
+    overviewCards.length === 0 &&
+    flowComparisons.length === 0 &&
+    fileSummaries.length === 0 &&
+    standardsRules.length === 0 &&
+    standardsResults.length === 0
+  ) {
     return null;
   }
 
@@ -180,6 +293,8 @@ function normalizeCachedData(value: unknown): CachedAiAnalysisData | null {
     flowComparisons,
     sequenceSteps,
     fileSummaries,
+    standardsRules,
+    standardsResults,
   };
 }
 
@@ -254,6 +369,26 @@ function cloneCachedData(data: CachedAiAnalysisData): CachedAiAnalysisData {
       filePath: summary.filePath,
       summary: summary.summary,
       riskNote: summary.riskNote,
+    })),
+    standardsRules: data.standardsRules.map((rule) => ({
+      id: rule.id,
+      title: rule.title,
+      description: rule.description,
+      severity: rule.severity,
+    })),
+    standardsResults: data.standardsResults.map((result) => ({
+      id: result.id,
+      commitId: result.commitId,
+      ruleId: result.ruleId,
+      status: result.status,
+      summary: result.summary,
+      evidence: result.evidence.map((item) => ({
+        ...(item.fileId ? { fileId: item.fileId } : {}),
+        ...(item.filePath ? { filePath: item.filePath } : {}),
+        ...(item.hunkId ? { hunkId: item.hunkId } : {}),
+        ...(item.lineNumber ? { lineNumber: item.lineNumber } : {}),
+        note: item.note,
+      })),
     })),
   };
 }

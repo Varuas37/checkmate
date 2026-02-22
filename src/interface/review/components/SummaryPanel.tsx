@@ -135,7 +135,7 @@ export function SummaryPanel({
             })}
           </div>
         ) : (
-          <p className="mt-2 text-sm text-muted">Generate AI summary to see grouped feature changes.</p>
+          <p className="mt-2 text-sm text-muted">AI analysis will appear here once background generation completes.</p>
         )}
       </section>
 

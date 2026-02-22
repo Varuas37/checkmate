@@ -597,7 +597,15 @@ function parseLegacyResponse(raw: string, commitId: string): AnalyseCommitOutput
       return null;
     }
 
-    return { commitId, overviewCards, flowComparisons, sequenceSteps, fileSummaries };
+    return {
+      commitId,
+      overviewCards,
+      flowComparisons,
+      sequenceSteps,
+      fileSummaries,
+      standardsRules: [],
+      standardsResults: [],
+    };
   } catch {
     return null;
   }
@@ -842,6 +850,8 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
         flowComparisons,
         sequenceSteps: [],
         fileSummaries,
+        standardsRules: [],
+        standardsResults: [],
       };
     } catch (error) {
       // In Tauri, fall back to CLI if the SDK module itself isn't available.

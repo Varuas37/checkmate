@@ -412,6 +412,72 @@ export function useReviewWorkspace(): {
     );
   }, [standardsChecks]);
 
+  const fileStandardsInsights = useMemo(() => {
+    const byPath = new Map(
+      allFiles.map((file) => [
+        file.path,
+        {
+          fileId: file.id,
+          path: file.path,
+          pass: 0,
+          warn: 0,
+          fail: 0,
+          linkedRuleIds: [] as string[],
+        },
+      ]),
+    );
+
+    standardsChecks.forEach((check) => {
+      if (!check.result) {
+        return;
+      }
+
+      const evidencePaths = [...new Set(
+        check.result.evidence
+          .map((item) => item.filePath?.trim() ?? "")
+          .filter((path) => path.length > 0),
+      )];
+
+      evidencePaths.forEach((path) => {
+        const current = byPath.get(path);
+        if (!current) {
+          return;
+        }
+
+        if (check.result?.status === "pass") {
+          current.pass += 1;
+        } else if (check.result?.status === "warn") {
+          current.warn += 1;
+        } else {
+          current.fail += 1;
+        }
+
+        if (!current.linkedRuleIds.includes(check.rule.id)) {
+          current.linkedRuleIds.push(check.rule.id);
+        }
+      });
+    });
+
+    return allFiles.map((file) => {
+      const current = byPath.get(file.path);
+      if (!current) {
+        return {
+          fileId: file.id,
+          path: file.path,
+          pass: 0,
+          warn: 0,
+          fail: 0,
+          linkedRuleIds: [],
+        };
+      }
+
+      return {
+        ...current,
+        linkedRuleIds: [...current.linkedRuleIds],
+      };
+    });
+  }, [allFiles, standardsChecks]);
+
   const threadModels = useMemo(() => {
     if (!activeFile) {
       return [];
@@ -838,6 +904,7 @@ export function useReviewWorkspace(): {
       sequencePairs,
       codeSequenceSteps,
       standardsChecks,
+      fileStandardsInsights,
       threadModels,
       threadCounts,
       fileSummaries,

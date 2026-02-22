@@ -77,7 +77,7 @@ export function FileSummaryInspector({
                 <div className="space-y-2">
                   <Skeleton height={10} width="48%" />
                   <p className="text-xs text-muted">
-                    Open the Summary tab to generate AI analysis in background.
+                    Generating AI analysis in the background for this commit.
                   </p>
                 </div>
               )}

@@ -148,6 +148,8 @@ export function createReviewListenerMiddleware(
     flowComparisons: CachedAiAnalysisData["flowComparisons"];
     sequenceSteps: CachedAiAnalysisData["sequenceSteps"];
     fileSummaries: CachedAiAnalysisData["fileSummaries"];
+    standardsRules: CachedAiAnalysisData["standardsRules"];
+    standardsResults: CachedAiAnalysisData["standardsResults"];
   }): CachedAiAnalysisData => {
     return {
       overviewCards: input.overviewCards.map((card) => ({
@@ -175,6 +177,26 @@ export function createReviewListenerMiddleware(
         filePath: summary.filePath,
         summary: summary.summary,
         riskNote: summary.riskNote,
+      })),
+      standardsRules: input.standardsRules.map((rule) => ({
+        id: rule.id,
+        title: rule.title,
+        description: rule.description,
+        severity: rule.severity,
+      })),
+      standardsResults: input.standardsResults.map((result) => ({
+        id: result.id,
+        commitId: result.commitId,
+        ruleId: result.ruleId,
+        status: result.status,
+        summary: result.summary,
+        evidence: result.evidence.map((item) => ({
+          ...(item.fileId ? { fileId: item.fileId } : {}),
+          ...(item.filePath ? { filePath: item.filePath } : {}),
+          ...(item.hunkId ? { hunkId: item.hunkId } : {}),
+          ...(item.lineNumber ? { lineNumber: item.lineNumber } : {}),
+          note: item.note,
+        })),
       })),
     };
   };
@@ -310,16 +332,51 @@ export function createReviewListenerMiddleware(
         });
 
         if (cachedAiAnalysis) {
+          const output = {
+            commitId: aggregate.commit.id,
+            ...toCachedAnalysisData(cachedAiAnalysis),
+          };
+
           listenerApi.dispatch(
             reviewUiActions.aiAnalysisSucceeded({
-              output: {
-                commitId: aggregate.commit.id,
-                ...toCachedAnalysisData(cachedAiAnalysis),
-              },
+              output,
             }),
           );
+
+          if (
+            cachedAiAnalysis.standardsRules.length > 0 ||
+            cachedAiAnalysis.standardsResults.length > 0
+          ) {
+            listenerApi.dispatch(
+              reviewEntitiesActions.standardsEvaluated({
+                commitId: aggregate.commit.id,
+                rules: cachedAiAnalysis.standardsRules,
+                results: cachedAiAnalysis.standardsResults,
+              }),
+            );
+            listenerApi.dispatch(reviewUiActions.standardsAnalysisSucceeded());
+          } else {
+            listenerApi.dispatch(reviewUiActions.standardsAnalysisStarted());
+            globalThis.setTimeout(() => {
+              listenerApi.dispatch(
+                analyseCommitRequested({
+                  commitId: aggregate.commit.id,
+                }),
+              );
+            }, 0);
+          }
+
           return;
         }
+
+        // Run AI analysis once per loaded commit in the background when cache is absent.
+        globalThis.setTimeout(() => {
+          listenerApi.dispatch(
+            analyseCommitRequested({
+              commitId: aggregate.commit.id,
+            }),
+          );
+        }, 0);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to load commit review.";
         listenerApi.dispatch(reviewUiActions.markLoadFailed({ errorMessage: message }));
@@ -733,13 +790,17 @@ export function createReviewListenerMiddleware(
       }
 
       listenerApi.dispatch(reviewUiActions.aiAnalysisStarted());
+      listenerApi.dispatch(reviewUiActions.standardsAnalysisStarted());
 
       try {
+        const standardsSource = await resolveStandardsSource(context.commit.repositoryPath);
         const output = await deps.commitAnalyser.analyseCommit({
           commitId: action.payload.commitId,
           commit: context.commit,
           files: context.files,
           hunks: context.hunks,
+          standardsRuleText: standardsSource.ruleText,
+          standardsSourcePath: standardsSource.sourcePath,
           abortSignal: listenerApi.signal,
         });
 
@@ -747,14 +808,56 @@ export function createReviewListenerMiddleware(
           return;
         }
 
+        let standardsRules = output.standardsRules;
+        let standardsResults = output.standardsResults;
+
+        if (standardsRules.length === 0 || standardsResults.length === 0) {
+          try {
+            const standardsEvaluation = await deps.standardsAnalyser.analyseStandards({
+              commitId: action.payload.commitId,
+              commit: context.commit,
+              files: context.files,
+              hunks: context.hunks,
+              ruleText: standardsSource.ruleText,
+              standardsSourcePath: standardsSource.sourcePath,
+            });
+            standardsRules = standardsEvaluation.rules;
+            standardsResults = standardsEvaluation.results;
+          } catch {
+            const standardsEvaluation = deps.standardsEvaluator.evaluate({
+              commitId: action.payload.commitId,
+              ruleText: standardsSource.ruleText,
+              files: context.files,
+              hunks: context.hunks,
+            });
+            standardsRules = standardsEvaluation.rules;
+            standardsResults = standardsEvaluation.results;
+          }
+        }
+
+        const enrichedOutput = {
+          ...output,
+          standardsRules,
+          standardsResults,
+        };
+
         writeAiAnalysisToStorage({
           repositoryPath: context.commit.repositoryPath,
           commitSha: context.commit.commitSha,
-          analysis: toCachedAnalysisData(output),
+          analysis: toCachedAnalysisData(enrichedOutput),
         });
 
-        listenerApi.dispatch(reviewUiActions.aiAnalysisSucceeded({ output }));
-        if (output.sequenceSteps.length === 0) {
+        listenerApi.dispatch(reviewUiActions.aiAnalysisSucceeded({ output: enrichedOutput }));
+        listenerApi.dispatch(
+          reviewEntitiesActions.standardsEvaluated({
+            commitId: action.payload.commitId,
+            rules: standardsRules,
+            results: standardsResults,
+          }),
+        );
+        listenerApi.dispatch(reviewUiActions.standardsAnalysisSucceeded());
+
+        if (enrichedOutput.sequenceSteps.length === 0) {
           listenerApi.dispatch(regenerateSequenceRequested({ commitId: action.payload.commitId }));
         }
       } catch (error) {
@@ -764,59 +867,23 @@ export function createReviewListenerMiddleware(
         const message =
           error instanceof Error ? error.message : "Failed to analyse commit with AI.";
         listenerApi.dispatch(reviewUiActions.aiAnalysisFailed({ errorMessage: message }));
-      }
-    },
-  });
-
-  startListening({
-    actionCreator: analyseStandardsRequested,
-    effect: async (action, listenerApi) => {
-      const context = resolveCommitContext(listenerApi.getState(), action.payload.commitId);
-      if (!context) {
-        return;
-      }
-
-      listenerApi.dispatch(reviewUiActions.standardsAnalysisStarted());
-
-      try {
-        const standardsSource = await resolveStandardsSource(context.commit.repositoryPath);
-
-        let standardsEvaluation;
-        try {
-          standardsEvaluation = await deps.standardsAnalyser.analyseStandards({
-            commitId: action.payload.commitId,
-            commit: context.commit,
-            files: context.files,
-            hunks: context.hunks,
-            ruleText: standardsSource.ruleText,
-            standardsSourcePath: standardsSource.sourcePath,
-          });
-        } catch {
-          standardsEvaluation = deps.standardsEvaluator.evaluate({
-            commitId: action.payload.commitId,
-            ruleText: standardsSource.ruleText,
-            files: context.files,
-            hunks: context.hunks,
-          });
-        }
-
-        listenerApi.dispatch(
-          reviewEntitiesActions.standardsEvaluated({
-            commitId: action.payload.commitId,
-            rules: standardsEvaluation.rules,
-            results: standardsEvaluation.results,
-          }),
-        );
-        listenerApi.dispatch(reviewUiActions.standardsAnalysisSucceeded());
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Failed to generate standards insights.";
         listenerApi.dispatch(
           reviewUiActions.standardsAnalysisFailed({
             errorMessage: message,
           }),
         );
       }
+    },
+  });
+
+  startListening({
+    actionCreator: analyseStandardsRequested,
+    effect: (action, listenerApi) => {
+      listenerApi.dispatch(
+        analyseCommitRequested({
+          commitId: action.payload.commitId,
+        }),
+      );
     },
   });
 

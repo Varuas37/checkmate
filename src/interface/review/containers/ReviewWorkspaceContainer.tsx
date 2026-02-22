@@ -1429,73 +1429,6 @@ export function ReviewWorkspaceContainer() {
     setIsSidebarCollapsed(false);
   }, [activeTab]);
 
-  useEffect(() => {
-    if (
-      activeTab !== "standards" ||
-      state.loadStatus !== "loaded" ||
-      !state.commit ||
-      state.standardsAnalysisStatus !== "idle"
-    ) {
-      return;
-    }
-
-    actions.refreshStandardsAnalysis();
-  }, [
-    actions,
-    activeTab,
-    state.commit,
-    state.loadStatus,
-    state.standardsAnalysisStatus,
-  ]);
-
-  useEffect(() => {
-    if (
-      activeTab !== "summary" ||
-      state.loadStatus !== "loaded" ||
-      !state.commit ||
-      state.aiAnalysisStatus !== "idle"
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    let idleId: number | null = null;
-
-    const scheduleAnalysis = () => {
-      if (cancelled) {
-        return;
-      }
-      actions.refreshAiAnalysis();
-    };
-
-    if (typeof globalThis.requestIdleCallback === "function") {
-      idleId = globalThis.requestIdleCallback(() => {
-        scheduleAnalysis();
-      });
-    } else {
-      timeoutId = globalThis.setTimeout(() => {
-        scheduleAnalysis();
-      }, 32);
-    }
-
-    return () => {
-      cancelled = true;
-      if (timeoutId !== null) {
-        globalThis.clearTimeout(timeoutId);
-      }
-      if (idleId !== null && typeof globalThis.cancelIdleCallback === "function") {
-        globalThis.cancelIdleCallback(idleId);
-      }
-    };
-  }, [
-    actions,
-    activeTab,
-    state.aiAnalysisStatus,
-    state.commit,
-    state.loadStatus,
-  ]);
-
   const windowControlsInsetClass = isMacOperatingSystem() ? "w-[6.75rem]" : "w-3";
 
   const projectAndBranchControls = (
@@ -2084,7 +2017,11 @@ export function ReviewWorkspaceContainer() {
           </Card>
         )}
         {state.standardsAnalysisStatus !== "analysing" && state.standardsAnalysisStatus !== "idle" && (
-          <StandardsPanel checks={state.standardsChecks} counts={state.standardsCounts} />
+          <StandardsPanel
+            checks={state.standardsChecks}
+            fileInsights={state.fileStandardsInsights}
+            counts={state.standardsCounts}
+          />
         )}
       </div>
     );
@@ -2118,6 +2055,7 @@ export function ReviewWorkspaceContainer() {
     state.standardsAnalysisStatus,
     state.standardsAnalysisError,
     state.standardsChecks,
+    state.fileStandardsInsights,
     state.standardsCounts,
     state.threadModels,
     state.threadCounts,
