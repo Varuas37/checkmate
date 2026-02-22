@@ -1,6 +1,7 @@
 import { Button, Input } from "../../../design-system/index.ts";
 import { cn } from "../../../shared/index.ts";
 import type { RecentProjectEntry } from "../../../shared/index.ts";
+import { APP_NAME } from "../../../shared/index.ts";
 
 export interface HomeScreenProps {
   readonly reviewerName: string;
@@ -120,7 +121,7 @@ export function HomeScreen({
             </div>
             <div className="min-w-0">
               <h1 className="truncate font-display text-[30px] font-semibold leading-tight tracking-tight text-text">
-                Welcome back to CodeLens
+                Welcome back to {APP_NAME}
               </h1>
               <p className="truncate text-sm text-muted">The review surface for AI-generated commits.</p>
             </div>

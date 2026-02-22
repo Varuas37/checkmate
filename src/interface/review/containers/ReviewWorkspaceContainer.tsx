@@ -106,6 +106,14 @@ function toLowerIncludes(value: string, query: string): boolean {
   return value.toLowerCase().includes(query.toLowerCase());
 }
 
+function isMacOperatingSystem(): boolean {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  return /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
+
 export function ReviewWorkspaceContainer() {
   const { state, actions } = useReviewWorkspace();
   const launchRequestFromLocation = useMemo(resolveLaunchRequestFromLocation, []);
@@ -1157,8 +1165,248 @@ export function ReviewWorkspaceContainer() {
     state.standardsAnalysisStatus,
   ]);
 
+  const windowBarLeftInsetClass = isMacOperatingSystem() ? "pl-[4.75rem]" : "pl-3";
+
+  const projectAndBranchControls = (
+    <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+      <div ref={projectSwitcherRef} className="relative">
+        <button
+          type="button"
+          onClick={() => {
+            setShowProjectSwitcher((current) => !current);
+            setShowBranchSwitcher(false);
+          }}
+          className="inline-flex h-7 items-center gap-1.5 rounded-sm px-1.5 text-text/90 transition-colors hover:bg-elevated/45 hover:text-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/65"
+          title={activeRepositoryPath}
+          aria-label="Open project switcher"
+        >
+          <span className="max-w-[16rem] truncate">{activeProjectName}</span>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="12"
+            height="12"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M5 7.5 10 12.5 15 7.5" />
+          </svg>
+        </button>
+
+        {showProjectSwitcher && (
+          <div className="absolute left-0 top-[calc(100%+0.45rem)] z-50 w-[30rem] max-w-[88vw] overflow-hidden rounded-lg border border-border/80 bg-surface shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
+            <div className="border-b border-border/70 p-2">
+              <p className="mb-1.5 text-[11px] text-muted">
+                Enter reuses this window, Cmd/Ctrl+Enter opens a new one.
+              </p>
+              <input
+                value={projectSwitcherQuery}
+                onChange={(event) => setProjectSwitcherQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || !firstProjectSwitcherEntry) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  if (event.metaKey || event.ctrlKey) {
+                    void openProjectFromSwitcherInNewWindow(
+                      firstProjectSwitcherEntry.repositoryPath,
+                    );
+                    return;
+                  }
+
+                  openProjectFromSwitcherInCurrentWindow(
+                    firstProjectSwitcherEntry.repositoryPath,
+                  );
+                }}
+                placeholder="Select project..."
+                className="h-9 w-full rounded-md border border-border/60 bg-canvas px-2.5 text-sm text-text outline-none transition-colors placeholder:text-muted focus:border-accent/60"
+                autoFocus
+              />
+            </div>
+
+            <div className="max-h-[16rem] overflow-y-auto">
+              {projectSwitcherEntries.length === 0 && (
+                <p className="px-3 py-3 text-sm text-muted">
+                  No matching projects.
+                </p>
+              )}
+
+              {projectSwitcherEntries.map((entry) => {
+                const isActiveProject = entry.repositoryPath === activeRepositoryPath;
+                return (
+                  <button
+                    key={entry.repositoryPath}
+                    type="button"
+                    onClick={(event) => {
+                      if (event.metaKey || event.ctrlKey) {
+                        void openProjectFromSwitcherInNewWindow(entry.repositoryPath);
+                        return;
+                      }
+
+                      openProjectFromSwitcherInCurrentWindow(entry.repositoryPath);
+                    }}
+                    className={[
+                      "w-full border-b border-border/40 px-3 py-2.5 text-left transition-colors last:border-b-0",
+                      isActiveProject ? "bg-accent/10" : "hover:bg-elevated/60",
+                    ].join(" ")}
+                    title={entry.repositoryPath}
+                  >
+                    <p className="truncate text-sm text-text">{entry.label}</p>
+                    <p className="truncate text-xs text-muted">{entry.repositoryPath}</p>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center justify-end gap-1.5 border-t border-border/70 p-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-7 px-2"
+                onClick={() => {
+                  void openProjectInCurrentWindow();
+                }}
+              >
+                Open Local Folder
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                onClick={() => {
+                  void openProjectInNewWindowWithPicker();
+                }}
+              >
+                Open in New Window
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div ref={branchSwitcherRef} className="relative">
+        <button
+          type="button"
+          onClick={() => {
+            setShowBranchSwitcher((current) => !current);
+            setShowProjectSwitcher(false);
+          }}
+          className="inline-flex h-7 items-center gap-1.5 rounded-sm px-1.5 text-muted transition-colors hover:bg-elevated/45 hover:text-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/65"
+          aria-label="Open branch switcher"
+        >
+          <span className="truncate">{activeBranchLabel}</span>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="12"
+            height="12"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M5 7.5 10 12.5 15 7.5" />
+          </svg>
+        </button>
+
+        {showBranchSwitcher && (
+          <div className="absolute left-0 top-[calc(100%+0.45rem)] z-50 w-[26rem] max-w-[86vw] overflow-hidden rounded-lg border border-border/80 bg-surface shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
+            <div className="border-b border-border/70 p-2">
+              <input
+                value={branchSwitcherQuery}
+                onChange={(event) => setBranchSwitcherQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || !firstFilteredBranch) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  selectBranchFromSwitcher(firstFilteredBranch);
+                }}
+                placeholder="Select local branch..."
+                className="h-9 w-full rounded-md border border-border/60 bg-canvas px-2.5 text-sm text-text outline-none transition-colors placeholder:text-muted focus:border-accent/60"
+                autoFocus
+              />
+            </div>
+
+            <div className="max-h-[16rem] overflow-y-auto">
+              {isBranchListLoading && (
+                <p className="px-3 py-3 text-sm text-muted">
+                  Loading local branches...
+                </p>
+              )}
+
+              {!isBranchListLoading && branchListError && (
+                <p className="px-3 py-3 text-sm text-danger">
+                  {branchListError}
+                </p>
+              )}
+
+              {!isBranchListLoading &&
+                !branchListError &&
+                filteredBranches.map((branch) => {
+                  const isCurrent = branch === activeBranch;
+                  return (
+                    <button
+                      key={branch}
+                      type="button"
+                      onClick={() => selectBranchFromSwitcher(branch)}
+                      className={[
+                        "flex w-full items-center justify-between border-b border-border/40 px-3 py-2 text-left transition-colors last:border-b-0",
+                        isCurrent ? "bg-accent/10" : "hover:bg-elevated/60",
+                      ].join(" ")}
+                    >
+                      <span className="truncate text-sm text-text">{branch}</span>
+                      {isCurrent && (
+                        <span className="rounded-sm border border-accent/50 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-accent">
+                          Current
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+
+              {!isBranchListLoading &&
+                !branchListError &&
+                filteredBranches.length === 0 && (
+                  <p className="px-3 py-3 text-sm text-muted">
+                    No matching branches.
+                  </p>
+                )}
+            </div>
+
+            <div className="flex items-center justify-end border-t border-border/70 p-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                onClick={() => {
+                  setBranchListError(null);
+                  setBranchListRefreshKey((value) => value + 1);
+                }}
+              >
+                Refresh
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   const header = (
-    <header className="border-b border-border/70 bg-surface/95">
+    <header className="bg-surface/85 backdrop-blur-sm">
+      <div className={`flex h-11 items-center gap-2 bg-transparent pr-3 ${windowBarLeftInsetClass}`}>
+        {projectAndBranchControls}
+        <div className="h-full min-w-0 flex-1" data-tauri-drag-region />
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -1173,237 +1421,9 @@ export function ReviewWorkspaceContainer() {
           <p className="truncate text-sm font-semibold tracking-tight text-text">
             {state.commit ? state.commit.title : "Code Review Workspace"}
           </p>
-          <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
-            <div ref={projectSwitcherRef} className="relative">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowProjectSwitcher((current) => !current);
-                  setShowBranchSwitcher(false);
-                }}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-canvas px-2 text-text transition-colors hover:border-accent/55 hover:text-accent"
-                title={activeRepositoryPath}
-                aria-label="Open project switcher"
-              >
-                <span className="max-w-[16rem] truncate">{activeProjectName}</span>
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M5 7.5 10 12.5 15 7.5" />
-                </svg>
-              </button>
-
-              {showProjectSwitcher && (
-                <div className="absolute left-0 top-[calc(100%+0.45rem)] z-50 w-[30rem] max-w-[88vw] overflow-hidden rounded-lg border border-border/80 bg-surface shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
-                  <div className="border-b border-border/70 p-2">
-                    <p className="mb-1.5 text-[11px] text-muted">
-                      Enter reuses this window, Cmd/Ctrl+Enter opens a new one.
-                    </p>
-                    <input
-                      value={projectSwitcherQuery}
-                      onChange={(event) => setProjectSwitcherQuery(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter" || !firstProjectSwitcherEntry) {
-                          return;
-                        }
-
-                        event.preventDefault();
-                        if (event.metaKey || event.ctrlKey) {
-                          void openProjectFromSwitcherInNewWindow(
-                            firstProjectSwitcherEntry.repositoryPath,
-                          );
-                          return;
-                        }
-
-                        openProjectFromSwitcherInCurrentWindow(
-                          firstProjectSwitcherEntry.repositoryPath,
-                        );
-                      }}
-                      placeholder="Select project..."
-                      className="h-9 w-full rounded-md border border-border/60 bg-canvas px-2.5 text-sm text-text outline-none transition-colors placeholder:text-muted focus:border-accent/60"
-                      autoFocus
-                    />
-                  </div>
-
-                  <div className="max-h-[16rem] overflow-y-auto">
-                    {projectSwitcherEntries.length === 0 && (
-                      <p className="px-3 py-3 text-sm text-muted">
-                        No matching projects.
-                      </p>
-                    )}
-
-                    {projectSwitcherEntries.map((entry) => {
-                      const isActiveProject = entry.repositoryPath === activeRepositoryPath;
-                      return (
-                        <button
-                          key={entry.repositoryPath}
-                          type="button"
-                          onClick={(event) => {
-                            if (event.metaKey || event.ctrlKey) {
-                              void openProjectFromSwitcherInNewWindow(entry.repositoryPath);
-                              return;
-                            }
-
-                            openProjectFromSwitcherInCurrentWindow(entry.repositoryPath);
-                          }}
-                          className={[
-                            "w-full border-b border-border/40 px-3 py-2.5 text-left transition-colors last:border-b-0",
-                            isActiveProject ? "bg-accent/10" : "hover:bg-elevated/60",
-                          ].join(" ")}
-                          title={entry.repositoryPath}
-                        >
-                          <p className="truncate text-sm text-text">{entry.label}</p>
-                          <p className="truncate text-xs text-muted">{entry.repositoryPath}</p>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <div className="flex items-center justify-end gap-1.5 border-t border-border/70 p-2">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      className="h-7 px-2"
-                      onClick={() => {
-                        void openProjectInCurrentWindow();
-                      }}
-                    >
-                      Open Local Folder
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2"
-                      onClick={() => {
-                        void openProjectInNewWindowWithPicker();
-                      }}
-                    >
-                      Open in New Window
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div ref={branchSwitcherRef} className="relative">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowBranchSwitcher((current) => !current);
-                  setShowProjectSwitcher(false);
-                }}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-canvas px-2 text-text transition-colors hover:border-accent/55 hover:text-accent"
-                aria-label="Open branch switcher"
-              >
-                <span className="truncate">{activeBranchLabel}</span>
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M5 7.5 10 12.5 15 7.5" />
-                </svg>
-              </button>
-
-              {showBranchSwitcher && (
-                <div className="absolute left-0 top-[calc(100%+0.45rem)] z-50 w-[26rem] max-w-[86vw] overflow-hidden rounded-lg border border-border/80 bg-surface shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
-                  <div className="border-b border-border/70 p-2">
-                    <input
-                      value={branchSwitcherQuery}
-                      onChange={(event) => setBranchSwitcherQuery(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter" || !firstFilteredBranch) {
-                          return;
-                        }
-
-                        event.preventDefault();
-                        selectBranchFromSwitcher(firstFilteredBranch);
-                      }}
-                      placeholder="Select local branch..."
-                      className="h-9 w-full rounded-md border border-border/60 bg-canvas px-2.5 text-sm text-text outline-none transition-colors placeholder:text-muted focus:border-accent/60"
-                      autoFocus
-                    />
-                  </div>
-
-                  <div className="max-h-[16rem] overflow-y-auto">
-                    {isBranchListLoading && (
-                      <p className="px-3 py-3 text-sm text-muted">
-                        Loading local branches...
-                      </p>
-                    )}
-
-                    {!isBranchListLoading && branchListError && (
-                      <p className="px-3 py-3 text-sm text-danger">
-                        {branchListError}
-                      </p>
-                    )}
-
-                    {!isBranchListLoading &&
-                      !branchListError &&
-                      filteredBranches.map((branch) => {
-                        const isCurrent = branch === activeBranch;
-                        return (
-                          <button
-                            key={branch}
-                            type="button"
-                            onClick={() => selectBranchFromSwitcher(branch)}
-                            className={[
-                              "flex w-full items-center justify-between border-b border-border/40 px-3 py-2 text-left transition-colors last:border-b-0",
-                              isCurrent ? "bg-accent/10" : "hover:bg-elevated/60",
-                            ].join(" ")}
-                          >
-                            <span className="truncate text-sm text-text">{branch}</span>
-                            {isCurrent && (
-                              <span className="rounded-sm border border-accent/50 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-accent">
-                                Current
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-
-                    {!isBranchListLoading &&
-                      !branchListError &&
-                      filteredBranches.length === 0 && (
-                        <p className="px-3 py-3 text-sm text-muted">
-                          No matching branches.
-                        </p>
-                      )}
-                  </div>
-
-                  <div className="flex items-center justify-end border-t border-border/70 p-2">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2"
-                      onClick={() => {
-                        setBranchListError(null);
-                        setBranchListRefreshKey((value) => value + 1);
-                      }}
-                    >
-                      Refresh
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          <p className="truncate font-mono text-[11px] text-muted" title={activeRepositoryPath}>
+            {activeRepositoryPath}
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">

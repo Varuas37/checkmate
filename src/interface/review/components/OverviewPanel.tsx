@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import {
   Badge,
@@ -24,8 +24,13 @@ export interface OverviewPanelProps {
   readonly aiAnalysisStatus: "idle" | "analysing" | "analysed" | "error";
   readonly sequenceGenerationStatus: "idle" | "generating" | "ready" | "error";
   readonly sequenceGenerationError: string | null;
+  readonly sequenceViewMode: "compact" | "expanded";
   readonly onRefreshAiAnalysis: () => void;
   readonly onRetrySequenceGeneration: () => void;
+  readonly onOpenSequenceExplorer: () => void;
+  readonly onCloseSequenceExplorer: () => void;
+  readonly onOpenSequenceFilesInExplorer: (fileIds: readonly string[]) => void;
+  readonly sequenceExpandedSidePanel?: ReactNode;
   readonly highlightedFileIds: readonly string[];
   readonly onSelectFiles: (selection: {
     readonly fileIds: readonly string[];
@@ -59,8 +64,13 @@ export function OverviewPanel({
   aiAnalysisStatus,
   sequenceGenerationStatus,
   sequenceGenerationError,
+  sequenceViewMode,
   onRefreshAiAnalysis,
   onRetrySequenceGeneration,
+  onOpenSequenceExplorer,
+  onCloseSequenceExplorer,
+  onOpenSequenceFilesInExplorer,
+  sequenceExpandedSidePanel,
   highlightedFileIds,
   onSelectFiles,
 }: OverviewPanelProps) {
@@ -77,6 +87,33 @@ export function OverviewPanel({
   const totalAdditions = architectureClusters.reduce((count, cluster) => count + cluster.additions, 0);
   const totalDeletions = architectureClusters.reduce((count, cluster) => count + cluster.deletions, 0);
   const totalFiles = architectureClusters.reduce((count, cluster) => count + cluster.fileCount, 0);
+  const handleSequenceSelection = (fileIds: readonly string[]) => {
+    onSelectFiles({
+      fileIds,
+      label: "Sequence focus",
+    });
+  };
+
+  if (sequenceViewMode === "expanded") {
+    return (
+      <div className="h-full min-h-0 overflow-hidden p-2 xl:p-3">
+        <div className="h-full min-h-0 overflow-hidden rounded-md border border-border/50 bg-transparent">
+          <CodeSequenceDiagramPanel
+            steps={codeSequenceSteps}
+            sequenceGenerationStatus={sequenceGenerationStatus}
+            sequenceGenerationError={sequenceGenerationError}
+            onRetrySequenceGeneration={onRetrySequenceGeneration}
+            highlightedFileIds={highlightedFileIds}
+            onSelectFiles={handleSequenceSelection}
+            mode="expanded"
+            onCloseExpanded={onCloseSequenceExplorer}
+            onOpenExpandedFiles={onOpenSequenceFilesInExplorer}
+            expandedSidePanel={sequenceExpandedSidePanel}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full overflow-auto">
@@ -356,12 +393,8 @@ export function OverviewPanel({
             sequenceGenerationError={sequenceGenerationError}
             onRetrySequenceGeneration={onRetrySequenceGeneration}
             highlightedFileIds={highlightedFileIds}
-            onSelectFiles={(fileIds) =>
-              onSelectFiles({
-                fileIds,
-                label: "Sequence focus",
-              })
-            }
+            onSelectFiles={handleSequenceSelection}
+            onExpand={onOpenSequenceExplorer}
           />
         </div>
 
