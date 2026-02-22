@@ -1,0 +1,19 @@
+import { TabButton } from "../../../design-system/index.ts";
+
+import type { ReviewTabId, ReviewTabOption } from "../types.ts";
+
+export interface TopTabsProps {
+  readonly tabs: readonly ReviewTabOption[];
+  readonly activeTab: ReviewTabId;
+  readonly onChange: (tabId: ReviewTabId) => void;
+}
+
+export function TopTabs({ tabs, activeTab, onChange }: TopTabsProps) {
+  return (
+    <nav className="flex w-full gap-2 overflow-x-auto pb-1">
+      {tabs.map((tab) => (
+        <TabButton key={tab.id} label={tab.label} active={tab.id === activeTab} onClick={() => onChange(tab.id)} />
+      ))}
+    </nav>
+  );
+}

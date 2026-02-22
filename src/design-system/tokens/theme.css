@@ -1,0 +1,23 @@
+:root {
+  --font-display: "Space Grotesk";
+  --font-body: "Manrope";
+  --font-mono: "IBM Plex Mono";
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+
+  --color-canvas: 210 33% 97%;
+  --color-surface: 0 0% 100%;
+  --color-surface-elevated: 209 48% 94%;
+  --color-border: 212 25% 83%;
+  --color-text: 220 35% 16%;
+  --color-muted: 218 13% 40%;
+  --color-accent: 197 91% 39%;
+  --color-accent-contrast: 0 0% 100%;
+  --color-positive: 153 65% 33%;
+  --color-caution: 37 88% 42%;
+  --color-danger: 7 74% 45%;
+
+  --shadow-soft: 0 10px 30px hsl(var(--color-text) / 0.08);
+}
