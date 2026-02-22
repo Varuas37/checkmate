@@ -38,32 +38,74 @@ function lineKindClass(kind: DiffLineKind): string {
 }
 
 function renderSplitLine(hunkId: string, rowIndex: number, line: DiffHunk["lines"][number]) {
-  const hasOld = line.kind !== "add";
-  const hasNew = line.kind !== "remove";
+  const isAdded = line.kind === "add";
+  const isRemoved = line.kind === "remove";
+  const isContext = line.kind === "context";
 
   return (
     <div
       key={`${hunkId}-${rowIndex}`}
-      className="grid grid-cols-[3rem_minmax(0,1fr)_3rem_minmax(0,1fr)] border-b border-border/60 font-mono text-[11px] leading-[1.35]"
+      className="flex border-b border-border/50 font-mono text-[11px] leading-6"
     >
-      <div className="border-r border-border/40 px-1.5 py-0.5 text-right text-muted">{hasOld ? line.oldLineNumber : ""}</div>
-      <pre
+      <div
         className={cn(
-          "min-w-0 overflow-x-auto border-r border-border/40 px-2 py-0.5 whitespace-pre-wrap",
-          hasOld ? lineKindClass(line.kind) : "bg-surface text-muted",
+          "flex w-1/2 min-w-0 border-r border-border/50",
+          isRemoved && "bg-danger/10",
+          isAdded && "bg-canvas",
         )}
       >
-        {hasOld ? line.text : ""}
-      </pre>
-      <div className="border-r border-border/40 px-1.5 py-0.5 text-right text-muted">{hasNew ? line.newLineNumber : ""}</div>
-      <pre
+        <span className="w-12 shrink-0 select-none border-r border-border/40 px-2 text-right text-muted/80">
+          {isAdded ? "" : line.oldLineNumber ?? ""}
+        </span>
+        <span
+          className={cn(
+            "w-6 shrink-0 select-none border-r border-border/40 px-1 text-center",
+            isRemoved && "bg-danger/15 text-danger",
+          )}
+        >
+          {isRemoved ? "-" : isContext ? " " : ""}
+        </span>
+        <pre
+          className={cn(
+            "min-w-0 flex-1 overflow-x-auto px-2 whitespace-pre",
+            isRemoved && "text-danger",
+            isContext && "text-text/75",
+            isAdded && "text-transparent",
+          )}
+        >
+          {isAdded ? "" : line.text}
+        </pre>
+      </div>
+
+      <div
         className={cn(
-          "min-w-0 overflow-x-auto px-2 py-0.5 whitespace-pre-wrap",
-          hasNew ? lineKindClass(line.kind) : "bg-surface text-muted",
+          "flex w-1/2 min-w-0",
+          isAdded && "bg-positive/10",
+          isRemoved && "bg-canvas",
         )}
       >
-        {hasNew ? line.text : ""}
-      </pre>
+        <span className="w-12 shrink-0 select-none border-r border-border/40 px-2 text-right text-muted/80">
+          {isRemoved ? "" : line.newLineNumber ?? ""}
+        </span>
+        <span
+          className={cn(
+            "w-6 shrink-0 select-none border-r border-border/40 px-1 text-center",
+            isAdded && "bg-positive/15 text-positive",
+          )}
+        >
+          {isAdded ? "+" : isContext ? " " : ""}
+        </span>
+        <pre
+          className={cn(
+            "min-w-0 flex-1 overflow-x-auto px-2 whitespace-pre",
+            isAdded && "text-positive",
+            isContext && "text-text/75",
+            isRemoved && "text-transparent",
+          )}
+        >
+          {isRemoved ? "" : line.text}
+        </pre>
+      </div>
     </div>
   );
 }
@@ -74,12 +116,12 @@ function renderUnifiedLine(hunkId: string, rowIndex: number, line: DiffHunk["lin
   return (
     <div
       key={`${hunkId}-${rowIndex}`}
-      className="grid grid-cols-[3rem_3rem_auto_minmax(0,1fr)] border-b border-border/60 font-mono text-[11px] leading-[1.35]"
+      className="grid grid-cols-[3rem_3rem_1.5rem_minmax(0,1fr)] border-b border-border/50 font-mono text-[11px] leading-6"
     >
-      <div className="border-r border-border/40 px-1.5 py-0.5 text-right text-muted">{line.oldLineNumber ?? ""}</div>
-      <div className="border-r border-border/40 px-1.5 py-0.5 text-right text-muted">{line.newLineNumber ?? ""}</div>
-      <div className={cn("border-r border-border/40 px-2 py-0.5 text-center", lineKindClass(line.kind))}>{marker}</div>
-      <pre className={cn("min-w-0 overflow-x-auto px-2 py-0.5 whitespace-pre-wrap", lineKindClass(line.kind))}>{line.text}</pre>
+      <div className="border-r border-border/40 px-2 text-right text-muted/80">{line.oldLineNumber ?? ""}</div>
+      <div className="border-r border-border/40 px-2 text-right text-muted/80">{line.newLineNumber ?? ""}</div>
+      <div className={cn("border-r border-border/40 px-1 text-center", lineKindClass(line.kind))}>{marker}</div>
+      <pre className={cn("min-w-0 overflow-x-auto px-2 whitespace-pre", lineKindClass(line.kind))}>{line.text}</pre>
     </div>
   );
 }
@@ -87,7 +129,7 @@ function renderUnifiedLine(hunkId: string, rowIndex: number, line: DiffHunk["lin
 export function DiffViewer({ file, hunks, orientation, onOrientationChange }: DiffViewerProps) {
   return (
     <Card className="flex h-full min-h-[28rem] flex-col">
-      <CardHeader className="shrink-0 border-b border-border bg-elevated/35 px-3 py-2.5">
+      <CardHeader className="shrink-0 border-b border-border bg-elevated/35 px-3 py-2">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <CardTitle className="text-sm">Files Diff</CardTitle>
@@ -149,7 +191,14 @@ export function DiffViewer({ file, hunks, orientation, onOrientationChange }: Di
               <p className="truncate font-mono text-[11px] text-muted">{hunk.header}</p>
             </div>
 
-            <div>
+            {orientation === "split" && (
+              <div className="grid grid-cols-2 border-b border-border/50 bg-surface-subtle/60 text-[10px] uppercase tracking-[0.08em] text-muted">
+                <p className="border-r border-border/40 px-3 py-1.5">Old</p>
+                <p className="px-3 py-1.5">New</p>
+              </div>
+            )}
+
+            <div className="overflow-x-auto">
               {orientation === "split"
                 ? hunk.lines.map((line, rowIndex) => renderSplitLine(hunk.id, rowIndex, line))
                 : hunk.lines.map((line, rowIndex) => renderUnifiedLine(hunk.id, rowIndex, line))}
