@@ -13,10 +13,104 @@ const CM_APP_BUNDLE_IDENTIFIER: &str = "sh.checkmate.desktop";
 const CM_APP_NAME: &str = "checkmate.sh";
 const AGENT_TRACKING_BLOCK_START: &str = "<!-- checkmate:tracking:start -->";
 const AGENT_TRACKING_BLOCK_END: &str = "<!-- checkmate:tracking:end -->";
+const AGENT_TRACKING_SCHEMA_RELATIVE_PATH: &str = ".checkmate/commit_context.schema.json";
+const AGENT_TRACKING_SCHEMA_MANAGED_MARKER: &str = "\"x-checkmate-managed\": true";
 const AGENT_TRACKING_BLOCK_BODY: &str = r#"## Checkmate Tracking (added by checkmate.sh)
-- Preserve commit rationale and key decisions for each meaningful change.
-- Include validation evidence (tests/checks) and any known risks.
-- For AI-authored edits, keep a short "why this change exists" summary for reviewers."#;
+- Required schema: `.checkmate/commit_context.schema.json` (`checkmate.commit_context.v1`).
+- For each meaningful commit, store `.checkmate/commit_context/<commit_sha>.json`.
+- Required fields:
+  - `schema_version`, `commit_sha`, `branch`, `title`
+  - `rationale`
+  - `change_summary[]` with `file`, `intent`, `risk`
+  - `validation[]` with `name`, `result`, `evidence`
+  - `agent_context` with `tool`, `session_id`, `prompt_summary`
+  - `open_questions[]` and `follow_ups[]`
+- Preserve validation evidence and known risks for reviewers."#;
+const AGENT_TRACKING_SCHEMA_JSON: &str = r#"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Checkmate Commit Context",
+  "description": "Structured rationale and validation metadata for a commit.",
+  "type": "object",
+  "x-checkmate-managed": true,
+  "properties": {
+    "schema_version": {
+      "const": "checkmate.commit_context.v1"
+    },
+    "commit_sha": {
+      "type": "string",
+      "minLength": 1
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "change_summary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": { "type": "string", "minLength": 1 },
+          "intent": { "type": "string", "minLength": 1 },
+          "risk": { "type": "string", "enum": ["low", "medium", "high"] }
+        },
+        "required": ["file", "intent", "risk"],
+        "additionalProperties": false
+      }
+    },
+    "validation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "result": { "type": "string", "enum": ["pass", "fail", "not_run"] },
+          "evidence": { "type": "string" }
+        },
+        "required": ["name", "result", "evidence"],
+        "additionalProperties": false
+      }
+    },
+    "agent_context": {
+      "type": "object",
+      "properties": {
+        "tool": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "prompt_summary": { "type": "string", "minLength": 1 }
+      },
+      "required": ["tool", "session_id", "prompt_summary"],
+      "additionalProperties": false
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "follow_ups": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "required": [
+    "schema_version",
+    "commit_sha",
+    "branch",
+    "title",
+    "rationale",
+    "change_summary",
+    "validation",
+    "agent_context",
+    "open_questions",
+    "follow_ups"
+  ],
+  "additionalProperties": false
+}"#;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +147,8 @@ pub struct AgentTrackingInitializationResult {
     pub agent_file_updated: bool,
     pub claude_file_created: bool,
     pub claude_file_updated: bool,
+    pub schema_file_created: bool,
+    pub schema_file_updated: bool,
     pub message: String,
 }
 
@@ -724,6 +820,36 @@ fn ensure_claude_agent_reference(repository_path: &Path) -> Result<(bool, bool),
     Ok((false, true))
 }
 
+fn ensure_commit_context_schema_file(repository_path: &Path) -> Result<(bool, bool), String> {
+    let schema_path = repository_path.join(AGENT_TRACKING_SCHEMA_RELATIVE_PATH);
+
+    if let Some(parent) = schema_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {}", parent.display(), error))?;
+    }
+
+    if !schema_path.exists() {
+        std::fs::write(&schema_path, AGENT_TRACKING_SCHEMA_JSON)
+            .map_err(|error| format!("Failed to write {}: {}", schema_path.display(), error))?;
+        return Ok((true, false));
+    }
+
+    let existing = std::fs::read_to_string(&schema_path)
+        .map_err(|error| format!("Failed to read {}: {}", schema_path.display(), error))?;
+
+    if existing.trim() == AGENT_TRACKING_SCHEMA_JSON.trim() {
+        return Ok((false, false));
+    }
+
+    if existing.contains(AGENT_TRACKING_SCHEMA_MANAGED_MARKER) {
+        std::fs::write(&schema_path, AGENT_TRACKING_SCHEMA_JSON)
+            .map_err(|error| format!("Failed to update {}: {}", schema_path.display(), error))?;
+        return Ok((false, true));
+    }
+
+    Ok((false, false))
+}
+
 fn cm_script_contents() -> String {
     format!(
         r#"#!/usr/bin/env bash
@@ -859,8 +985,23 @@ BLOCK
     printf '\n@AGENT.md\n' >> "$claude_file"
   }}
 
+  ensure_schema_file() {{
+    local schema_dir="$REPO_PATH/.checkmate"
+    local schema_file="$schema_dir/commit_context.schema.json"
+    mkdir -p "$schema_dir"
+
+    if [[ -f "$schema_file" ]] && ! grep -Fq '{schema_managed_marker}' "$schema_file"; then
+      return
+    fi
+
+    cat <<'SCHEMA' > "$schema_file"
+{commit_context_schema}
+SCHEMA
+  }}
+
   ensure_agent_file
   ensure_claude_file
+  ensure_schema_file
   echo "cm: tracking initialized for $REPO_PATH"
   exit 0
 fi
@@ -873,6 +1014,8 @@ fi
         agent_block_start = AGENT_TRACKING_BLOCK_START,
         agent_block_body = AGENT_TRACKING_BLOCK_BODY,
         agent_block_end = AGENT_TRACKING_BLOCK_END,
+        schema_managed_marker = AGENT_TRACKING_SCHEMA_MANAGED_MARKER,
+        commit_context_schema = AGENT_TRACKING_SCHEMA_JSON,
         bundle_id = CM_APP_BUNDLE_IDENTIFIER,
         app_name = CM_APP_NAME
     )
@@ -1184,30 +1327,44 @@ fn initialize_agent_tracking(
     let (agent_file_created, agent_file_updated) = ensure_agent_tracking_file(&repository_path)?;
     let (claude_file_created, claude_file_updated) =
         ensure_claude_agent_reference(&repository_path)?;
+    let (schema_file_created, schema_file_updated) =
+        ensure_commit_context_schema_file(&repository_path)?;
 
-    let message =
-        if agent_file_created || agent_file_updated || claude_file_created || claude_file_updated {
-            let mut changes: Vec<String> = Vec::new();
-            if agent_file_created {
-                changes.push("created AGENT.md".to_string());
-            } else if agent_file_updated {
-                changes.push("updated AGENT.md".to_string());
-            }
-            if claude_file_created {
-                changes.push("created CLAUDE.md".to_string());
-            } else if claude_file_updated {
-                changes.push("updated CLAUDE.md".to_string());
-            }
-            format!("Tracking initialized: {}.", changes.join(", "))
-        } else {
-            "Tracking already initialized (AGENT.md and CLAUDE.md are up to date).".to_string()
-        };
+    let message = if agent_file_created
+        || agent_file_updated
+        || claude_file_created
+        || claude_file_updated
+        || schema_file_created
+        || schema_file_updated
+    {
+        let mut changes: Vec<String> = Vec::new();
+        if agent_file_created {
+            changes.push("created AGENT.md".to_string());
+        } else if agent_file_updated {
+            changes.push("updated AGENT.md".to_string());
+        }
+        if claude_file_created {
+            changes.push("created CLAUDE.md".to_string());
+        } else if claude_file_updated {
+            changes.push("updated CLAUDE.md".to_string());
+        }
+        if schema_file_created {
+            changes.push(format!("created {}", AGENT_TRACKING_SCHEMA_RELATIVE_PATH));
+        } else if schema_file_updated {
+            changes.push(format!("updated {}", AGENT_TRACKING_SCHEMA_RELATIVE_PATH));
+        }
+        format!("Tracking initialized: {}.", changes.join(", "))
+    } else {
+        "Tracking already initialized (AGENT.md, CLAUDE.md, and commit context schema are up to date).".to_string()
+    };
 
     Ok(AgentTrackingInitializationResult {
         agent_file_created,
         agent_file_updated,
         claude_file_created,
         claude_file_updated,
+        schema_file_created,
+        schema_file_updated,
         message,
     })
 }

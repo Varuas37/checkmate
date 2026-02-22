@@ -62,6 +62,31 @@ Use these standards as the default quality baseline for commit reviews when a pr
 15. Document non-obvious tradeoffs, constraints, and security considerations in code or docs.
 `;
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  return new Promise<T>((resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+        }
+        resolve(value);
+      },
+      (error) => {
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+        }
+        reject(error);
+      },
+    );
+  });
+}
+
 export interface ReviewListenerDependencies {
   readonly reviewDataSource: CommitReviewDataSource;
   readonly standardsEvaluator: StandardsEvaluator;
@@ -242,17 +267,25 @@ export function createReviewListenerMiddleware(
       listenerApi.dispatch(reviewUiActions.markLoadStarted());
 
       try {
-        const repositoryCommitsPromise = deps.reviewDataSource
-          .listRepositoryCommits({
-            repositoryPath: action.payload.repositoryPath,
-            limit: 120,
-          })
-          .catch(() => []);
+        const repositoryCommitsPromise = withTimeout(
+          deps.reviewDataSource
+            .listRepositoryCommits({
+              repositoryPath: action.payload.repositoryPath,
+              limit: 120,
+            })
+            .catch(() => []),
+          15_000,
+          "Timed out while listing repository commits.",
+        ).catch(() => []);
 
-        const aggregate = await deps.reviewDataSource.loadCommitReview({
-          repositoryPath: action.payload.repositoryPath,
-          commitSha: action.payload.commitSha,
-        });
+        const aggregate = await withTimeout(
+          deps.reviewDataSource.loadCommitReview({
+            repositoryPath: action.payload.repositoryPath,
+            commitSha: action.payload.commitSha,
+          }),
+          45_000,
+          "Timed out while loading commit review data. Verify the desktop backend is running.",
+        );
         const repositoryCommits = await repositoryCommitsPromise;
 
         listenerApi.dispatch(reviewEntitiesActions.hydrateFromAggregate(aggregate));

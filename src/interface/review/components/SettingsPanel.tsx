@@ -478,7 +478,8 @@ export function SettingsPanel({
                 <p className="text-xs text-muted">
                   Ensures <code className="font-mono">AGENT.md</code> exists, and{" "}
                   <code className="font-mono">CLAUDE.md</code> includes{" "}
-                  <code className="font-mono">@AGENT.md</code>.
+                  <code className="font-mono">@AGENT.md</code>, and writes{" "}
+                  <code className="font-mono">.checkmate/commit_context.schema.json</code>.
                 </p>
               </div>
             </section>

@@ -20,6 +20,8 @@ export interface AgentTrackingInitializationResult {
   readonly agentFileUpdated: boolean;
   readonly claudeFileCreated: boolean;
   readonly claudeFileUpdated: boolean;
+  readonly schemaFileCreated: boolean;
+  readonly schemaFileUpdated: boolean;
   readonly message: string;
 }
 
@@ -119,6 +121,8 @@ export async function initializeAgentTracking(
     agentFileUpdated: Boolean(response.agentFileUpdated),
     claudeFileCreated: Boolean(response.claudeFileCreated),
     claudeFileUpdated: Boolean(response.claudeFileUpdated),
+    schemaFileCreated: Boolean(response.schemaFileCreated),
+    schemaFileUpdated: Boolean(response.schemaFileUpdated),
     message: response.message.trim(),
   };
 }

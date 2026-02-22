@@ -54,8 +54,14 @@ Keep handoff concise and actionable:
 
 <!-- checkmate:tracking:start -->
 ## Checkmate Tracking (added by checkmate.sh)
-- Preserve commit rationale and key decisions for each meaningful change.
-- Include validation evidence (tests/checks) and any known risks.
-- For AI-authored edits, keep a short "why this change exists" summary for reviewers.
+- Required schema: `.checkmate/commit_context.schema.json` (`checkmate.commit_context.v1`).
+- For each meaningful commit, store `.checkmate/commit_context/<commit_sha>.json`.
+- Required fields:
+  - `schema_version`, `commit_sha`, `branch`, `title`
+  - `rationale`
+  - `change_summary[]` with `file`, `intent`, `risk`
+  - `validation[]` with `name`, `result`, `evidence`
+  - `agent_context` with `tool`, `session_id`, `prompt_summary`
+  - `open_questions[]` and `follow_ups[]`
+- Preserve validation evidence and known risks for reviewers.
 <!-- checkmate:tracking:end -->
-

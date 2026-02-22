@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Checkmate Commit Context",
+  "description": "Structured rationale and validation metadata for a commit.",
+  "type": "object",
+  "x-checkmate-managed": true,
+  "properties": {
+    "schema_version": {
+      "const": "checkmate.commit_context.v1"
+    },
+    "commit_sha": {
+      "type": "string",
+      "minLength": 1
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "change_summary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": { "type": "string", "minLength": 1 },
+          "intent": { "type": "string", "minLength": 1 },
+          "risk": { "type": "string", "enum": ["low", "medium", "high"] }
+        },
+        "required": ["file", "intent", "risk"],
+        "additionalProperties": false
+      }
+    },
+    "validation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "result": { "type": "string", "enum": ["pass", "fail", "not_run"] },
+          "evidence": { "type": "string" }
+        },
+        "required": ["name", "result", "evidence"],
+        "additionalProperties": false
+      }
+    },
+    "agent_context": {
+      "type": "object",
+      "properties": {
+        "tool": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "prompt_summary": { "type": "string", "minLength": 1 }
+      },
+      "required": ["tool", "session_id", "prompt_summary"],
+      "additionalProperties": false
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "follow_ups": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "required": [
+    "schema_version",
+    "commit_sha",
+    "branch",
+    "title",
+    "rationale",
+    "change_summary",
+    "validation",
+    "agent_context",
+    "open_questions",
+    "follow_ups"
+  ],
+  "additionalProperties": false
+}
