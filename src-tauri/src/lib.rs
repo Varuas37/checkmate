@@ -11,6 +11,12 @@ const WORKTREE_COMMIT_REFERENCE: &str = "WORKTREE";
 const CM_COMMAND_NAME: &str = "cm";
 const CM_APP_BUNDLE_IDENTIFIER: &str = "sh.checkmate.desktop";
 const CM_APP_NAME: &str = "checkmate.sh";
+const AGENT_TRACKING_BLOCK_START: &str = "<!-- checkmate:tracking:start -->";
+const AGENT_TRACKING_BLOCK_END: &str = "<!-- checkmate:tracking:end -->";
+const AGENT_TRACKING_BLOCK_BODY: &str = r#"## Checkmate Tracking (added by checkmate.sh)
+- Preserve commit rationale and key decisions for each meaningful change.
+- Include validation evidence (tests/checks) and any known risks.
+- For AI-authored edits, keep a short "why this change exists" summary for reviewers."#;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +44,16 @@ pub struct CmCliStatus {
     pub installed: bool,
     pub install_path: Option<String>,
     pub on_path: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTrackingInitializationResult {
+    pub agent_file_created: bool,
+    pub agent_file_updated: bool,
+    pub claude_file_created: bool,
+    pub claude_file_updated: bool,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -626,47 +642,165 @@ fn ensure_path_entry_in_shell_profile(directory: &Path) -> Result<bool, String> 
     Ok(true)
 }
 
+fn append_text_block(existing: &str, block: &str) -> String {
+    let mut updated = existing.to_string();
+
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+
+    if !updated.trim().is_empty() {
+        updated.push('\n');
+    }
+
+    updated.push_str(block);
+
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+
+    updated
+}
+
+fn tracking_block() -> String {
+    format!(
+        "{}\n{}\n{}",
+        AGENT_TRACKING_BLOCK_START, AGENT_TRACKING_BLOCK_BODY, AGENT_TRACKING_BLOCK_END
+    )
+}
+
+fn ensure_agent_tracking_file(repository_path: &Path) -> Result<(bool, bool), String> {
+    let agent_path = repository_path.join("AGENT.md");
+    let block = tracking_block();
+
+    if !agent_path.exists() {
+        let content = format!("# AGENT.md\n\n{}\n", block);
+        std::fs::write(&agent_path, content)
+            .map_err(|error| format!("Failed to write {}: {}", agent_path.display(), error))?;
+        return Ok((true, false));
+    }
+
+    let existing = std::fs::read_to_string(&agent_path)
+        .map_err(|error| format!("Failed to read {}: {}", agent_path.display(), error))?;
+
+    if existing.contains(AGENT_TRACKING_BLOCK_START) && existing.contains(AGENT_TRACKING_BLOCK_END)
+    {
+        return Ok((false, false));
+    }
+
+    let updated = append_text_block(&existing, &block);
+    std::fs::write(&agent_path, updated)
+        .map_err(|error| format!("Failed to update {}: {}", agent_path.display(), error))?;
+
+    Ok((false, true))
+}
+
+fn contains_agent_reference(content: &str) -> bool {
+    content
+        .lines()
+        .any(|line| line.to_ascii_lowercase().contains("@agent.md"))
+}
+
+fn ensure_claude_agent_reference(repository_path: &Path) -> Result<(bool, bool), String> {
+    let claude_path = repository_path.join("CLAUDE.md");
+
+    if !claude_path.exists() {
+        std::fs::write(&claude_path, "@AGENT.md\n")
+            .map_err(|error| format!("Failed to write {}: {}", claude_path.display(), error))?;
+        return Ok((true, false));
+    }
+
+    let existing = std::fs::read_to_string(&claude_path)
+        .map_err(|error| format!("Failed to read {}: {}", claude_path.display(), error))?;
+
+    if contains_agent_reference(&existing) {
+        return Ok((false, false));
+    }
+
+    let updated = append_text_block(&existing, "@AGENT.md");
+    std::fs::write(&claude_path, updated)
+        .map_err(|error| format!("Failed to update {}: {}", claude_path.display(), error))?;
+
+    Ok((false, true))
+}
+
 fn cm_script_contents() -> String {
     format!(
         r#"#!/usr/bin/env bash
 set -euo pipefail
 
+MODE="open"
+if [[ $# -gt 0 && "$1" == "init" ]]; then
+  MODE="init"
+  shift
+fi
+
 TARGET_PATH="."
 COMMIT_REF="HEAD"
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --draft|--worktree|-d)
-      COMMIT_REF="{worktree_ref}"
-      shift
-      ;;
-    --commit)
-      if [[ $# -lt 2 ]]; then
-        echo "cm: missing value for --commit" >&2
-        exit 1
-      fi
-      COMMIT_REF="$2"
-      shift 2
-      ;;
-    -h|--help)
-      cat <<'USAGE'
+if [[ "$MODE" == "init" ]]; then
+  INIT_PATH_SET=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        cat <<'USAGE'
+Usage:
+  cm init [path]
+
+Examples:
+  cm init
+  cm init .
+USAGE
+        exit 0
+        ;;
+      *)
+        if [[ $INIT_PATH_SET -eq 1 ]]; then
+          echo "cm: too many arguments for init" >&2
+          exit 1
+        fi
+        TARGET_PATH="$1"
+        INIT_PATH_SET=1
+        shift
+        ;;
+    esac
+  done
+else
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --draft|--worktree|-d)
+        COMMIT_REF="{worktree_ref}"
+        shift
+        ;;
+      --commit)
+        if [[ $# -lt 2 ]]; then
+          echo "cm: missing value for --commit" >&2
+          exit 1
+        fi
+        COMMIT_REF="$2"
+        shift 2
+        ;;
+      -h|--help)
+        cat <<'USAGE'
 Usage:
   cm [path]
   cm [path] --commit <ref>
   cm [path] --draft
+  cm init [path]
 
 Examples:
   cm .
   cm . --draft
+  cm init .
 USAGE
-      exit 0
-      ;;
-    *)
-      TARGET_PATH="$1"
-      shift
-      ;;
-  esac
-done
+        exit 0
+        ;;
+      *)
+        TARGET_PATH="$1"
+        shift
+        ;;
+    esac
+  done
+fi
 
 if [[ "$TARGET_PATH" == "." ]]; then
   TARGET_PATH="$PWD"
@@ -684,11 +818,61 @@ if ! git -C "$REPO_PATH" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ "$MODE" == "init" ]]; then
+  ensure_agent_file() {{
+    local agent_file="$REPO_PATH/AGENT.md"
+    if [[ ! -f "$agent_file" ]]; then
+      printf '# AGENT.md\n\n' > "$agent_file"
+      cat <<'BLOCK' >> "$agent_file"
+{agent_block_start}
+{agent_block_body}
+{agent_block_end}
+BLOCK
+      printf '\n' >> "$agent_file"
+      return
+    fi
+
+    if grep -Fq '{agent_block_start}' "$agent_file"; then
+      return
+    fi
+
+    printf '\n\n' >> "$agent_file"
+    cat <<'BLOCK' >> "$agent_file"
+{agent_block_start}
+{agent_block_body}
+{agent_block_end}
+BLOCK
+    printf '\n' >> "$agent_file"
+  }}
+
+  ensure_claude_file() {{
+    local claude_file="$REPO_PATH/CLAUDE.md"
+    if [[ ! -f "$claude_file" ]]; then
+      printf '@AGENT.md\n' > "$claude_file"
+      return
+    fi
+
+    if grep -Eiq '@[[:space:]]*AGENT\.md' "$claude_file"; then
+      return
+    fi
+
+    printf '\n@AGENT.md\n' >> "$claude_file"
+  }}
+
+  ensure_agent_file
+  ensure_claude_file
+  echo "cm: tracking initialized for $REPO_PATH"
+  exit 0
+fi
+
 if ! open -nb "{bundle_id}" --args --repo "$REPO_PATH" --commit "$COMMIT_REF" >/dev/null 2>&1; then
   open -na "{app_name}" --args --repo "$REPO_PATH" --commit "$COMMIT_REF"
 fi
 "#,
         worktree_ref = WORKTREE_COMMIT_REFERENCE,
+        agent_block_start = AGENT_TRACKING_BLOCK_START,
+        agent_block_body = AGENT_TRACKING_BLOCK_BODY,
+        agent_block_end = AGENT_TRACKING_BLOCK_END,
         bundle_id = CM_APP_BUNDLE_IDENTIFIER,
         app_name = CM_APP_NAME
     )
@@ -992,31 +1176,65 @@ fn read_launch_request(state: tauri::State<'_, LaunchRequestState>) -> Option<La
 }
 
 #[tauri::command]
+fn initialize_agent_tracking(
+    repo_path: String,
+) -> Result<AgentTrackingInitializationResult, String> {
+    let repository_path = validate_repository_path(&repo_path)?;
+
+    let (agent_file_created, agent_file_updated) = ensure_agent_tracking_file(&repository_path)?;
+    let (claude_file_created, claude_file_updated) =
+        ensure_claude_agent_reference(&repository_path)?;
+
+    let message =
+        if agent_file_created || agent_file_updated || claude_file_created || claude_file_updated {
+            let mut changes: Vec<String> = Vec::new();
+            if agent_file_created {
+                changes.push("created AGENT.md".to_string());
+            } else if agent_file_updated {
+                changes.push("updated AGENT.md".to_string());
+            }
+            if claude_file_created {
+                changes.push("created CLAUDE.md".to_string());
+            } else if claude_file_updated {
+                changes.push("updated CLAUDE.md".to_string());
+            }
+            format!("Tracking initialized: {}.", changes.join(", "))
+        } else {
+            "Tracking already initialized (AGENT.md and CLAUDE.md are up to date).".to_string()
+        };
+
+    Ok(AgentTrackingInitializationResult {
+        agent_file_created,
+        agent_file_updated,
+        claude_file_created,
+        claude_file_updated,
+        message,
+    })
+}
+
+#[tauri::command]
 fn read_cm_cli_status() -> Result<CmCliStatus, String> {
     let path_entries = path_entries();
-    let mut install_path: Option<PathBuf> = None;
+    let home_path = std::env::var_os("HOME").map(PathBuf::from);
+    let preferred_roots = home_path
+        .as_ref()
+        .map(|path| preferred_cm_directories(path))
+        .unwrap_or_default();
+
+    let mut candidate_roots: Vec<PathBuf> = preferred_roots.clone();
 
     for entry in &path_entries {
-        let candidate = entry.join(CM_COMMAND_NAME);
-        if candidate.is_file() {
-            install_path = Some(candidate);
-            break;
+        if is_transient_path_entry(entry) || candidate_roots.iter().any(|root| root == entry) {
+            continue;
         }
+
+        candidate_roots.push(entry.clone());
     }
 
-    if install_path.is_none() {
-        if let Some(home_path) = std::env::var_os("HOME").map(PathBuf::from) {
-            for candidate in [
-                home_path.join(".local/bin").join(CM_COMMAND_NAME),
-                home_path.join("bin").join(CM_COMMAND_NAME),
-            ] {
-                if candidate.is_file() {
-                    install_path = Some(candidate);
-                    break;
-                }
-            }
-        }
-    }
+    let install_path = candidate_roots
+        .iter()
+        .map(|root| root.join(CM_COMMAND_NAME))
+        .find(|candidate| candidate.is_file());
 
     let on_path_from_environment = install_path
         .as_ref()
@@ -1119,6 +1337,7 @@ pub fn run() {
             write_app_settings,
             run_cli_agent_prompt,
             read_launch_request,
+            initialize_agent_tracking,
             read_cm_cli_status,
             install_cm_cli_in_path
         ])

@@ -9,12 +9,14 @@ import {
 } from "../../../design-system/index.ts";
 import {
   clearApiKeyFromStorage,
+  initializeAgentTracking,
   installCmCliInPath,
   APP_NAME,
   DEFAULT_AI_ANALYSIS_CONFIG,
   openProjectInNewWindow,
   readRepositoryBranch,
   readRepositoryBranches,
+  readRepositoryCommits,
   readCmCliStatus,
   readLaunchRequestFromRuntime,
   readAiAnalysisConfigFromStorage,
@@ -1010,6 +1012,15 @@ export function ReviewWorkspaceContainer() {
     return installResult;
   }, []);
 
+  const initializeTrackingFromSettings = useCallback(async (repositoryPath: string) => {
+    const normalizedRepositoryPath = normalizeInputValue(repositoryPath);
+    if (normalizedRepositoryPath.length === 0) {
+      throw new Error("Open a project first to initialize tracking files.");
+    }
+
+    return initializeAgentTracking(normalizedRepositoryPath);
+  }, []);
+
   useEffect(() => {
     if (!isStartingFromHome) {
       return;
@@ -1058,6 +1069,59 @@ export function ReviewWorkspaceContainer() {
     startReviewFromHome,
     state.commit,
     state.loadStatus,
+  ]);
+
+  useEffect(() => {
+    if (state.loadStatus !== "loaded") {
+      return;
+    }
+
+    const normalizedRepositoryPath = normalizeInputValue(activeRepositoryPath);
+    if (normalizedRepositoryPath.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    let isChecking = false;
+
+    const checkForNewCommits = async () => {
+      if (isChecking) {
+        return;
+      }
+
+      isChecking = true;
+      try {
+        const latestCommit = await readRepositoryCommits(normalizedRepositoryPath, 1);
+        if (cancelled) {
+          return;
+        }
+
+        const latestHash = latestCommit[0]?.hash ?? null;
+        const knownHash = state.repositoryCommits[0]?.hash ?? null;
+
+        if (latestHash && latestHash !== knownHash) {
+          await actions.refreshRepositoryCommits(normalizedRepositoryPath, 120);
+        }
+      } catch {
+        // Ignore transient git polling failures.
+      } finally {
+        isChecking = false;
+      }
+    };
+
+    const timerId = window.setInterval(() => {
+      void checkForNewCommits();
+    }, 10_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timerId);
+    };
+  }, [
+    actions,
+    activeRepositoryPath,
+    state.loadStatus,
+    state.repositoryCommits,
   ]);
 
   useEffect(() => {
@@ -1952,6 +2016,7 @@ export function ReviewWorkspaceContainer() {
           onOpenProjectInNewWindow={openProjectInNewWindowWithPicker}
           onOpenRecentProjectInCurrentWindow={openRecentProjectInCurrentWindow}
           onOpenRecentProjectInNewWindow={openRecentProjectInNewWindow}
+          onInitializeTracking={initializeTrackingFromSettings}
           onInstallCmCli={installCmCliCommand}
           onRefreshCmCliStatus={refreshCmCliStatus}
           onSave={(key) => {
@@ -2025,6 +2090,7 @@ export function ReviewWorkspaceContainer() {
         onOpenProjectInNewWindow={openProjectInNewWindowWithPicker}
         onOpenRecentProjectInCurrentWindow={openRecentProjectInCurrentWindow}
         onOpenRecentProjectInNewWindow={openRecentProjectInNewWindow}
+        onInitializeTracking={initializeTrackingFromSettings}
         onInstallCmCli={installCmCliCommand}
         onRefreshCmCliStatus={refreshCmCliStatus}
         onSave={(key) => {

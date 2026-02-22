@@ -50,3 +50,12 @@ Keep handoff concise and actionable:
 2. Contracts: APIs, events, schemas, and integration impact.
 3. Integration steps: required downstream wiring or verification.
 4. Validation: checks/tests run plus remaining risks or assumptions.
+
+
+<!-- checkmate:tracking:start -->
+## Checkmate Tracking (added by checkmate.sh)
+- Preserve commit rationale and key decisions for each meaningful change.
+- Include validation evidence (tests/checks) and any known risks.
+- For AI-authored edits, keep a short "why this change exists" summary for reviewers.
+<!-- checkmate:tracking:end -->
+

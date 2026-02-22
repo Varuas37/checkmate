@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button, Input, Modal, ThemeSwitcher } from "../../../design-system/index.ts";
 import { cn } from "../../../shared/index.ts";
 import type {
+  AgentTrackingInitializationResult,
   CliAgentConfig,
   CliAgentsSettings,
   CmCliInstallResult,
@@ -23,6 +24,9 @@ export interface SettingsPanelProps {
   readonly onOpenProjectInNewWindow: () => void | Promise<void>;
   readonly onOpenRecentProjectInCurrentWindow: (repositoryPath: string) => void | Promise<void>;
   readonly onOpenRecentProjectInNewWindow: (repositoryPath: string) => void | Promise<void>;
+  readonly onInitializeTracking: (
+    repositoryPath: string,
+  ) => Promise<AgentTrackingInitializationResult>;
   readonly onInstallCmCli: () => Promise<CmCliInstallResult>;
   readonly onRefreshCmCliStatus: () => Promise<void>;
   readonly onSave: (apiKey: string) => void;
@@ -103,6 +107,7 @@ export function SettingsPanel({
   onOpenProjectInNewWindow,
   onOpenRecentProjectInCurrentWindow,
   onOpenRecentProjectInNewWindow,
+  onInitializeTracking,
   onInstallCmCli,
   onRefreshCmCliStatus,
   onSave,
@@ -276,10 +281,17 @@ export function SettingsPanel({
     return "Claude CLI hardcoded fallback (no API key, no agent configured)";
   }, [draft, draftCliAgents]);
 
+  const hasActiveRepositoryPath = activeRepositoryPath.trim().length > 0;
+
   return (
-    <Modal open={open} onClose={onClose} title="Settings" panelClassName="max-w-4xl">
-      <div className="grid min-h-[32rem] gap-0 md:grid-cols-[13rem_minmax(0,1fr)]">
-        <aside className="border-b border-border/60 pb-2 md:border-b-0 md:border-r md:pb-0 md:pr-3">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Settings"
+      panelClassName="w-[min(96vw,72rem)] max-w-none"
+    >
+      <div className="grid min-h-[34rem] gap-0 md:grid-cols-[15rem_minmax(0,1fr)]">
+        <aside className="border-b border-border/60 pb-2 md:border-b-0 md:border-r md:pb-0 md:pr-4">
           <p className="px-1 pb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-muted">Preferences</p>
           <nav className="space-y-1">
             {SETTINGS_SECTIONS.map((section) => {
@@ -303,7 +315,7 @@ export function SettingsPanel({
           </nav>
         </aside>
 
-        <div className="min-h-0 space-y-4 pt-2 md:max-h-[34rem] md:overflow-y-auto md:pl-4 md:pt-0">
+        <div className="min-h-0 space-y-4 pt-2 md:max-h-[36rem] md:overflow-y-auto md:pl-5 md:pt-0">
           {projectActionError && (
             <p className="rounded-sm border border-danger/45 bg-danger/10 px-2 py-1.5 text-xs text-danger">
               {projectActionError}
@@ -329,7 +341,7 @@ export function SettingsPanel({
 
               <div className="space-y-2 border-y border-border/60 py-3">
                 <p className="text-[11px] uppercase tracking-[0.1em] text-muted">Current Project</p>
-                <p className="truncate font-mono text-xs text-text">
+                <p className="break-all font-mono text-xs text-text">
                   {activeRepositoryPath.trim().length > 0 ? activeRepositoryPath : "No project loaded"}
                 </p>
                 <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -402,7 +414,7 @@ export function SettingsPanel({
                 <p className="text-sm text-muted">
                   Install a global <code className="font-mono text-xs">cm</code> command.
                 </p>
-                <p className="font-mono text-xs text-text">
+                <p className="break-all font-mono text-xs text-text">
                   {cmCliStatus?.installed && cmCliStatus.installPath
                     ? cmCliStatus.onPath
                       ? `Installed: ${cmCliStatus.installPath}`
@@ -439,6 +451,34 @@ export function SettingsPanel({
                 <p className="text-xs text-muted">
                   Usage: <code className="font-mono">cm .</code> opens HEAD,{" "}
                   <code className="font-mono">cm . --draft</code> opens uncommitted draft changes.
+                </p>
+              </div>
+
+              <div className="space-y-2 border-t border-border/60 pt-3">
+                <p className="text-[11px] uppercase tracking-[0.1em] text-muted">Tracking Files</p>
+                <p className="text-sm text-muted">
+                  Initialize repository tracking files with <code className="font-mono text-xs">cm init</code>{" "}
+                  behavior.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={isCmCliActionRunning || !hasActiveRepositoryPath}
+                    onClick={() => {
+                      void runCmCliAction(async () => {
+                        const result = await onInitializeTracking(activeRepositoryPath);
+                        setCmCliActionMessage(result.message);
+                      });
+                    }}
+                  >
+                    Initialize Tracking
+                  </Button>
+                </div>
+                <p className="text-xs text-muted">
+                  Ensures <code className="font-mono">AGENT.md</code> exists, and{" "}
+                  <code className="font-mono">CLAUDE.md</code> includes{" "}
+                  <code className="font-mono">@AGENT.md</code>.
                 </p>
               </div>
             </section>

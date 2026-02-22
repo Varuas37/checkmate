@@ -33,6 +33,7 @@ export {
 export { projectLabelFromPath } from "./projectLabelFromPath.ts";
 export { readRepositoryBranch } from "./readRepositoryBranch.ts";
 export { readRepositoryBranches } from "./readRepositoryBranches.ts";
+export { readRepositoryCommits } from "./readRepositoryCommits.ts";
 export { readTextFile } from "./readTextFile.ts";
 export {
   DEFAULT_AI_ANALYSIS_CONFIG,
@@ -69,9 +70,11 @@ export {
   type AppSettingsFile,
 } from "./settings/appSettingsFile.ts";
 export {
+  initializeAgentTracking,
   installCmCliInPath,
   readCmCliStatus,
   readLaunchRequestFromRuntime,
+  type AgentTrackingInitializationResult,
   type CmCliInstallResult,
   type CmCliStatus,
 } from "./desktopIntegration.ts";

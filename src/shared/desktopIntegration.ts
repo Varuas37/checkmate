@@ -15,6 +15,14 @@ export interface CmCliInstallResult {
   readonly message: string;
 }
 
+export interface AgentTrackingInitializationResult {
+  readonly agentFileCreated: boolean;
+  readonly agentFileUpdated: boolean;
+  readonly claudeFileCreated: boolean;
+  readonly claudeFileUpdated: boolean;
+  readonly message: string;
+}
+
 function isTauriRuntime(): boolean {
   if (typeof window === "undefined") {
     return false;
@@ -91,6 +99,26 @@ export async function installCmCliInPath(): Promise<CmCliInstallResult> {
   return {
     installPath: response.installPath.trim(),
     onPath: Boolean(response.onPath),
+    message: response.message.trim(),
+  };
+}
+
+export async function initializeAgentTracking(
+  repositoryPath: string,
+): Promise<AgentTrackingInitializationResult> {
+  if (!isTauriRuntime()) {
+    throw new Error("Tracking initialization is available only in the desktop app.");
+  }
+
+  const response = await invokeTauri<AgentTrackingInitializationResult>("initialize_agent_tracking", {
+    repoPath: repositoryPath,
+  });
+
+  return {
+    agentFileCreated: Boolean(response.agentFileCreated),
+    agentFileUpdated: Boolean(response.agentFileUpdated),
+    claudeFileCreated: Boolean(response.claudeFileCreated),
+    claudeFileUpdated: Boolean(response.claudeFileUpdated),
     message: response.message.trim(),
   };
 }

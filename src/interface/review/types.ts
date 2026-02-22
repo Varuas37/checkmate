@@ -149,6 +149,7 @@ export interface ReviewWorkspaceState {
 
 export interface ReviewWorkspaceActions {
   readonly reloadReviewWorkspace: (input: ReloadReviewWorkspaceInput) => void;
+  readonly refreshRepositoryCommits: (repositoryPath: string, limit?: number) => Promise<void>;
   readonly selectFile: (fileId: string | null) => void;
   readonly setDiffOrientation: (orientation: DiffOrientation) => void;
   readonly setDiffViewMode: (mode: DiffViewMode) => void;

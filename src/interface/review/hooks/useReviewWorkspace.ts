@@ -21,7 +21,7 @@ import {
   reviewUiActions,
 } from "../../../app/store/review/index.ts";
 import type { FileChangeStatus, ThreadStatus } from "../../../domain/review/index.ts";
-import { stripCheckmateMentions } from "../../../shared/index.ts";
+import { readRepositoryCommits, stripCheckmateMentions } from "../../../shared/index.ts";
 import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT } from "../constants.ts";
 import type {
   CodeSequenceStep,
@@ -471,6 +471,27 @@ export function useReviewWorkspace(): {
     [dispatch],
   );
 
+  const refreshRepositoryCommits = useCallback(
+    async (repositoryPath: string, limit = 120) => {
+      const normalizedRepositoryPath = repositoryPath.trim();
+      if (normalizedRepositoryPath.length === 0) {
+        return;
+      }
+
+      try {
+        const commits = await readRepositoryCommits(normalizedRepositoryPath, limit);
+        dispatch(
+          reviewUiActions.setRepositoryCommits({
+            commits,
+          }),
+        );
+      } catch {
+        // Ignore polling errors; the next interval can recover.
+      }
+    },
+    [dispatch],
+  );
+
   const setDiffOrientation = useCallback(
     (orientation: "split" | "unified") => {
       dispatch(reviewUiActions.setDiffOrientation({ orientation }));
@@ -732,6 +753,7 @@ export function useReviewWorkspace(): {
     },
     actions: {
       reloadReviewWorkspace,
+      refreshRepositoryCommits,
       selectFile,
       setDiffOrientation,
       setDiffViewMode,
