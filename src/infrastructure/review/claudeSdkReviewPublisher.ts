@@ -120,11 +120,10 @@ function extractPublicationId(response: unknown, fallbackId: string): string {
 }
 
 async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
-  const moduleName = "@anthropic-ai/sdk";
   let sdkModule: unknown;
 
   try {
-    sdkModule = await import(moduleName);
+    sdkModule = await import("@anthropic-ai/sdk");
   } catch {
     throw new Error('Claude SDK package "@anthropic-ai/sdk" is not installed.');
   }
