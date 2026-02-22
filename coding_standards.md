@@ -6,11 +6,12 @@ Status: Enforced
 ## 1) Mandatory Agent Workflow
 1. Before any implementation work, read the vision document first (`vision.md` or `docs/vision.md`, whichever is canonical in this repo).
 2. Read `coding_standards.md` second.
-3. Start task-specific analysis and edits only after steps 1-2 are complete.
-4. Execute tasks end-to-end by default. Do not stop for routine confirmations between normal implementation steps.
-5. Ask for user confirmation only when blocked by missing requirements, destructive/irreversible actions, or explicit permission boundaries.
-6. Parallelize independent subtasks and use specialized agents/tools when they materially improve quality or delivery time.
-7. Keep one orchestrator responsible for final integration coherence and standards compliance.
+3. Read `committing_changes.md` third.
+4. Start task-specific analysis and edits only after steps 1-3 are complete.
+5. Execute tasks end-to-end by default. Do not stop for routine confirmations between normal implementation steps.
+6. Ask for user confirmation only when blocked by missing requirements, destructive/irreversible actions, or explicit permission boundaries.
+7. Parallelize independent subtasks and use specialized agents/tools when they materially improve quality or delivery time.
+8. Keep one orchestrator responsible for final integration coherence and standards compliance.
 
 ## 2) Core Principle
 This codebase uses strict DDD-inspired layering on frontend and backend.  
@@ -121,13 +122,12 @@ Every substantial delivery must include concise handoff notes:
 5. Are design-system primitives/composed components reused consistently?
 6. Were tests, handoff notes, and docs updated?
 
-## 15) Commit After Every Feature (Mandatory)
-After completing any feature, fix, or meaningful change the agent **must**:
-1. List the specific files changed by that feature.
-2. Ask the user to confirm before committing: "Ready to commit? I'll stage [files] for '[feature name]'."
-3. Stage only those files — never `git add .` or `git add -A`.
-4. Write a commit message scoped to that feature.
-5. Verify with `git status` that nothing unrelated was staged.
+## 15) Commit Workflow (Mandatory)
+1. Follow `committing_changes.md` as the source of truth for commit planning, staging, messaging, validation evidence, and merge hygiene.
+2. After each meaningful change, identify only the files/hunks belonging to that scope.
+3. Ask the user to confirm before committing and list exact staged files.
+4. Stage only scoped files/hunks; never stage unrelated in-flight work.
+5. Verify staging with `git status` and `git diff --staged` before commit.
 
 **Never skip this step. Never defer it across sessions.**
-Uncommitted feature work mixed with other changes causes incorrect diffs, lost context, and messy history.
+Mixed-scope uncommitted work causes incorrect diffs, lost context, and unstable review quality.

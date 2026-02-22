@@ -3,8 +3,9 @@
 ## Mandatory Startup Sequence (No Exceptions)
 1. Read `vision.md` first. If the canonical vision file is `docs/vision.md`, read that file first instead.
 2. Read `coding_standards.md` second.
-3. Read task-specific files third.
-4. Confirm in the first progress update that this order was followed.
+3. Read `committing_changes.md` third.
+4. Read task-specific files fourth.
+5. Confirm in the first progress update that this order was followed.
 
 ## Autonomous Execution Default
 1. Execute tasks end-to-end until completion.
@@ -29,7 +30,7 @@
 2. Avoid using `npm` commands unless explicitly requested for a one-off compatibility check.
 
 ## Conflict Handling
-1. If a request conflicts with `coding_standards.md`, flag the conflict explicitly.
+1. If a request conflicts with `coding_standards.md` or `committing_changes.md`, flag the conflict explicitly.
 2. Provide a compliant alternative and proceed with it unless the user provides an explicit override.
 3. Never silently bypass standards.
 
@@ -38,9 +39,10 @@ When a feature, fix, or meaningful change is complete:
 1. Identify all files touched **by that specific change** (do not bundle unrelated in-flight work).
 2. Ask the user: "Ready to commit? I'll stage [list the specific files] for this change."
 3. Wait for confirmation before staging or committing anything.
-4. Stage only the identified files — never `git add .` or `git add -A`.
-5. Write a focused commit message scoped to that feature (what changed and why).
-6. Run `git status` after the commit to confirm clean staging area.
+4. Follow `committing_changes.md` for staging, commit message format, trailers, and validation evidence.
+5. Stage only the identified files/hunks — never `git add .` or `git add -A`.
+6. Write a focused commit message scoped to that feature (what changed and why).
+7. Run `git status` after the commit to confirm clean staging area.
 
 Do this every time a feature is finished. Do not skip it, do not defer it to a later session.
 
