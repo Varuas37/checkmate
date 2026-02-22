@@ -1,0 +1,55 @@
+{
+  "version": "0.1",
+  "diagram": {
+    "nodes": [
+      { "id": "schema", "label": "Schema File", "x": 80, "y": 120 },
+      { "id": "parser", "label": "Infrastructure Parser (zod)", "x": 320, "y": 120 },
+      { "id": "domain", "label": "Domain Invariant Validator", "x": 600, "y": 120 },
+      { "id": "application", "label": "Playback Helpers", "x": 880, "y": 120 },
+      { "id": "ui", "label": "Flow UI", "x": 1160, "y": 120 }
+    ],
+    "edges": [
+      { "id": "e1", "from": "schema", "to": "parser", "label": "load JSON" },
+      { "id": "e2", "from": "parser", "to": "domain", "label": "validate invariants" },
+      { "id": "e3", "from": "domain", "to": "application", "label": "emit typed flow" },
+      { "id": "e4", "from": "application", "to": "ui", "label": "timeline controls" }
+    ]
+  },
+  "trace": [
+    {
+      "id": "s1",
+      "title": "The canonical schema file is loaded",
+      "focusNodeIds": ["schema"],
+      "focusEdgeIds": [],
+      "codeRef": { "path": "examples/self-hosted-flow.json", "line": 1 }
+    },
+    {
+      "id": "s2",
+      "title": "Infrastructure parser validates raw JSON with zod",
+      "focusNodeIds": ["parser"],
+      "focusEdgeIds": ["e1"],
+      "codeRef": { "path": "src/flow/infrastructure/schema.ts", "line": 86 }
+    },
+    {
+      "id": "s3",
+      "title": "Domain invariants reject duplicate IDs and missing refs",
+      "focusNodeIds": ["parser", "domain"],
+      "focusEdgeIds": ["e2"],
+      "codeRef": { "path": "src/flow/domain/validation.ts", "line": 98 }
+    },
+    {
+      "id": "s4",
+      "title": "Application playback helpers clamp next and previous indices",
+      "focusNodeIds": ["application"],
+      "focusEdgeIds": ["e3"],
+      "codeRef": { "path": "src/flow/application/playback.ts", "line": 15 }
+    },
+    {
+      "id": "s5",
+      "title": "UI consumes typed exports for deterministic playback",
+      "focusNodeIds": ["application", "ui"],
+      "focusEdgeIds": ["e4"],
+      "codeRef": { "path": "src/flow/application/index.ts", "line": 1 }
+    }
+  ]
+}
