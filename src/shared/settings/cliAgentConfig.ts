@@ -18,7 +18,8 @@ export interface CliAgentsSettings {
 
 export const DEFAULT_CLI_AGENTS: readonly CliAgentConfig[] = [
   { id: "claude-code", name: "Claude Code", command: "claude", promptArgs: ["-p"] },
-  { id: "codex", name: "Codex CLI", command: "codex", promptArgs: [] },
+  // `codex exec` is the non-interactive mode suitable for app-driven prompts.
+  { id: "codex", name: "Codex CLI", command: "codex", promptArgs: ["exec"] },
   { id: "gemini", name: "Gemini CLI", command: "gemini", promptArgs: [] },
 ];
 
@@ -45,11 +46,21 @@ function normalizeCliAgentConfig(value: unknown): CliAgentConfig | null {
     return null;
   }
 
+  const normalizedCommand = command.toLowerCase();
+  const normalizedPromptArgs =
+    promptArgs.length > 0
+      ? promptArgs
+      : normalizedCommand === "codex" || id === "codex"
+        ? ["exec"]
+        : normalizedCommand === "claude" || id === "claude-code"
+          ? ["-p"]
+          : [];
+
   return {
     id,
     name: name.length > 0 ? name : id,
     command,
-    promptArgs,
+    promptArgs: normalizedPromptArgs,
   };
 }
 

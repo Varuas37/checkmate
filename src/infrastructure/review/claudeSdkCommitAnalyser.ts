@@ -650,11 +650,37 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
     const preferCli = readCliPreferenceFromStorage();
     const activeCliAgent = readActiveCliAgentFromStorage();
 
-    /** Runs the configured CLI agent, or the hardcoded claude fallback if none is set. */
+    /** Runs the configured CLI agent, with a Claude CLI fallback if the active agent fails. */
     const runViaCli = async (prompt: string): Promise<string> => {
       if (activeCliAgent && isTauriRuntime()) {
-        return runCliAgentPromptViaTauri(activeCliAgent.command, activeCliAgent.promptArgs, prompt);
+        try {
+          return await runCliAgentPromptViaTauri(
+            activeCliAgent.command,
+            activeCliAgent.promptArgs,
+            prompt,
+          );
+        } catch (activeCliError) {
+          const normalizedCommand = activeCliAgent.command.trim().toLowerCase();
+          if (normalizedCommand === "claude") {
+            throw activeCliError;
+          }
+
+          try {
+            return await runClaudePromptViaTauri(prompt);
+          } catch (claudeFallbackError) {
+            const activeMessage =
+              activeCliError instanceof Error ? activeCliError.message : "CLI execution failed.";
+            const claudeMessage =
+              claudeFallbackError instanceof Error
+                ? claudeFallbackError.message
+                : "Claude fallback failed.";
+            throw new Error(
+              `Primary CLI agent "${activeCliAgent.name}" failed (${activeMessage}) and Claude CLI fallback failed (${claudeMessage}).`,
+            );
+          }
+        }
       }
+
       return runClaudePromptViaTauri(prompt);
     };
 
@@ -669,11 +695,12 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
         if (parsed) {
           return parsed;
         }
-      } catch {
+      } catch (error) {
         // CLI failed — fall through to SDK if key is available, else throw below.
         if (!resolvedApiKey) {
+          const message = error instanceof Error ? error.message : "CLI execution failed.";
           throw new Error(
-            `${activeCliAgent.name} CLI failed and no API key is available for fallback.`,
+            `Primary CLI agent "${activeCliAgent.name}" failed and no API key is available for SDK fallback (${message}).`,
           );
         }
       }

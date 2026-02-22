@@ -456,10 +456,36 @@ export class ClaudeSdkSequenceDiagramGenerator implements SequenceDiagramGenerat
     const preferCli = readCliPreferenceFromStorage();
     const activeCliAgent = readActiveCliAgentFromStorage();
 
-    const runViaCli = (): Promise<string> => {
+    const runViaCli = async (): Promise<string> => {
       if (activeCliAgent && isTauriRuntime()) {
-        return runCliAgentPromptViaTauri(activeCliAgent.command, activeCliAgent.promptArgs, prompt);
+        try {
+          return await runCliAgentPromptViaTauri(
+            activeCliAgent.command,
+            activeCliAgent.promptArgs,
+            prompt,
+          );
+        } catch (activeCliError) {
+          const normalizedCommand = activeCliAgent.command.trim().toLowerCase();
+          if (normalizedCommand === "claude") {
+            throw activeCliError;
+          }
+
+          try {
+            return await runClaudePromptViaTauri(prompt);
+          } catch (claudeFallbackError) {
+            const activeMessage =
+              activeCliError instanceof Error ? activeCliError.message : "CLI execution failed.";
+            const claudeMessage =
+              claudeFallbackError instanceof Error
+                ? claudeFallbackError.message
+                : "Claude fallback failed.";
+            throw new Error(
+              `Primary CLI agent "${activeCliAgent.name}" failed (${activeMessage}) and Claude CLI fallback failed (${claudeMessage}).`,
+            );
+          }
+        }
       }
+
       return runClaudePromptViaTauri(prompt);
     };
 
@@ -467,10 +493,11 @@ export class ClaudeSdkSequenceDiagramGenerator implements SequenceDiagramGenerat
     if (preferCli && activeCliAgent && isTauriRuntime()) {
       try {
         return await runViaCli();
-      } catch {
+      } catch (error) {
         if (!apiKey) {
+          const message = error instanceof Error ? error.message : "CLI execution failed.";
           throw new Error(
-            `${activeCliAgent.name} CLI failed and no API key is available for fallback.`,
+            `Primary CLI agent "${activeCliAgent.name}" failed and no API key is available for SDK fallback (${message}).`,
           );
         }
         // Fall through to SDK.

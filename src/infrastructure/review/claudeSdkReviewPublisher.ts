@@ -262,8 +262,34 @@ export class ClaudeSdkReviewPublisher implements ReviewPublisher {
 
     const runViaCli = async (): Promise<string> => {
       if (activeCliAgent && isTauriRuntime()) {
-        return runCliAgentPromptViaTauri(activeCliAgent.command, activeCliAgent.promptArgs, prompt);
+        try {
+          return await runCliAgentPromptViaTauri(
+            activeCliAgent.command,
+            activeCliAgent.promptArgs,
+            prompt,
+          );
+        } catch (activeCliError) {
+          const normalizedCommand = activeCliAgent.command.trim().toLowerCase();
+          if (normalizedCommand === "claude") {
+            throw activeCliError;
+          }
+
+          try {
+            return await runClaudePromptViaTauri(prompt);
+          } catch (claudeFallbackError) {
+            const activeMessage =
+              activeCliError instanceof Error ? activeCliError.message : "CLI execution failed.";
+            const claudeMessage =
+              claudeFallbackError instanceof Error
+                ? claudeFallbackError.message
+                : "Claude fallback failed.";
+            throw new Error(
+              `Primary CLI agent "${activeCliAgent.name}" failed (${activeMessage}) and Claude CLI fallback failed (${claudeMessage}).`,
+            );
+          }
+        }
       }
+
       return runClaudePromptViaTauri(prompt);
     };
 
@@ -286,10 +312,11 @@ export class ClaudeSdkReviewPublisher implements ReviewPublisher {
       try {
         const cliResponse = await runViaCli();
         return buildCliResult(cliResponse);
-      } catch {
+      } catch (error) {
         if (!resolvedApiKey) {
+          const message = error instanceof Error ? error.message : "CLI execution failed.";
           throw new Error(
-            `${activeCliAgent.name} CLI failed and no API key is available for fallback.`,
+            `Primary CLI agent "${activeCliAgent.name}" failed and no API key is available for SDK fallback (${message}).`,
           );
         }
         // CLI failed — fall through to SDK.
