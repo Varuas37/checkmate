@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "easy_visualization",
+  "productName": "checkmate.sh",
   "version": "0.1.0",
-  "identifier": "com.easyvisualization.desktop",
+  "identifier": "sh.checkmate.desktop",
   "build": {
     "beforeDevCommand": "yarn dev",
     "beforeBuildCommand": "yarn build",
@@ -13,10 +13,17 @@
     "windows": [
       {
         "label": "main",
-        "title": "easy_visualization",
+        "title": "checkmate.sh",
         "width": 1280,
         "height": 820,
-        "resizable": true
+        "resizable": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 18
+        }
       }
     ],
     "security": {

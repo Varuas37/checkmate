@@ -24,10 +24,25 @@
 3. Preserve design-system consistency: token-driven styling, shared primitives/composed components first, and no ad-hoc visual variants without documented justification.
 4. Default visual direction is minimal and low-chrome: avoid boxed/card-heavy layouts for launcher/startup surfaces unless a box is functionally required.
 
+## Tooling Conventions
+1. Use `yarn` as the package manager for install/run/update commands.
+2. Avoid using `npm` commands unless explicitly requested for a one-off compatibility check.
+
 ## Conflict Handling
 1. If a request conflicts with `coding_standards.md`, flag the conflict explicitly.
 2. Provide a compliant alternative and proceed with it unless the user provides an explicit override.
 3. Never silently bypass standards.
+
+## Feature Completion: Commit Prompt (Mandatory)
+When a feature, fix, or meaningful change is complete:
+1. Identify all files touched **by that specific change** (do not bundle unrelated in-flight work).
+2. Ask the user: "Ready to commit? I'll stage [list the specific files] for this change."
+3. Wait for confirmation before staging or committing anything.
+4. Stage only the identified files — never `git add .` or `git add -A`.
+5. Write a focused commit message scoped to that feature (what changed and why).
+6. Run `git status` after the commit to confirm clean staging area.
+
+Do this every time a feature is finished. Do not skip it, do not defer it to a later session.
 
 ## Integration Handoff Notes (Required for Substantial Changes)
 Keep handoff concise and actionable:

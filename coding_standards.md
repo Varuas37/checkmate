@@ -120,3 +120,14 @@ Every substantial delivery must include concise handoff notes:
 4. Are Redux changes normalized and serializable?
 5. Are design-system primitives/composed components reused consistently?
 6. Were tests, handoff notes, and docs updated?
+
+## 15) Commit After Every Feature (Mandatory)
+After completing any feature, fix, or meaningful change the agent **must**:
+1. List the specific files changed by that feature.
+2. Ask the user to confirm before committing: "Ready to commit? I'll stage [files] for '[feature name]'."
+3. Stage only those files — never `git add .` or `git add -A`.
+4. Write a commit message scoped to that feature.
+5. Verify with `git status` that nothing unrelated was staged.
+
+**Never skip this step. Never defer it across sessions.**
+Uncommitted feature work mixed with other changes causes incorrect diffs, lost context, and messy history.
