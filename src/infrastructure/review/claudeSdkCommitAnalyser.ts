@@ -173,7 +173,9 @@ async function yieldToUiThread(): Promise<void> {
 
 function resolveDefaultApiKey(): string | null {
   const nodeApiKey =
-    typeof process !== "undefined" ? trimToNull(process.env.ANTHROPIC_API_KEY) : null;
+    typeof process !== "undefined"
+      ? trimToNull(process.env.ANTHROPIC_API_KEY)
+      : null;
   if (nodeApiKey) {
     return nodeApiKey;
   }
@@ -201,14 +203,19 @@ async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
     (sdkModule as { readonly Anthropic?: unknown }).Anthropic;
 
   if (typeof candidate !== "function") {
-    throw new Error('Unable to resolve Anthropic constructor from "@anthropic-ai/sdk".');
+    throw new Error(
+      'Unable to resolve Anthropic constructor from "@anthropic-ai/sdk".',
+    );
   }
 
   const ClientConstructor = candidate as new (options: {
     readonly apiKey: string;
     readonly dangerouslyAllowBrowser?: boolean;
   }) => ClaudeSdkClient;
-  const client = new ClientConstructor({ apiKey, dangerouslyAllowBrowser: true });
+  const client = new ClientConstructor({
+    apiKey,
+    dangerouslyAllowBrowser: true,
+  });
 
   if (!client.messages || typeof client.messages.create !== "function") {
     throw new Error("Claude SDK client is missing messages.create().");
@@ -222,7 +229,10 @@ function isMissingClaudeSdkError(error: unknown): boolean {
     return false;
   }
   const message = error.message.toLowerCase();
-  return message.includes("@anthropic-ai/sdk") || message.includes("anthropic constructor");
+  return (
+    message.includes("@anthropic-ai/sdk") ||
+    message.includes("anthropic constructor")
+  );
 }
 
 async function runClaudePromptViaTauri(prompt: string): Promise<string> {
@@ -244,7 +254,11 @@ async function runCliAgentPromptViaTauri(
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("run_cli_agent_prompt", { command, args: [...args], prompt });
+  return invoke<string>("run_cli_agent_prompt", {
+    command,
+    args: [...args],
+    prompt,
+  });
 }
 
 function extractTextFromResponse(response: unknown): string {
@@ -291,7 +305,8 @@ function buildFilePrompt(
       const lines = hunk.lines
         .slice(0, MAX_LINES_PER_HUNK)
         .map((l) => {
-          const prefix = l.kind === "add" ? "+" : l.kind === "remove" ? "-" : " ";
+          const prefix =
+            l.kind === "add" ? "+" : l.kind === "remove" ? "-" : " ";
           return `${prefix}${l.text}`;
         })
         .join("\n");
@@ -299,7 +314,11 @@ function buildFilePrompt(
     })
     .join("\n\n");
 
-  const schema = JSON.stringify({ filePath: "...", summary: "...", riskNote: "..." }, null, 2);
+  const schema = JSON.stringify(
+    { filePath: "...", summary: "...", riskNote: "..." },
+    null,
+    2,
+  );
 
   return [
     `Commit: ${commit.title}`,
@@ -315,20 +334,28 @@ function buildFilePrompt(
     "Rules:",
     "- filePath must be exactly the file path listed above.",
     "- summary: 1-2 sentences describing what changed and why.",
-    "- riskNote: 1 sentence on the main risk, or \"Low risk.\" if none.",
+    '- riskNote: 1 sentence on the main risk, or "Low risk." if none.',
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
 }
 
-function parseFileSummaryResponse(raw: string, expectedPath: string): AiFileSummary | null {
+function parseFileSummaryResponse(
+  raw: string,
+  expectedPath: string,
+): AiFileSummary | null {
   try {
     const parsed: unknown = JSON.parse(stripJsonFences(raw));
     if (!parsed || typeof parsed !== "object") return null;
     const obj = parsed as Record<string, unknown>;
-    if (typeof obj["summary"] !== "string" || typeof obj["riskNote"] !== "string") return null;
+    if (
+      typeof obj["summary"] !== "string" ||
+      typeof obj["riskNote"] !== "string"
+    )
+      return null;
     return {
-      filePath: typeof obj["filePath"] === "string" ? obj["filePath"] : expectedPath,
+      filePath:
+        typeof obj["filePath"] === "string" ? obj["filePath"] : expectedPath,
       summary: obj["summary"],
       riskNote: obj["riskNote"],
     };
@@ -357,7 +384,9 @@ function buildOverviewPrompt(
 
   const schema = JSON.stringify(
     {
-      overviewCards: [{ kind: "summary|impact|risk|question", title: "...", body: "..." }],
+      overviewCards: [
+        { kind: "summary|impact|risk|question", title: "...", body: "..." },
+      ],
       flowComparisons: [
         {
           beforeTitle: "...",
@@ -375,7 +404,9 @@ function buildOverviewPrompt(
   return [
     `Commit: ${commit.title}`,
     `Author: ${commit.authorName} <${commit.authorEmail}>`,
-    commit.description.trim().length > 0 ? `Description: ${commit.description}` : null,
+    commit.description.trim().length > 0
+      ? `Description: ${commit.description}`
+      : null,
     "",
     `Changed files (${fileSummaries.length} total):`,
     summaryLines,
@@ -392,7 +423,12 @@ function buildOverviewPrompt(
     .join("\n");
 }
 
-const VALID_CARD_KINDS = new Set<string>(["summary", "impact", "risk", "question"]);
+const VALID_CARD_KINDS = new Set<string>([
+  "summary",
+  "impact",
+  "risk",
+  "question",
+]);
 
 function parseOverviewResponse(raw: string): {
   readonly overviewCards: readonly AiOverviewCard[];
@@ -412,21 +448,29 @@ function parseOverviewResponse(raw: string): {
               !!item &&
               typeof item === "object" &&
               typeof (item as Record<string, unknown>)["kind"] === "string" &&
-              VALID_CARD_KINDS.has((item as Record<string, unknown>)["kind"] as string) &&
+              VALID_CARD_KINDS.has(
+                (item as Record<string, unknown>)["kind"] as string,
+              ) &&
               typeof (item as Record<string, unknown>)["title"] === "string" &&
               typeof (item as Record<string, unknown>)["body"] === "string",
           )
-          .map((item): AiOverviewCard => ({
-            kind: item.kind as ReviewCardKind,
-            title: item.title,
-            body: item.body,
-          }))
+          .map(
+            (item): AiOverviewCard => ({
+              kind: item.kind as ReviewCardKind,
+              title: item.title,
+              body: item.body,
+            }),
+          )
       : [];
 
-    const flowComparisons: AiFlowComparison[] = Array.isArray(obj["flowComparisons"])
+    const flowComparisons: AiFlowComparison[] = Array.isArray(
+      obj["flowComparisons"],
+    )
       ? (obj["flowComparisons"] as unknown[])
           .filter(
-            (item): item is {
+            (
+              item,
+            ): item is {
               beforeTitle: string;
               beforeBody: string;
               afterTitle: string;
@@ -435,22 +479,28 @@ function parseOverviewResponse(raw: string): {
             } =>
               !!item &&
               typeof item === "object" &&
-              typeof (item as Record<string, unknown>)["beforeTitle"] === "string" &&
-              typeof (item as Record<string, unknown>)["beforeBody"] === "string" &&
-              typeof (item as Record<string, unknown>)["afterTitle"] === "string" &&
-              typeof (item as Record<string, unknown>)["afterBody"] === "string" &&
+              typeof (item as Record<string, unknown>)["beforeTitle"] ===
+                "string" &&
+              typeof (item as Record<string, unknown>)["beforeBody"] ===
+                "string" &&
+              typeof (item as Record<string, unknown>)["afterTitle"] ===
+                "string" &&
+              typeof (item as Record<string, unknown>)["afterBody"] ===
+                "string" &&
               Array.isArray((item as Record<string, unknown>)["filePaths"]) &&
-              ((item as Record<string, unknown>)["filePaths"] as unknown[]).every(
-                (p) => typeof p === "string",
-              ),
+              (
+                (item as Record<string, unknown>)["filePaths"] as unknown[]
+              ).every((p) => typeof p === "string"),
           )
-          .map((item): AiFlowComparison => ({
-            beforeTitle: item.beforeTitle,
-            beforeBody: item.beforeBody,
-            afterTitle: item.afterTitle,
-            afterBody: item.afterBody,
-            filePaths: item.filePaths,
-          }))
+          .map(
+            (item): AiFlowComparison => ({
+              beforeTitle: item.beforeTitle,
+              beforeBody: item.beforeBody,
+              afterTitle: item.afterTitle,
+              afterBody: item.afterBody,
+              filePaths: item.filePaths,
+            }),
+          )
       : [];
 
     return { overviewCards, flowComparisons };
@@ -468,7 +518,10 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
 
   const fileListing = files
     .slice(0, MAX_FILES_IN_PROMPT)
-    .map((f) => `  ${f.status.padEnd(8)} ${f.path}  +${f.additions}/-${f.deletions}`)
+    .map(
+      (f) =>
+        `  ${f.status.padEnd(8)} ${f.path}  +${f.additions}/-${f.deletions}`,
+    )
     .join("\n");
 
   const sortedHunks = [...hunks]
@@ -486,7 +539,8 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
       const lines = hunk.lines
         .slice(0, MAX_LINES_PER_HUNK)
         .map((l) => {
-          const prefix = l.kind === "add" ? "+" : l.kind === "remove" ? "-" : " ";
+          const prefix =
+            l.kind === "add" ? "+" : l.kind === "remove" ? "-" : " ";
           return `${prefix}${l.text}`;
         })
         .join("\n");
@@ -496,9 +550,17 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
 
   const schema = JSON.stringify(
     {
-      overviewCards: [{ kind: "summary|impact|risk|question", title: "...", body: "..." }],
+      overviewCards: [
+        { kind: "summary|impact|risk|question", title: "...", body: "..." },
+      ],
       flowComparisons: [
-        { beforeTitle: "...", beforeBody: "...", afterTitle: "...", afterBody: "...", filePaths: ["..."] },
+        {
+          beforeTitle: "...",
+          beforeBody: "...",
+          afterTitle: "...",
+          afterBody: "...",
+          filePaths: ["..."],
+        },
       ],
       fileSummaries: [{ filePath: "...", summary: "...", riskNote: "..." }],
     },
@@ -509,7 +571,9 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
   return [
     `Commit: ${commit.title}`,
     `Author: ${commit.authorName} <${commit.authorEmail}>`,
-    commit.description.trim().length > 0 ? `Description: ${commit.description}` : null,
+    commit.description.trim().length > 0
+      ? `Description: ${commit.description}`
+      : null,
     "",
     `Changed files (${files.length} total, showing up to ${MAX_FILES_IN_PROMPT}):`,
     fileListing,
@@ -530,7 +594,10 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
     .join("\n");
 }
 
-function parseLegacyResponse(raw: string, commitId: string): AnalyseCommitOutput | null {
+function parseLegacyResponse(
+  raw: string,
+  commitId: string,
+): AnalyseCommitOutput | null {
   try {
     const parsed: unknown = JSON.parse(stripJsonFences(raw));
     if (!parsed || typeof parsed !== "object") return null;
@@ -541,7 +608,9 @@ function parseLegacyResponse(raw: string, commitId: string): AnalyseCommitOutput
     const sequenceSteps: AiSequenceStep[] = Array.isArray(obj["sequenceSteps"])
       ? (obj["sequenceSteps"] as unknown[])
           .filter(
-            (item): item is {
+            (
+              item,
+            ): item is {
               sourceLabel: string;
               targetLabel: string;
               message: string;
@@ -549,43 +618,70 @@ function parseLegacyResponse(raw: string, commitId: string): AnalyseCommitOutput
             } =>
               !!item &&
               typeof item === "object" &&
-              typeof (item as Record<string, unknown>)["sourceLabel"] === "string" &&
-              typeof (item as Record<string, unknown>)["targetLabel"] === "string" &&
-              typeof (item as Record<string, unknown>)["message"] === "string" &&
+              typeof (item as Record<string, unknown>)["sourceLabel"] ===
+                "string" &&
+              typeof (item as Record<string, unknown>)["targetLabel"] ===
+                "string" &&
+              typeof (item as Record<string, unknown>)["message"] ===
+                "string" &&
               typeof (item as Record<string, unknown>)["filePath"] === "string",
           )
-          .map((item): AiSequenceStep => ({
-            ...(typeof (item as Record<string, unknown>)["token"] === "string"
-              ? { token: (item as Record<string, unknown>)["token"] as string }
-              : {}),
-            ...(typeof (item as Record<string, unknown>)["sourceId"] === "string"
-              ? { sourceId: (item as Record<string, unknown>)["sourceId"] as string }
-              : {}),
-            sourceLabel: item.sourceLabel,
-            ...(typeof (item as Record<string, unknown>)["targetId"] === "string"
-              ? { targetId: (item as Record<string, unknown>)["targetId"] as string }
-              : {}),
-            targetLabel: item.targetLabel,
-            message: item.message,
-            filePath: item.filePath,
-          }))
+          .map(
+            (item): AiSequenceStep => ({
+              ...(typeof (item as Record<string, unknown>)["token"] === "string"
+                ? {
+                    token: (item as Record<string, unknown>)["token"] as string,
+                  }
+                : {}),
+              ...(typeof (item as Record<string, unknown>)["sourceId"] ===
+              "string"
+                ? {
+                    sourceId: (item as Record<string, unknown>)[
+                      "sourceId"
+                    ] as string,
+                  }
+                : {}),
+              sourceLabel: item.sourceLabel,
+              ...(typeof (item as Record<string, unknown>)["targetId"] ===
+              "string"
+                ? {
+                    targetId: (item as Record<string, unknown>)[
+                      "targetId"
+                    ] as string,
+                  }
+                : {}),
+              targetLabel: item.targetLabel,
+              message: item.message,
+              filePath: item.filePath,
+            }),
+          )
       : [];
 
     const fileSummaries: AiFileSummary[] = Array.isArray(obj["fileSummaries"])
       ? (obj["fileSummaries"] as unknown[])
           .filter(
-            (item): item is { filePath: string; summary: string; riskNote: string } =>
+            (
+              item,
+            ): item is {
+              filePath: string;
+              summary: string;
+              riskNote: string;
+            } =>
               !!item &&
               typeof item === "object" &&
-              typeof (item as Record<string, unknown>)["filePath"] === "string" &&
-              typeof (item as Record<string, unknown>)["summary"] === "string" &&
+              typeof (item as Record<string, unknown>)["filePath"] ===
+                "string" &&
+              typeof (item as Record<string, unknown>)["summary"] ===
+                "string" &&
               typeof (item as Record<string, unknown>)["riskNote"] === "string",
           )
-          .map((item): AiFileSummary => ({
-            filePath: item.filePath,
-            summary: item.summary,
-            riskNote: item.riskNote,
-          }))
+          .map(
+            (item): AiFileSummary => ({
+              filePath: item.filePath,
+              summary: item.summary,
+              riskNote: item.riskNote,
+            }),
+          )
       : [];
 
     if (
@@ -632,7 +728,9 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
   }
 
   #resolveApiKey(): string | null {
-    return this.#apiKeyOverride ?? readApiKeyFromStorage() ?? resolveDefaultApiKey();
+    return (
+      this.#apiKeyOverride ?? readApiKeyFromStorage() ?? resolveDefaultApiKey()
+    );
   }
 
   /** Phase 1: summarise a single file. Never throws — returns a placeholder on failure. */
@@ -665,7 +763,10 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
     client: ClaudeSdkClient,
     commit: CommitEntity,
     fileSummaries: readonly AiFileSummary[],
-  ): Promise<{ overviewCards: readonly AiOverviewCard[]; flowComparisons: readonly AiFlowComparison[] }> {
+  ): Promise<{
+    overviewCards: readonly AiOverviewCard[];
+    flowComparisons: readonly AiFlowComparison[];
+  }> {
     const prompt = buildOverviewPrompt(commit, fileSummaries);
     const response = await client.messages.create({
       model: this.#model,
@@ -702,7 +803,9 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
             return await runClaudePromptViaTauri(prompt);
           } catch (claudeFallbackError) {
             const activeMessage =
-              activeCliError instanceof Error ? activeCliError.message : "CLI execution failed.";
+              activeCliError instanceof Error
+                ? activeCliError.message
+                : "CLI execution failed.";
             const claudeMessage =
               claudeFallbackError instanceof Error
                 ? claudeFallbackError.message
@@ -729,12 +832,15 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
           return parsed;
         }
         if (!resolvedApiKey) {
-          throw new Error("CLI response could not be parsed as valid analysis JSON.");
+          throw new Error(
+            "CLI response could not be parsed as valid analysis JSON.",
+          );
         }
       } catch (error) {
         // CLI failed — fall through to SDK if key is available, else throw below.
         if (!resolvedApiKey) {
-          const message = error instanceof Error ? error.message : "CLI execution failed.";
+          const message =
+            error instanceof Error ? error.message : "CLI execution failed.";
           throw new Error(
             `Primary CLI agent "${activeCliAgent.name}" failed and no API key is available for SDK fallback (${message}).`,
           );
@@ -751,11 +857,14 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
         const cliResponse = await runViaCli(legacyPrompt);
         const parsed = parseLegacyResponse(cliResponse, input.commitId);
         if (!parsed) {
-          throw new Error("CLI response could not be parsed as valid analysis JSON.");
+          throw new Error(
+            "CLI response could not be parsed as valid analysis JSON.",
+          );
         }
         return parsed;
       } catch (error) {
-        const message = error instanceof Error ? error.message : "CLI fallback failed.";
+        const message =
+          error instanceof Error ? error.message : "CLI fallback failed.";
         throw new Error(
           `Commit analysis requires ANTHROPIC_API_KEY or a configured CLI agent (${message}).`,
         );
@@ -778,8 +887,11 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
         | { readonly kind: "skip-churn"; readonly file: ChangedFile };
 
       const partitioned: FilePartition[] = input.files.map((file) => {
-        if (isExcludedByPattern(file.path)) return { kind: "skip-pattern", file };
-        if (isExcludedByChurn(file.additions, file.deletions, maxChurnThreshold))
+        if (isExcludedByPattern(file.path))
+          return { kind: "skip-pattern", file };
+        if (
+          isExcludedByChurn(file.additions, file.deletions, maxChurnThreshold)
+        )
           return { kind: "skip-churn", file };
         return { kind: "analyse", file };
       });
@@ -802,12 +914,16 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
         throwIfAborted(input.abortSignal);
 
         if (p.kind === "skip-pattern") {
-          fileSummaries.push(skippedFileSummary(p.file, "pattern", maxChurnThreshold));
+          fileSummaries.push(
+            skippedFileSummary(p.file, "pattern", maxChurnThreshold),
+          );
           continue;
         }
 
         if (p.kind === "skip-churn") {
-          fileSummaries.push(skippedFileSummary(p.file, "churn", maxChurnThreshold));
+          fileSummaries.push(
+            skippedFileSummary(p.file, "churn", maxChurnThreshold),
+          );
           continue;
         }
 
@@ -836,11 +952,8 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
 
       // Phase 2: generate overview from the collected summaries.
       throwIfAborted(input.abortSignal);
-      const { overviewCards, flowComparisons } = await this.#generateOverviewSdk(
-        client,
-        input.commit,
-        fileSummaries,
-      );
+      const { overviewCards, flowComparisons } =
+        await this.#generateOverviewSdk(client, input.commit, fileSummaries);
 
       throwIfAborted(input.abortSignal);
 
@@ -863,7 +976,9 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
       const cliResponse = await runViaCli(legacyPrompt);
       const parsed = parseLegacyResponse(cliResponse, input.commitId);
       if (!parsed) {
-        throw new Error("CLI response could not be parsed as valid analysis JSON.");
+        throw new Error(
+          "CLI response could not be parsed as valid analysis JSON.",
+        );
       }
       return parsed;
     }
