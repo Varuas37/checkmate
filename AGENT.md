@@ -1,31 +1,36 @@
-# Agent Operating Guide
+# Agent Working Rules
 
-## Mandatory First Step
-Before starting any task, read `docs/vision.md`.
+## Mandatory Startup Sequence (No Exceptions)
+1. Read `vision.md` first. If the canonical vision file is `docs/vision.md`, read that file first instead.
+2. Read `coding_standards.md` second.
+3. Read task-specific files third.
+4. Confirm in the first progress update that this order was followed.
 
-If a requested change conflicts with `docs/vision.md`, do not proceed silently:
-1. Call out the conflict.
-2. Propose an explicit vision update or a scoped exception.
+## Autonomous Execution Default
+1. Execute tasks end-to-end until completion.
+2. Do not pause for routine confirmations between normal steps (analysis, edits, tests, and docs updates).
+3. Ask the user only when blocked by missing requirements, destructive/irreversible actions, or permission boundaries.
+4. If requirements are ambiguous, choose the safest standards-compliant interpretation and continue, then record assumptions in handoff notes.
 
-## Required Reading Order
-1. `docs/vision.md`
-2. `coding_standards.md`
-3. Task-specific files
+## Orchestration and Parallelism
+1. Parallelize independent workstreams whenever it reduces turnaround time.
+2. Use specialized agents/tools for focused subtasks when they improve quality or speed.
+3. Keep one orchestrator responsible for cross-output consistency and final integration.
+4. Never trade correctness, security, or boundary compliance for speed.
 
-## Execution Rules
-1. Keep changes aligned to the MVP and avoid unrelated scope.
-2. Prefer simple solutions that preserve responsiveness and clarity.
-3. Maintain schema compatibility unless a version bump is documented.
-4. Add or update tests for behavior changes.
-5. Keep docs current when changing architecture, schema, or workflow.
+## Architecture and UI Guardrails
+1. Preserve DDD dependency direction: `domain` -> `application` -> `infrastructure` -> `interface` -> `app`.
+2. Keep business logic out of `interface` and framework concerns out of `domain`.
+3. Preserve design-system consistency: token-driven styling, shared primitives/composed components first, and no ad-hoc visual variants without documented justification.
 
-## Deliverable Format For Agent Work
-Every substantial change should include:
-1. What changed.
-2. Why it changed.
-3. Bounded context(s) touched.
-4. Tests added/updated.
-5. Any follow-up tasks.
+## Conflict Handling
+1. If a request conflicts with `coding_standards.md`, flag the conflict explicitly.
+2. Provide a compliant alternative and proceed with it unless the user provides an explicit override.
+3. Never silently bypass standards.
 
-## Diagram/Trace Discipline
-When a feature impacts runtime flow, update the dogfood scenario and related trace schema so the app can explain itself.
+## Integration Handoff Notes (Required for Substantial Changes)
+Keep handoff concise and actionable:
+1. Scope: files/modules touched.
+2. Contracts: APIs, events, schemas, and integration impact.
+3. Integration steps: required downstream wiring or verification.
+4. Validation: checks/tests run plus remaining risks or assumptions.

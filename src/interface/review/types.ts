@@ -21,6 +21,20 @@ export interface ReviewTabOption {
   readonly label: string;
 }
 
+export interface ReviewLoadRequest {
+  readonly repositoryPath: string;
+  readonly commitSha: string;
+}
+
+export interface SampleCommitPreset extends ReviewLoadRequest {
+  readonly id: string;
+  readonly label: string;
+}
+
+export interface ReloadReviewWorkspaceInput extends ReviewLoadRequest {
+  readonly standardsRuleText: string;
+}
+
 export interface ArchitectureCluster {
   readonly id: string;
   readonly label: string;
@@ -97,6 +111,7 @@ export interface ReviewWorkspaceState {
 }
 
 export interface ReviewWorkspaceActions {
+  readonly reloadReviewWorkspace: (input: ReloadReviewWorkspaceInput) => void;
   readonly selectFile: (fileId: string | null) => void;
   readonly setDiffOrientation: (orientation: DiffOrientation) => void;
   readonly setFilterQuery: (query: string) => void;

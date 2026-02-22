@@ -1,58 +1,122 @@
 # Coding Standards
 
-## Core Rule
-This project follows Domain-Driven Design (DDD) strictly. No feature should bypass domain boundaries for short-term convenience.
+Date: 2026-02-22  
+Status: Enforced
 
-## Architecture Boundaries
-Use bounded contexts with clear ownership. Each context should follow:
-1. `domain/`: entities, value objects, aggregates, domain services, domain events.
-2. `application/`: use cases, orchestration, ports.
-3. `infrastructure/`: adapters, persistence, file I/O, external systems.
-4. `interface/`: UI/API layer and DTO mapping only.
+## 1) Mandatory Agent Workflow
+1. Before any implementation work, read the vision document first (`vision.md` or `docs/vision.md`, whichever is canonical in this repo).
+2. Read `coding_standards.md` second.
+3. Start task-specific analysis and edits only after steps 1-2 are complete.
+4. Execute tasks end-to-end by default. Do not stop for routine confirmations between normal implementation steps.
+5. Ask for user confirmation only when blocked by missing requirements, destructive/irreversible actions, or explicit permission boundaries.
+6. Parallelize independent subtasks and use specialized agents/tools when they materially improve quality or delivery time.
+7. Keep one orchestrator responsible for final integration coherence and standards compliance.
 
-Domain code must not import UI, framework, or persistence details.
+## 2) Core Principle
+This codebase uses strict DDD-inspired layering on frontend and backend.  
+No change may bypass layer boundaries for convenience.
 
-## DDD Rules
-1. Model business concepts using a shared ubiquitous language.
-2. Protect invariants inside aggregates.
-3. Use value objects for validated concepts, not primitive strings everywhere.
-4. Keep use cases thin and explicit.
-5. Keep side effects behind interfaces (ports), then implement adapters in infrastructure.
+## 3) Required Stack (Frontend)
+1. React + TypeScript.
+2. Redux Toolkit for application state.
+3. Tailwind CSS with token-driven design system.
+4. Tauri 2.0 host for local filesystem/git/CLI access.
 
-## TypeScript Standards (MVP)
-1. `strict` mode required.
-2. No `any` in domain and application layers.
-3. Validate all untrusted input at boundaries (`zod` schemas).
-4. Prefer named exports and explicit types for public APIs.
-5. Keep functions small and deterministic where possible.
+## 4) Architecture Model
+Use bounded contexts (for example, `review`, `diff`, `comment`) with this dependency direction only:
+1. `domain` -> no dependency on app/framework/infrastructure.
+2. `application` -> depends on `domain`.
+3. `infrastructure` -> implements `domain`/`application` ports and adapters.
+4. `interface` -> presentation/UI only, consumes application APIs.
+5. `app` -> composition/bootstrap only.
 
-## Reliability and Bug Prevention
-1. Every bug fix must include a regression test.
-2. Domain invariants require unit tests.
-3. Cross-context flows require integration tests.
-4. Reject invalid schema references with clear error messages.
-5. Fail fast on invalid state; do not silently continue.
+Forbidden:
+1. Business logic in `interface`.
+2. `domain` importing React/Redux/Tailwind/Tauri APIs.
+3. Cross-context deep imports.
+4. Dependency direction reversals for convenience.
 
-## Performance Standards
-1. Prioritize predictable performance over clever complexity.
-2. Keep animation frame work minimal and avoid unnecessary re-renders.
-3. Measure before optimizing; document hotspots.
-4. Consider Rust/WASM only for proven bottlenecks.
+## 5) Frontend Folder Baseline
+```txt
+src/
+  app/
+  domain/
+  application/
+  infrastructure/
+  interface/
+  design-system/
+  shared/
+```
 
-## Simplicity Rules
-1. Prefer boring, maintainable code over abstraction-heavy designs.
-2. Do not introduce frameworks or patterns without clear need.
-3. Remove dead code quickly.
-4. Keep file/module responsibilities narrow and clear.
+Each context should maintain:
+1. `domain`: entities/value objects/policies/ports.
+2. `application`: use-cases, state orchestration, selectors.
+3. `infrastructure`: API/repositories/persistence/adapters.
+4. `interface`: containers, presentational components, routes.
 
-## Documentation Rules
-1. Update `docs/vision.md` when product direction changes.
-2. Document schema changes with version and migration notes.
-3. Keep examples in sync with current behavior.
+## 6) Redux Rules
+1. Use Redux Toolkit only (`createSlice`, `createEntityAdapter`, listener middleware, RTK Query).
+2. Prefer RTK Query for server state.
+3. Prefer listener middleware for workflow orchestration.
+4. Use `createAsyncThunk` only when RTK Query/listener middleware does not fit.
+5. Keep Redux state normalized (entity tables + IDs), avoid nested relational duplication.
+6. Keep state serializable; no functions/class instances/Map/Set in store.
+7. Use memoized selectors for derived data.
+8. Action names should express domain events, not generic setters.
 
-## Pull Request Checklist
-1. Which bounded context is changed?
-2. Are domain invariants still explicit and tested?
-3. Are boundaries respected (no forbidden imports)?
-4. Are schema and docs updated?
-5. Is the change simple enough for a new contributor to follow?
+## 7) Logic vs Presentation Separation
+1. Presentational components must receive data via props and emit callbacks via props.
+2. Presentational components must not call APIs directly or own store mutation/orchestration logic.
+3. Containers/hooks/use-cases manage fetching, orchestration, and command handling.
+4. Complex branching and workflow logic must live outside JSX.
+
+## 8) Design System + Tailwind Rules
+1. No raw visual values in feature components (hex colors, ad-hoc spacing, one-off typography).
+2. Use token-backed theme values only.
+3. Maintain design system layers: `tokens`, `primitives`, `composed`, `shells`.
+4. Reuse shared primitives/composed components before creating new variants.
+5. Any unavoidable new variant must document why existing primitives/composed components are insufficient.
+6. Visual language must stay minimal, consistent, and intentional across contexts.
+
+## 9) TypeScript Requirements
+1. `strict: true` is required.
+2. Keep `noUncheckedIndexedAccess` enabled.
+3. Keep `exactOptionalPropertyTypes` enabled.
+4. No `any` in `domain` or `application` layers.
+5. Prefer explicit public types at module boundaries.
+
+## 10) Testing Requirements
+1. Reducers/selectors/use-cases require unit tests.
+2. Bug fixes require regression tests.
+3. Critical review workflows require integration tests.
+4. Tests must validate behavior, not implementation trivia.
+
+## 11) Documentation Rules
+1. Update the vision doc (`vision.md` or `docs/vision.md`) when architecture or product direction changes.
+2. Document new boundaries and ports when introducing contexts.
+3. If a rule exception is needed, document reason and expiry condition in the PR.
+4. Keep `AGENT.md` and `coding_standards.md` aligned when execution rules change.
+
+## 12) Integration Handoff Notes (Mandatory for Non-Trivial Changes)
+Every substantial delivery must include concise handoff notes:
+1. Scope: files/modules/contexts touched.
+2. Contracts: APIs/events/schemas changed and downstream impact.
+3. Integration actions: what another contributor must wire, migrate, or verify.
+4. Validation: tests/checks run and remaining risks/assumptions.
+
+## 13) Anti-Patterns (Do Not Introduce)
+1. UI components directly calling remote APIs.
+2. Random `useEffect` data fetching where RTK Query should be used.
+3. A "god slice" containing unrelated domains.
+4. Theme drift through one-off styles.
+5. Cross-layer imports that violate boundaries.
+6. Massive files with mixed concerns.
+7. Serial execution of obviously independent subtasks when parallel orchestration is feasible.
+
+## 14) PR Checklist (Mandatory)
+1. Which bounded context(s) changed?
+2. Are DDD layer boundaries and dependency direction preserved?
+3. Are logic and presentation clearly separated?
+4. Are Redux changes normalized and serializable?
+5. Are design-system primitives/composed components reused consistently?
+6. Were tests, handoff notes, and docs updated?

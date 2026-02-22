@@ -18,7 +18,12 @@ import {
 } from "../../../app/store/review/index.ts";
 import type { FileChangeStatus, ThreadStatus } from "../../../domain/review/index.ts";
 import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT } from "../constants.ts";
-import type { CreateThreadInput, ReviewWorkspaceActions, ReviewWorkspaceState } from "../types.ts";
+import type {
+  CreateThreadInput,
+  ReloadReviewWorkspaceInput,
+  ReviewWorkspaceActions,
+  ReviewWorkspaceState,
+} from "../types.ts";
 import { useReviewDispatch, useReviewSelector } from "./useReviewStoreHooks.ts";
 
 function titleCase(value: string): string {
@@ -53,6 +58,18 @@ function summarizeRisk(additions: number, deletions: number): string {
   return "Low direct churn; focus on correctness and standards alignment.";
 }
 
+function normalizeReloadInput(input: ReloadReviewWorkspaceInput): ReloadReviewWorkspaceInput {
+  const repositoryPath = input.repositoryPath.trim();
+  const commitSha = input.commitSha.trim();
+  const standardsRuleText = input.standardsRuleText.trim();
+
+  return {
+    repositoryPath: repositoryPath.length > 0 ? repositoryPath : DEFAULT_LOAD_REQUEST.repositoryPath,
+    commitSha: commitSha.length > 0 ? commitSha : DEFAULT_LOAD_REQUEST.commitSha,
+    standardsRuleText: standardsRuleText.length > 0 ? standardsRuleText : DEFAULT_STANDARDS_RULE_TEXT,
+  };
+}
+
 export function useReviewWorkspace(): {
   readonly state: ReviewWorkspaceState;
   readonly actions: ReviewWorkspaceActions;
@@ -73,10 +90,12 @@ export function useReviewWorkspace(): {
     }
 
     dispatch(
-      loadCommitReviewRequested({
-        ...DEFAULT_LOAD_REQUEST,
-        standardsRuleText: DEFAULT_STANDARDS_RULE_TEXT,
-      }),
+      loadCommitReviewRequested(
+        normalizeReloadInput({
+          ...DEFAULT_LOAD_REQUEST,
+          standardsRuleText: DEFAULT_STANDARDS_RULE_TEXT,
+        }),
+      ),
     );
   }, [dispatch, ui.loadStatus]);
 
@@ -310,6 +329,13 @@ export function useReviewWorkspace(): {
     [dispatch],
   );
 
+  const reloadReviewWorkspace = useCallback(
+    (input: ReloadReviewWorkspaceInput) => {
+      dispatch(loadCommitReviewRequested(normalizeReloadInput(input)));
+    },
+    [dispatch],
+  );
+
   const setDiffOrientation = useCallback(
     (orientation: "split" | "unified") => {
       dispatch(reviewUiActions.setDiffOrientation({ orientation }));
@@ -492,6 +518,7 @@ export function useReviewWorkspace(): {
       isPublishingReady: ui.activeCommitId !== null,
     },
     actions: {
+      reloadReviewWorkspace,
       selectFile,
       setDiffOrientation,
       setFilterQuery,

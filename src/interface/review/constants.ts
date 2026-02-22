@@ -1,4 +1,4 @@
-import type { ReviewTabOption } from "./types.ts";
+import type { ReviewLoadRequest, ReviewTabOption, SampleCommitPreset } from "./types.ts";
 
 export const REVIEW_TABS: readonly ReviewTabOption[] = [
   { id: "overview", label: "Overview" },
@@ -7,10 +7,37 @@ export const REVIEW_TABS: readonly ReviewTabOption[] = [
   { id: "standards", label: "Standards" },
 ];
 
-export const DEFAULT_LOAD_REQUEST = {
+export const DEFAULT_LOAD_REQUEST: ReviewLoadRequest = {
   repositoryPath: ".",
   commitSha: "HEAD",
 };
+
+export const SAMPLE_COMMIT_PRESETS: readonly SampleCommitPreset[] = [
+  {
+    id: "sample-head",
+    label: "Review MVP bootstrap (HEAD)",
+    repositoryPath: ".",
+    commitSha: "HEAD",
+  },
+  {
+    id: "sample-auth",
+    label: "Auth hardening (a11ce5e7)",
+    repositoryPath: "./apps/api",
+    commitSha: "a11ce5e7",
+  },
+  {
+    id: "sample-visuals",
+    label: "Overview visuals (b7c4d9a2)",
+    repositoryPath: "./apps/web",
+    commitSha: "b7c4d9a2",
+  },
+  {
+    id: "sample-standards",
+    label: "Standards parser refresh (c0ffee42)",
+    repositoryPath: ".",
+    commitSha: "c0ffee42",
+  },
+];
 
 export const DEFAULT_STANDARDS_RULE_TEXT = [
   "1. No any types in domain or application logic.",

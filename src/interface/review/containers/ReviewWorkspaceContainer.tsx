@@ -1,7 +1,16 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
-import { AppFrame, Badge, Card, CardBody, CardDescription, CardTitle } from "../../../design-system/index.ts";
-import { REVIEW_TABS } from "../constants.ts";
+import {
+  AppFrame,
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  CardDescription,
+  CardTitle,
+  Input,
+} from "../../../design-system/index.ts";
+import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT, REVIEW_TABS, SAMPLE_COMMIT_PRESETS } from "../constants.ts";
 import {
   ChangedFilesSidebar,
   DiffViewer,
@@ -12,7 +21,9 @@ import {
   TopTabs,
 } from "../components/index.ts";
 import { useReviewWorkspace } from "../hooks/useReviewWorkspace.ts";
-import type { ReviewTabId } from "../types.ts";
+import type { ReviewLoadRequest, ReviewTabId } from "../types.ts";
+
+const CUSTOM_PRESET_ID = "custom-commit";
 
 function statusToneForLoad(loadStatus: "idle" | "loading" | "loaded" | "error"): "neutral" | "accent" | "positive" | "danger" {
   if (loadStatus === "loading") {
@@ -34,6 +45,24 @@ export function ReviewWorkspaceContainer() {
   const { state, actions } = useReviewWorkspace();
   const [activeTab, setActiveTab] = useState<ReviewTabId>("overview");
   const [highlightedFileIds, setHighlightedFileIds] = useState<readonly string[]>([]);
+  const [repositoryPathInput, setRepositoryPathInput] = useState(DEFAULT_LOAD_REQUEST.repositoryPath);
+  const [commitShaInput, setCommitShaInput] = useState(DEFAULT_LOAD_REQUEST.commitSha);
+  const [selectedPresetId, setSelectedPresetId] = useState<string>(
+    SAMPLE_COMMIT_PRESETS[0]?.id ?? CUSTOM_PRESET_ID,
+  );
+
+  const triggerCommitReload = useCallback(
+    (request: ReviewLoadRequest) => {
+      setHighlightedFileIds([]);
+      setActiveTab("overview");
+      actions.reloadReviewWorkspace({
+        repositoryPath: request.repositoryPath,
+        commitSha: request.commitSha,
+        standardsRuleText: DEFAULT_STANDARDS_RULE_TEXT,
+      });
+    },
+    [actions],
+  );
 
   const header = (
     <Card>
@@ -53,6 +82,84 @@ export function ReviewWorkspaceContainer() {
             {state.commit && <Badge tone="accent">{state.commit.repositoryPath}</Badge>}
           </div>
         </div>
+
+        <form
+          className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
+          onSubmit={(event) => {
+            event.preventDefault();
+            triggerCommitReload({
+              repositoryPath: repositoryPathInput,
+              commitSha: commitShaInput,
+            });
+          }}
+        >
+          <label className="space-y-1 text-xs text-muted">
+            Repository Path
+            <Input
+              value={repositoryPathInput}
+              onChange={(event) => {
+                setRepositoryPathInput(event.target.value);
+                setSelectedPresetId(CUSTOM_PRESET_ID);
+              }}
+              placeholder="."
+              aria-label="Repository path"
+            />
+          </label>
+
+          <label className="space-y-1 text-xs text-muted">
+            Commit SHA
+            <Input
+              value={commitShaInput}
+              onChange={(event) => {
+                setCommitShaInput(event.target.value);
+                setSelectedPresetId(CUSTOM_PRESET_ID);
+              }}
+              placeholder="HEAD"
+              aria-label="Commit SHA"
+            />
+          </label>
+
+          <label className="space-y-1 text-xs text-muted">
+            Sample Commits
+            <select
+              className="h-10 w-full rounded-md border border-border bg-surface px-2 text-sm text-text"
+              value={selectedPresetId}
+              onChange={(event) => {
+                const nextPresetId = event.target.value;
+                setSelectedPresetId(nextPresetId);
+
+                if (nextPresetId === CUSTOM_PRESET_ID) {
+                  return;
+                }
+
+                const preset = SAMPLE_COMMIT_PRESETS.find((item) => item.id === nextPresetId);
+
+                if (!preset) {
+                  return;
+                }
+
+                setRepositoryPathInput(preset.repositoryPath);
+                setCommitShaInput(preset.commitSha);
+                triggerCommitReload({
+                  repositoryPath: preset.repositoryPath,
+                  commitSha: preset.commitSha,
+                });
+              }}
+              aria-label="Sample commit quick pick"
+            >
+              <option value={CUSTOM_PRESET_ID}>Custom input</option>
+              {SAMPLE_COMMIT_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <Button type="submit" variant="secondary" className="self-end" disabled={state.loadStatus === "loading"}>
+            Load Commit
+          </Button>
+        </form>
 
         <TopTabs tabs={REVIEW_TABS} activeTab={activeTab} onChange={setActiveTab} />
       </CardBody>
