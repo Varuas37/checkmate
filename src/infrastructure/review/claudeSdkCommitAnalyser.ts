@@ -146,6 +146,31 @@ function trimToNull(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    const error = new Error("Commit analysis cancelled.");
+    error.name = "AbortError";
+    throw error;
+  }
+}
+
+async function yieldToUiThread(): Promise<void> {
+  if (typeof globalThis.requestAnimationFrame === "function") {
+    await new Promise<void>((resolve) => {
+      globalThis.requestAnimationFrame(() => resolve());
+    });
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    globalThis.setTimeout(resolve, 0);
+  });
+}
+
 function resolveDefaultApiKey(): string | null {
   const nodeApiKey =
     typeof process !== "undefined" ? trimToNull(process.env.ANTHROPIC_API_KEY) : null;
@@ -730,9 +755,10 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
     }
 
     // -----------------------------------------------------------------------
-    // SDK path — fan-out (one call per file) then fan-in (one overview call)
+    // SDK path — one file at a time (keeps UI responsive) then overview call
     // -----------------------------------------------------------------------
     try {
+      throwIfAborted(input.abortSignal);
       const client = await this.#createClient(resolvedApiKey);
       const { maxChurnThreshold } = readAiAnalysisConfigFromStorage();
 
@@ -761,38 +787,54 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
         }
       }
 
-      // Phase 1: analyse non-skipped files in parallel.
-      const toAnalyse = partitioned.filter((p) => p.kind === "analyse");
-      const analysisResults = await Promise.allSettled(
-        toAnalyse.map((p) =>
-          this.#analyseFileSdk(client, input.commit, p.file, hunksByFileId.get(p.file.id) ?? []),
-        ),
-      );
+      // Phase 1: analyse files lazily, one by one, yielding between files so
+      // rendering and interactions stay responsive in the webview.
+      const fileSummaries: AiFileSummary[] = [];
+      for (const p of partitioned) {
+        throwIfAborted(input.abortSignal);
 
-      // Merge placeholder + analysis results in original file order.
-      let analysisIndex = 0;
-      const fileSummaries: AiFileSummary[] = partitioned.map((p) => {
         if (p.kind === "skip-pattern") {
-          return skippedFileSummary(p.file, "pattern", maxChurnThreshold);
+          fileSummaries.push(skippedFileSummary(p.file, "pattern", maxChurnThreshold));
+          continue;
         }
+
         if (p.kind === "skip-churn") {
-          return skippedFileSummary(p.file, "churn", maxChurnThreshold);
+          fileSummaries.push(skippedFileSummary(p.file, "churn", maxChurnThreshold));
+          continue;
         }
-        const result = analysisResults[analysisIndex++];
-        if (result?.status === "fulfilled") return result.value;
-        return {
-          filePath: p.file.path,
-          summary: "Summary unavailable.",
-          riskNote: "Summary unavailable.",
-        };
-      });
+
+        try {
+          const summary = await this.#analyseFileSdk(
+            client,
+            input.commit,
+            p.file,
+            hunksByFileId.get(p.file.id) ?? [],
+          );
+          fileSummaries.push(summary);
+        } catch (error) {
+          if (isAbortError(error)) {
+            throw error;
+          }
+
+          fileSummaries.push({
+            filePath: p.file.path,
+            summary: "Summary unavailable.",
+            riskNote: "Summary unavailable.",
+          });
+        }
+
+        await yieldToUiThread();
+      }
 
       // Phase 2: generate overview from the collected summaries.
+      throwIfAborted(input.abortSignal);
       const { overviewCards, flowComparisons } = await this.#generateOverviewSdk(
         client,
         input.commit,
         fileSummaries,
       );
+
+      throwIfAborted(input.abortSignal);
 
       return {
         commitId: input.commitId,

@@ -26,6 +26,12 @@ export interface CommentDeletedPayload {
   readonly commentId: string;
 }
 
+export interface ThreadStatusUpdatedPayload {
+  readonly threadId: string;
+  readonly status: CommentThread["status"];
+  readonly updatedAtIso: string;
+}
+
 export interface StandardsEvaluatedPayload {
   readonly commitId: string;
   readonly rules: readonly StandardsRule[];
@@ -124,6 +130,18 @@ export const reviewEntitiesSlice = createSlice({
       } else {
         delete state.threadIdsByFileId[thread.fileId];
       }
+    },
+    threadStatusUpdated(state, action: PayloadAction<ThreadStatusUpdatedPayload>): void {
+      const thread = state.threadsById[action.payload.threadId];
+      if (!thread) {
+        return;
+      }
+
+      state.threadsById[action.payload.threadId] = {
+        ...thread,
+        status: action.payload.status,
+        updatedAtIso: action.payload.updatedAtIso,
+      };
     },
     standardsEvaluated(state, action: PayloadAction<StandardsEvaluatedPayload>): void {
       const { commitId, rules, results } = action.payload;

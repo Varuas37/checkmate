@@ -113,6 +113,7 @@ function createStateFixture(): ReviewRootState {
       lastError: null,
       activeCommitId: "commit-1",
       activeFileId: "file-b",
+      fileInspectionMode: "summary",
       diffOrientation: "split",
       diffViewMode: "changes",
       fileFilter: {

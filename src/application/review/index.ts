@@ -2,6 +2,7 @@ export type {
   AiAnalysisStatus,
   AiSequenceStatus,
   DiffViewMode,
+  FileInspectionMode,
   FileFilter,
   FileVersionsLoadStatus,
   PublishReviewCommentPayload,

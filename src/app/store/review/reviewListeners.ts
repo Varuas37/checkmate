@@ -271,7 +271,7 @@ export function createReviewListenerMiddleware(
           deps.reviewDataSource
             .listRepositoryCommits({
               repositoryPath: action.payload.repositoryPath,
-              limit: 120,
+              limit: 15,
             })
             .catch(() => []),
           15_000,
@@ -286,21 +286,24 @@ export function createReviewListenerMiddleware(
           45_000,
           "Timed out while loading commit review data. Verify the desktop backend is running.",
         );
-        const repositoryCommits = await repositoryCommitsPromise;
 
         listenerApi.dispatch(reviewEntitiesActions.hydrateFromAggregate(aggregate));
 
         listenerApi.dispatch(
           reviewUiActions.hydrateForCommit({
-            commitId: aggregate.commit.id,
-            firstFileId: aggregate.files[0]?.id ?? null,
-          }),
+              commitId: aggregate.commit.id,
+              firstFileId: aggregate.files[0]?.id ?? null,
+            }),
         );
-        listenerApi.dispatch(
-          reviewUiActions.setRepositoryCommits({
-            commits: repositoryCommits,
-          }),
-        );
+
+        void repositoryCommitsPromise.then((repositoryCommits) => {
+          listenerApi.dispatch(
+            reviewUiActions.setRepositoryCommits({
+              commits: repositoryCommits,
+            }),
+          );
+        });
+
         const cachedAiAnalysis = readAiAnalysisFromStorage({
           repositoryPath: aggregate.commit.repositoryPath,
           commitSha: aggregate.commit.commitSha,
@@ -317,8 +320,6 @@ export function createReviewListenerMiddleware(
           );
           return;
         }
-
-        listenerApi.dispatch(analyseCommitRequested({ commitId: aggregate.commit.id }));
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to load commit review.";
         listenerApi.dispatch(reviewUiActions.markLoadFailed({ errorMessage: message }));
@@ -343,12 +344,15 @@ export function createReviewListenerMiddleware(
 
       if (hasCheckmateMention(action.payload.body)) {
         const reviewerPrompt = stripCheckmateMentions(action.payload.body);
-        listenerApi.dispatch(
-          askAgentDraftRequested({
-            threadId: created.thread.id,
-            ...(reviewerPrompt.length > 0 ? { reviewerPrompt } : {}),
-          }),
-        );
+        const payload = {
+          threadId: created.thread.id,
+          ...(reviewerPrompt.length > 0 ? { reviewerPrompt } : {}),
+        };
+
+        // Defer agent follow-up to keep comment creation/navigation immediate.
+        globalThis.setTimeout(() => {
+          listenerApi.dispatch(askAgentDraftRequested(payload));
+        }, 0);
       }
     },
   });
@@ -395,10 +399,9 @@ export function createReviewListenerMiddleware(
   });
 
   startListening({
-    actionCreator: reviewUiActions.setActiveFileId,
+    actionCreator: reviewUiActions.setFileInspectionMode,
     effect: async (action, listenerApi) => {
-      const fileId = action.payload.fileId;
-      if (!fileId) {
+      if (action.payload.mode !== "diff") {
         return;
       }
 
@@ -408,8 +411,71 @@ export function createReviewListenerMiddleware(
         return;
       }
 
+      const resolvedFileId = state.reviewUi.activeFileId;
+      if (!resolvedFileId) {
+        return;
+      }
+
       const commit = state.reviewEntities.commitsById[activeCommitId];
-      const file = state.reviewEntities.filesById[fileId];
+      const file = state.reviewEntities.filesById[resolvedFileId];
+      if (!commit || !file) {
+        return;
+      }
+
+      const currentStatus = state.reviewUi.fileVersionsLoadStatusByFileId[file.id];
+      if (currentStatus === "loading" || currentStatus === "loaded") {
+        return;
+      }
+
+      listenerApi.dispatch(
+        reviewUiActions.fileVersionsLoadStarted({
+          fileId: file.id,
+        }),
+      );
+
+      try {
+        const versions = await deps.reviewDataSource.readCommitFileVersions({
+          repositoryPath: commit.repositoryPath,
+          commitSha: commit.commitSha,
+          oldPath: file.previousPath ?? file.path,
+          newPath: file.path,
+        });
+
+        listenerApi.dispatch(
+          reviewUiActions.fileVersionsLoaded({
+            fileId: file.id,
+            versions,
+          }),
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to load file versions.";
+        listenerApi.dispatch(
+          reviewUiActions.fileVersionsLoadFailed({
+            fileId: file.id,
+            errorMessage: message,
+          }),
+        );
+      }
+    },
+  });
+
+  startListening({
+    actionCreator: reviewUiActions.setDiffViewMode,
+    effect: async (action, listenerApi) => {
+      if (action.payload.mode === "changes") {
+        return;
+      }
+
+      const state = listenerApi.getState();
+      const activeCommitId = state.reviewUi.activeCommitId;
+      const activeFileId = state.reviewUi.activeFileId;
+      if (!activeCommitId || !activeFileId) {
+        return;
+      }
+
+      const commit = state.reviewEntities.commitsById[activeCommitId];
+      const file = state.reviewEntities.filesById[activeFileId];
       if (!commit || !file) {
         return;
       }
@@ -472,6 +538,23 @@ export function createReviewListenerMiddleware(
       const commit = state.reviewEntities.commitsById[thread.commitId];
       const comments = selectThreadComments(state, thread.id);
       const prompt = action.payload.reviewerPrompt?.trim();
+
+      listenerApi.dispatch(
+        reviewUiActions.setAskAgentDraft({
+          threadId: thread.id,
+          draft: "Checkmate is reviewing this thread...",
+        }),
+      );
+
+      // Yield once so the optimistic thread/comment paint is not blocked by prompt assembly.
+      await new Promise<void>((resolve) => {
+        globalThis.setTimeout(resolve, 0);
+      });
+
+      if (listenerApi.signal.aborted) {
+        return;
+      }
+
       const relatedHunkHeaders = resolveRelatedHunkHeaders(state, file.id, hunk.id);
       const matchingFileSummary =
         state.reviewUi.aiAnalysis?.commitId === thread.commitId
@@ -524,13 +607,6 @@ export function createReviewListenerMiddleware(
               comments,
               additionalContext,
             });
-
-      listenerApi.dispatch(
-        reviewUiActions.setAskAgentDraft({
-          threadId: thread.id,
-          draft: "Checkmate is reviewing this thread...",
-        }),
-      );
 
       try {
         const requestId = deps.createId();
@@ -650,6 +726,7 @@ export function createReviewListenerMiddleware(
   startListening({
     actionCreator: analyseCommitRequested,
     effect: async (action, listenerApi) => {
+      listenerApi.cancelActiveListeners();
       const context = resolveCommitContext(listenerApi.getState(), action.payload.commitId);
       if (!context) {
         return;
@@ -663,7 +740,12 @@ export function createReviewListenerMiddleware(
           commit: context.commit,
           files: context.files,
           hunks: context.hunks,
+          abortSignal: listenerApi.signal,
         });
+
+        if (listenerApi.signal.aborted) {
+          return;
+        }
 
         writeAiAnalysisToStorage({
           repositoryPath: context.commit.repositoryPath,
@@ -676,6 +758,9 @@ export function createReviewListenerMiddleware(
           listenerApi.dispatch(regenerateSequenceRequested({ commitId: action.payload.commitId }));
         }
       } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+          return;
+        }
         const message =
           error instanceof Error ? error.message : "Failed to analyse commit with AI.";
         listenerApi.dispatch(reviewUiActions.aiAnalysisFailed({ errorMessage: message }));

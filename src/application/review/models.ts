@@ -96,12 +96,14 @@ export type StandardsAnalysisStatus = "idle" | "analysing" | "ready" | "error";
 export type DiffViewMode = "changes" | "old" | "new";
 
 export type FileVersionsLoadStatus = "idle" | "loading" | "loaded" | "error";
+export type FileInspectionMode = "summary" | "diff";
 
 export interface ReviewUiState {
   loadStatus: ReviewLoadStatus;
   lastError: string | null;
   activeCommitId: string | null;
   activeFileId: string | null;
+  fileInspectionMode: FileInspectionMode;
   diffOrientation: DiffOrientation;
   diffViewMode: DiffViewMode;
   fileFilter: FileFilter;

@@ -38,6 +38,7 @@ export function createInitialReviewUiState(): ReviewUiState {
     lastError: null,
     activeCommitId: null,
     activeFileId: null,
+    fileInspectionMode: "summary",
     diffOrientation: "split",
     diffViewMode: "changes",
     fileFilter: createDefaultFileFilter(),

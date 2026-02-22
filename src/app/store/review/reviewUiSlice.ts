@@ -4,6 +4,7 @@ import {
   createDefaultFileFilter,
   createInitialReviewUiState,
   toggleDiffOrientation as toggleDiffOrientationValue,
+  type FileInspectionMode,
   type DiffViewMode,
   type FileFilter,
   type PublishReviewPackage,
@@ -33,6 +34,10 @@ export interface PublishStartedPayload {
 
 export interface SetDiffViewModePayload {
   readonly mode: DiffViewMode;
+}
+
+export interface SetFileInspectionModePayload {
+  readonly mode: FileInspectionMode;
 }
 
 export interface FileVersionsLoadStartedPayload {
@@ -149,6 +154,7 @@ export const reviewUiSlice = createSlice({
       state.lastError = null;
       state.activeCommitId = action.payload.commitId;
       state.activeFileId = action.payload.firstFileId;
+      state.fileInspectionMode = "summary";
       state.diffViewMode = "changes";
       state.fileFilter = cloneFileFilter(createDefaultFileFilter());
       state.publishStatus = "ready";
@@ -173,12 +179,21 @@ export const reviewUiSlice = createSlice({
     },
     setActiveFileId(state, action: PayloadAction<{ readonly fileId: string | null }>): void {
       state.activeFileId = action.payload.fileId;
+      state.fileInspectionMode = "summary";
+      state.diffViewMode = "changes";
     },
     setDiffOrientation(state, action: PayloadAction<{ readonly orientation: DiffOrientation }>): void {
       state.diffOrientation = action.payload.orientation;
     },
+    setFileInspectionMode(
+      state,
+      action: PayloadAction<SetFileInspectionModePayload>,
+    ): void {
+      state.fileInspectionMode = action.payload.mode;
+    },
     setDiffViewMode(state, action: PayloadAction<SetDiffViewModePayload>): void {
       state.diffViewMode = action.payload.mode;
+      state.fileInspectionMode = "diff";
     },
     toggleDiffOrientation(state): void {
       state.diffOrientation = toggleDiffOrientationValue(state.diffOrientation);

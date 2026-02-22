@@ -106,6 +106,7 @@ export interface AnalyseCommitInput {
   readonly commit: CommitReview;
   readonly files: readonly ChangedFile[];
   readonly hunks: readonly DiffHunk[];
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface AiOverviewCard {
