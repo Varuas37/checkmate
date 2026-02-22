@@ -34,3 +34,26 @@ export interface StandardsEvaluationOutput {
 export interface StandardsEvaluator {
   evaluate(input: StandardsEvaluationInput): StandardsEvaluationOutput;
 }
+
+export type ReviewPublishProvider = "claude-sdk";
+
+export interface PublishReviewRequest {
+  readonly requestId: string;
+  readonly requestedBy: string;
+  readonly requestedAtIso: string;
+  readonly commitId: string;
+  readonly commitSha: string;
+  readonly payloadJson: string;
+}
+
+export interface PublishReviewResult {
+  readonly provider: ReviewPublishProvider;
+  readonly requestId: string;
+  readonly publicationId: string;
+  readonly publishedAtIso: string;
+  readonly summary: string;
+}
+
+export interface ReviewPublisher {
+  publishReview(input: PublishReviewRequest): Promise<PublishReviewResult>;
+}

@@ -147,6 +147,8 @@ function createStateFixture(): ReviewRootState {
       },
       publishStatus: "ready",
       lastPublishPackage: null,
+      publishResult: null,
+      publishError: null,
     },
   };
 }

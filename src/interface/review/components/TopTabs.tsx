@@ -10,10 +10,18 @@ export interface TopTabsProps {
 
 export function TopTabs({ tabs, activeTab, onChange }: TopTabsProps) {
   return (
-    <nav className="flex w-full gap-1 overflow-x-auto border-b border-border bg-canvas px-3">
-      {tabs.map((tab) => (
-        <TabButton key={tab.id} label={tab.label} active={tab.id === activeTab} onClick={() => onChange(tab.id)} />
-      ))}
+    <nav className="border-t border-border/70 bg-surface-subtle/60" role="tablist" aria-label="Review sections">
+      <div className="flex min-h-10 w-full items-end gap-0.5 overflow-x-auto px-3 sm:px-4">
+        {tabs.map((tab) => (
+          <TabButton
+            key={tab.id}
+            label={tab.label}
+            active={tab.id === activeTab}
+            onClick={() => onChange(tab.id)}
+            className="px-3 py-2"
+          />
+        ))}
+      </div>
     </nav>
   );
 }

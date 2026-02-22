@@ -31,9 +31,10 @@ pub fn cmd_read_file_diff(repo_path: String, commit_hash: String, file_path: Str
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         // SECURITY PLACEHOLDER:
         // Keep capabilities least-privilege in src-tauri/capabilities/*.json
-        // when file system, shell, or dialog plugins are introduced.
+        // when additional file system or shell plugins are introduced.
         //
         // TODO: wire command stubs via `#[tauri::command]` + `generate_handler!`
         // after desktop command contracts are finalized.

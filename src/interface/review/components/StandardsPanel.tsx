@@ -25,7 +25,7 @@ function toneForResult(status: "pass" | "warn" | "fail"): "positive" | "caution"
 
 export function StandardsPanel({ checks, counts }: StandardsPanelProps) {
   return (
-    <div className="space-y-4">
+    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-3">
       <Card>
         <CardHeader className="border-b-0 pb-0">
           <CardTitle>Standards Outcome</CardTitle>

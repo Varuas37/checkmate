@@ -13,7 +13,9 @@ export function TabButton({ label, active, onClick, className, ...props }: TabBu
     <button
       type="button"
       onClick={onClick}
+      role="tab"
       aria-pressed={active}
+      aria-selected={active}
       className={cn(
         "relative -mb-px border-b-2 px-3 py-2.5 font-mono text-[11px] uppercase tracking-[0.08em] transition-colors",
         active

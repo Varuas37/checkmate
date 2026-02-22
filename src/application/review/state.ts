@@ -43,6 +43,8 @@ export function createInitialReviewUiState(): ReviewUiState {
     askAgentDraftByThreadId: {},
     publishStatus: "idle",
     lastPublishPackage: null,
+    publishResult: null,
+    publishError: null,
   };
 }
 

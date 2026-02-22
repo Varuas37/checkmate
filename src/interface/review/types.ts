@@ -7,12 +7,13 @@ import type {
   DiffOrientation,
   FileChangeStatus,
   OverviewCard,
+  PublishReviewResult,
   ReviewComment,
   StandardsResult,
   StandardsRule,
   ThreadStatus,
 } from "../../domain/review/index.ts";
-import type { FileFilter, PublishReviewPackage } from "../../application/review/index.ts";
+import type { FileFilter, PublishReviewPackage, ReviewPublishStatus } from "../../application/review/index.ts";
 
 export type ReviewTabId = "overview" | "files" | "summary" | "standards";
 
@@ -112,6 +113,9 @@ export interface ReviewWorkspaceState {
   readonly threadModels: readonly ThreadViewModel[];
   readonly fileSummaries: readonly FileSummary[];
   readonly publishPackage: PublishReviewPackage | null;
+  readonly publishStatus: ReviewPublishStatus;
+  readonly publishResult: PublishReviewResult | null;
+  readonly publishError: string | null;
   readonly standardsCounts: {
     readonly pass: number;
     readonly warn: number;

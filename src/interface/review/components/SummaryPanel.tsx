@@ -1,6 +1,6 @@
 import { Badge, Button, Card, CardBody, CardDescription, CardHeader, CardTitle } from "../../../design-system/index.ts";
 import type { PublishReviewPackage } from "../../../application/review/index.ts";
-import type { CommitReview, OverviewCard } from "../../../domain/review/index.ts";
+import type { CommitReview, OverviewCard, PublishReviewResult } from "../../../domain/review/index.ts";
 
 import type { FileSummary } from "../types.ts";
 
@@ -9,6 +9,9 @@ export interface SummaryPanelProps {
   readonly overviewCards: readonly OverviewCard[];
   readonly fileSummaries: readonly FileSummary[];
   readonly publishPackage: PublishReviewPackage | null;
+  readonly publishStatus: "idle" | "ready" | "publishing" | "published" | "error";
+  readonly publishResult: PublishReviewResult | null;
+  readonly publishError: string | null;
   readonly canPublish: boolean;
   readonly onPublishReview: () => void;
 }
@@ -34,15 +37,18 @@ export function SummaryPanel({
   overviewCards,
   fileSummaries,
   publishPackage,
+  publishStatus,
+  publishResult,
+  publishError,
   canPublish,
   onPublishReview,
 }: SummaryPanelProps) {
   const publishPreview = publishPackage ? JSON.stringify(publishPackage, null, 2) : null;
 
   return (
-    <div className="space-y-4">
+    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-3">
       <Card>
-        <CardBody className="space-y-4">
+        <CardBody className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="space-y-1">
               <p className="text-xs uppercase tracking-[0.16em] text-muted">Summary</p>
@@ -50,7 +56,7 @@ export function SummaryPanel({
               <CardDescription>{commit ? `${commit.title} (${commit.shortSha})` : "No active commit selected."}</CardDescription>
             </div>
             <Button size="sm" onClick={onPublishReview} disabled={!canPublish}>
-              Publish Review
+              {publishStatus === "publishing" ? "Publishing..." : "Publish Review"}
             </Button>
           </div>
 
@@ -77,6 +83,30 @@ export function SummaryPanel({
               </p>
             )}
           </div>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader className="border-b-0 pb-0">
+          <CardTitle>Claude Publish Status</CardTitle>
+          <CardDescription>Current handoff state for the review package.</CardDescription>
+        </CardHeader>
+        <CardBody className="space-y-2 pt-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={publishStatus === "published" ? "positive" : publishStatus === "error" ? "danger" : publishStatus === "publishing" ? "accent" : "neutral"}>
+              {publishStatus}
+            </Badge>
+            {publishResult && <Badge tone="accent">{publishResult.provider}</Badge>}
+          </div>
+
+          {publishError && <p className="text-sm text-danger">{publishError}</p>}
+
+          {publishResult && (
+            <div className="rounded-md border border-border bg-elevated/30 p-3">
+              <p className="text-sm text-text">{publishResult.summary}</p>
+              <p className="mt-1 font-mono text-xs text-muted">{publishResult.publicationId}</p>
+            </div>
+          )}
         </CardBody>
       </Card>
 

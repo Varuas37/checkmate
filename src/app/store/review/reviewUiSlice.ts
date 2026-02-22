@@ -7,7 +7,7 @@ import {
   type FileFilter,
   type PublishReviewPackage,
 } from "../../../application/review/index.ts";
-import type { DiffOrientation } from "../../../domain/review/index.ts";
+import type { DiffOrientation, PublishReviewResult } from "../../../domain/review/index.ts";
 
 export interface HydrateUiForCommitPayload {
   readonly commitId: string;
@@ -17,6 +17,10 @@ export interface HydrateUiForCommitPayload {
 export interface SetAskAgentDraftPayload {
   readonly threadId: string;
   readonly draft: string;
+}
+
+export interface PublishStartedPayload {
+  readonly pkg: PublishReviewPackage;
 }
 
 function cloneFileFilter(filter: FileFilter) {
@@ -69,6 +73,16 @@ function clonePublishPackage(pkg: PublishReviewPackage) {
   };
 }
 
+function clonePublishResult(result: PublishReviewResult): PublishReviewResult {
+  return {
+    provider: result.provider,
+    requestId: result.requestId,
+    publicationId: result.publicationId,
+    publishedAtIso: result.publishedAtIso,
+    summary: result.summary,
+  };
+}
+
 const initialState = createInitialReviewUiState();
 
 export const reviewUiSlice = createSlice({
@@ -87,6 +101,8 @@ export const reviewUiSlice = createSlice({
       state.fileFilter = cloneFileFilter(createDefaultFileFilter());
       state.publishStatus = "ready";
       state.lastPublishPackage = null;
+      state.publishResult = null;
+      state.publishError = null;
       state.askAgentDraftByThreadId = {};
     },
     markLoadFailed(state, action: PayloadAction<{ readonly errorMessage: string }>): void {
@@ -129,9 +145,21 @@ export const reviewUiSlice = createSlice({
       delete nextDrafts[action.payload.threadId];
       state.askAgentDraftByThreadId = nextDrafts;
     },
-    publishPackageReady(state, action: PayloadAction<{ readonly pkg: PublishReviewPackage }>): void {
+    publishStarted(state, action: PayloadAction<PublishStartedPayload>): void {
       state.lastPublishPackage = clonePublishPackage(action.payload.pkg);
+      state.publishStatus = "publishing";
+      state.publishResult = null;
+      state.publishError = null;
+    },
+    publishSucceeded(state, action: PayloadAction<{ readonly result: PublishReviewResult }>): void {
       state.publishStatus = "published";
+      state.publishResult = clonePublishResult(action.payload.result);
+      state.publishError = null;
+    },
+    publishFailed(state, action: PayloadAction<{ readonly errorMessage: string }>): void {
+      state.publishStatus = "error";
+      state.publishResult = null;
+      state.publishError = action.payload.errorMessage;
     },
   },
 });

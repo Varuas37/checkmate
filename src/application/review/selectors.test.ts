@@ -124,6 +124,8 @@ function createStateFixture(): ReviewRootState {
       askAgentDraftByThreadId: {},
       publishStatus: "idle",
       lastPublishPackage: null,
+      publishResult: null,
+      publishError: null,
     },
   };
 }

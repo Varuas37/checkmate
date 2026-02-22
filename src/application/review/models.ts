@@ -6,6 +6,7 @@ import type {
   DiffOrientation,
   FileChangeStatus,
   OverviewCard,
+  PublishReviewResult,
   ReviewComment,
   StandardsResult,
   StandardsRule,
@@ -83,7 +84,7 @@ export interface ReviewEntitiesState {
 
 export type ReviewLoadStatus = "idle" | "loading" | "loaded" | "error";
 
-export type ReviewPublishStatus = "idle" | "ready" | "published";
+export type ReviewPublishStatus = "idle" | "ready" | "publishing" | "published" | "error";
 
 export interface ReviewUiState {
   loadStatus: ReviewLoadStatus;
@@ -95,6 +96,8 @@ export interface ReviewUiState {
   askAgentDraftByThreadId: Record<string, string>;
   publishStatus: ReviewPublishStatus;
   lastPublishPackage: PublishReviewPackage | null;
+  publishResult: PublishReviewResult | null;
+  publishError: string | null;
 }
 
 export interface ReviewRootState {

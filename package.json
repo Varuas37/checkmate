@@ -10,9 +10,10 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "typecheck": "tsc -b",
-    "test": "node --test --import tsx ./src/**/*.test.ts"
+    "test": "node --test --import tsx \"src/**/*.test.ts\""
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "@reduxjs/toolkit": "^2.7.0",
     "@tauri-apps/api": "^2.10.1",
     "mermaid": "^11.12.3",

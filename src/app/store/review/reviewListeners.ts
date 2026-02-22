@@ -13,6 +13,7 @@ import {
 } from "../../../application/review/index.ts";
 import type {
   CommitReviewDataSource,
+  ReviewPublisher,
   StandardsEvaluator,
 } from "../../../domain/review/index.ts";
 import {
@@ -27,6 +28,7 @@ import { reviewUiActions } from "./reviewUiSlice.ts";
 export interface ReviewListenerDependencies {
   readonly reviewDataSource: CommitReviewDataSource;
   readonly standardsEvaluator: StandardsEvaluator;
+  readonly reviewPublisher: ReviewPublisher;
   readonly nowIso: () => string;
   readonly createId: () => string;
 }
@@ -147,13 +149,36 @@ export function createReviewListenerMiddleware(
 
   startListening({
     actionCreator: publishReviewRequested,
-    effect: (_action, listenerApi) => {
-      const pkg = createPublishReviewPackage({
-        state: listenerApi.getState(),
-        generatedAtIso: deps.nowIso(),
-      });
+    effect: async (action, listenerApi) => {
+      try {
+        const pkg = createPublishReviewPackage({
+          state: listenerApi.getState(),
+          generatedAtIso: deps.nowIso(),
+        });
 
-      listenerApi.dispatch(reviewUiActions.publishPackageReady({ pkg }));
+        const requestId = deps.createId();
+        const requestedAtIso = deps.nowIso();
+
+        listenerApi.dispatch(
+          reviewUiActions.publishStarted({
+            pkg,
+          }),
+        );
+
+        const result = await deps.reviewPublisher.publishReview({
+          requestId,
+          requestedBy: action.payload.requestedBy,
+          requestedAtIso,
+          commitId: pkg.commitId,
+          commitSha: pkg.commitSha,
+          payloadJson: JSON.stringify(pkg),
+        });
+
+        listenerApi.dispatch(reviewUiActions.publishSucceeded({ result }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to publish review package.";
+        listenerApi.dispatch(reviewUiActions.publishFailed({ errorMessage: message }));
+      }
     },
   });
 

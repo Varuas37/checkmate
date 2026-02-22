@@ -62,97 +62,103 @@ export function ChangedFilesSidebar({
   const deletedCount = useMemo(() => allFiles.filter((file) => file.status === "deleted").length, [allFiles]);
 
   return (
-    <Card className="flex h-full min-h-[24rem] flex-col rounded-none border-0 shadow-none lg:min-h-0">
-      <CardHeader className="border-b border-border/80 bg-surface-subtle">
-        <CardTitle className="text-xs uppercase tracking-[0.12em]">
+    <Card className="flex h-full min-h-[24rem] flex-col rounded-none border-0 bg-surface-subtle shadow-none lg:min-h-0">
+      <CardHeader className="shrink-0 border-b border-border/80 bg-surface-subtle px-3 py-2.5">
+        <CardTitle className="text-[11px] uppercase tracking-[0.12em]">
           {filterLabel ? "Filtered Files" : "Changed Files"}
         </CardTitle>
-        <CardDescription className="text-xs">
+        <CardDescription className="text-[11px]">
           {files.length} visible of {allFilesCount}
         </CardDescription>
       </CardHeader>
 
-      {filterLabel && (
-        <div className="flex items-center justify-between gap-2 border-b border-border bg-accent/6 px-4 py-2">
-          <Badge tone="accent">{filterLabel}</Badge>
-          <button
-            type="button"
-            onClick={onClearFilter}
-            className="rounded border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-muted transition-colors hover:text-text"
-          >
-            Clear
-          </button>
-        </div>
-      )}
-
-      <CardBody className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3">
-        <Input
-          value={filter.query}
-          onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="Filter files..."
-          aria-label="Search changed files"
-          className="h-8 text-xs"
-        />
-
-        <div className="flex flex-wrap gap-1.5">
-          {statusOptions.map((status) => {
-            const isEnabled = filter.statuses.includes(status);
-
-            return (
-              <Button
-                key={status}
-                size="sm"
-                variant={isEnabled ? "primary" : "secondary"}
-                onClick={() => onToggleStatus(status)}
-                className="h-7 px-2 capitalize"
+      <CardBody className="flex min-h-0 flex-1 flex-col p-0">
+        <div className="shrink-0 border-b border-border/80 bg-surface-subtle px-3 py-2.5">
+          {filterLabel && (
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <Badge tone="accent">{filterLabel}</Badge>
+              <button
+                type="button"
+                onClick={onClearFilter}
+                className="rounded border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-muted transition-colors hover:text-text"
               >
-                {status}
-              </Button>
-            );
-          })}
+                Clear
+              </button>
+            </div>
+          )}
+
+          <div className="space-y-2.5">
+            <Input
+              value={filter.query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              placeholder="Filter files..."
+              aria-label="Search changed files"
+              className="h-8 text-xs"
+            />
+
+            <div className="flex flex-wrap gap-1">
+              {statusOptions.map((status) => {
+                const isEnabled = filter.statuses.includes(status);
+
+                return (
+                  <Button
+                    key={status}
+                    size="sm"
+                    variant={isEnabled ? "primary" : "secondary"}
+                    onClick={() => onToggleStatus(status)}
+                    className="h-6 px-2 text-[10px] capitalize"
+                  >
+                    {status}
+                  </Button>
+                );
+              })}
+            </div>
+
+            <div className="grid gap-1.5">
+              <label className="flex items-center gap-2 text-[11px] text-muted">
+                <input
+                  type="checkbox"
+                  checked={filter.onlyCommented}
+                  onChange={(event) => onOnlyCommentedChange(event.target.checked)}
+                />
+                Commented only
+              </label>
+
+              <label className="flex items-center gap-2 text-[11px] text-muted">
+                <input
+                  type="checkbox"
+                  checked={filter.onlyFailingStandards}
+                  onChange={(event) => onOnlyFailingChange(event.target.checked)}
+                />
+                Failing standards only
+              </label>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label htmlFor="threadStatus" className="text-[11px] uppercase tracking-[0.08em] text-muted">
+                Threads
+              </label>
+              <select
+                id="threadStatus"
+                className="h-7 rounded-md border border-border bg-canvas px-2 text-xs"
+                value={filter.threadStatus}
+                onChange={(event) => {
+                  const value = event.target.value;
+
+                  if (value === "open" || value === "resolved" || value === "all") {
+                    onThreadStatusChange(value);
+                  }
+                }}
+              >
+                <option value="all">All</option>
+                <option value="open">Open</option>
+                <option value="resolved">Resolved</option>
+              </select>
+            </div>
+          </div>
         </div>
 
-        <label className="flex items-center gap-2 text-xs text-muted">
-          <input
-            type="checkbox"
-            checked={filter.onlyCommented}
-            onChange={(event) => onOnlyCommentedChange(event.target.checked)}
-          />
-          Commented only
-        </label>
-
-        <label className="flex items-center gap-2 text-xs text-muted">
-          <input
-            type="checkbox"
-            checked={filter.onlyFailingStandards}
-            onChange={(event) => onOnlyFailingChange(event.target.checked)}
-          />
-          Failing standards only
-        </label>
-
-        <div className="flex items-center gap-2">
-          <label htmlFor="threadStatus" className="text-sm text-muted">
-            Thread status
-          </label>
-          <select
-            id="threadStatus"
-            className="h-7 rounded-md border border-border bg-canvas px-2 text-xs"
-            value={filter.threadStatus}
-            onChange={(event) => {
-              const value = event.target.value;
-
-              if (value === "open" || value === "resolved" || value === "all") {
-                onThreadStatusChange(value);
-              }
-            }}
-          >
-            <option value="all">All</option>
-            <option value="open">Open</option>
-            <option value="resolved">Resolved</option>
-          </select>
-        </div>
-
-        <div className="min-h-0 flex-1 space-y-2 overflow-auto pr-1">
+        <div className="min-h-0 flex-1 space-y-1.5 overflow-auto px-2 py-2">
           {files.map((file) => {
             const isActive = file.id === activeFileId;
             const isHighlighted = highlightedSet.has(file.id);
@@ -163,13 +169,13 @@ export function ChangedFilesSidebar({
                 type="button"
                 onClick={() => onSelectFile(file.id)}
                 className={cn(
-                  "w-full rounded-md border px-3 py-2 text-left transition-colors",
+                  "w-full rounded-md border px-2.5 py-2 text-left transition-colors",
                   "hover:border-accent/50 hover:bg-elevated",
                   isActive && "border-accent bg-accent/10",
                   isHighlighted && !isActive && "border-caution/70",
                 )}
               >
-                <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="mb-1.5 flex items-center justify-between gap-2">
                   <Badge tone={toneForStatus(file.status)}>{file.status}</Badge>
                   <StatDelta additions={file.additions} deletions={file.deletions} />
                 </div>
@@ -187,7 +193,7 @@ export function ChangedFilesSidebar({
           )}
         </div>
 
-        <div className="grid grid-cols-3 gap-2 border-t border-border pt-2 text-center">
+        <div className="grid shrink-0 grid-cols-3 gap-2 border-t border-border px-3 py-2 text-center">
           <div>
             <p className="font-mono text-xs text-positive">{addedCount}</p>
             <p className="text-[10px] uppercase tracking-[0.08em] text-muted">Added</p>

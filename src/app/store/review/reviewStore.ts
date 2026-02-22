@@ -2,6 +2,7 @@ import { combineReducers, configureStore } from "@reduxjs/toolkit";
 
 import type { ReviewRootState } from "../../../application/review/index.ts";
 import {
+  createClaudeSdkReviewPublisher,
   createMockCommitReviewDataSource,
   createRuleTextStandardsEvaluator,
 } from "../../../infrastructure/review/index.ts";
@@ -34,6 +35,7 @@ export function createReviewStore(options: CreateReviewStoreOptions = {}) {
   const defaultDependencies: ReviewListenerDependencies = {
     reviewDataSource: createMockCommitReviewDataSource(),
     standardsEvaluator: createRuleTextStandardsEvaluator(),
+    reviewPublisher: createClaudeSdkReviewPublisher(),
     nowIso: () => new Date().toISOString(),
     createId: createIncrementingIdFactory("review"),
   };
