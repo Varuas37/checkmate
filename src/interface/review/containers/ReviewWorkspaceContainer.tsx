@@ -7,8 +7,8 @@ import {
   Card,
   CardBody,
   CardDescription,
-  CardTitle,
   Input,
+  ThemeSwitcher,
 } from "../../../design-system/index.ts";
 import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT, REVIEW_TABS, SAMPLE_COMMIT_PRESETS } from "../constants.ts";
 import {
@@ -50,10 +50,32 @@ export function ReviewWorkspaceContainer() {
   const [selectedPresetId, setSelectedPresetId] = useState<string>(
     SAMPLE_COMMIT_PRESETS[0]?.id ?? CUSTOM_PRESET_ID,
   );
+  const [sidebarFocus, setSidebarFocus] = useState<{
+    readonly label: string;
+    readonly fileIds: readonly string[];
+  } | null>(null);
+
+  const totalAdditions = useMemo(() => {
+    return state.allFiles.reduce((count, file) => count + file.additions, 0);
+  }, [state.allFiles]);
+
+  const totalDeletions = useMemo(() => {
+    return state.allFiles.reduce((count, file) => count + file.deletions, 0);
+  }, [state.allFiles]);
+
+  const sidebarFiles = useMemo(() => {
+    if (!sidebarFocus) {
+      return state.filteredFiles;
+    }
+
+    const focusedFileIds = new Set(sidebarFocus.fileIds);
+    return state.filteredFiles.filter((file) => focusedFileIds.has(file.id));
+  }, [sidebarFocus, state.filteredFiles]);
 
   const triggerCommitReload = useCallback(
     (request: ReviewLoadRequest) => {
       setHighlightedFileIds([]);
+      setSidebarFocus(null);
       setActiveTab("overview");
       actions.reloadReviewWorkspace({
         repositoryPath: request.repositoryPath,
@@ -64,120 +86,138 @@ export function ReviewWorkspaceContainer() {
     [actions],
   );
 
-  const header = (
-    <div className="space-y-3">
-      <Card>
-        <CardBody className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="space-y-1">
-              <p className="text-xs uppercase tracking-[0.18em] text-muted">Review Workspace</p>
-              <CardTitle className="text-xl">
-                {state.commit ? state.commit.title : "CodeLens Review Workspace"}
-              </CardTitle>
-              <CardDescription>
-                {state.commit
-                  ? `${state.commit.repositoryPath} · ${state.commit.shortSha} · ${state.commit.authorName}`
-                  : "Loading review context..."}
-              </CardDescription>
-            </div>
+  const handleTabChange = useCallback((tabId: ReviewTabId) => {
+    setActiveTab(tabId);
 
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone={statusToneForLoad(state.loadStatus)}>{state.loadStatus}</Badge>
-              {state.commit && <Badge tone="neutral">{state.commit.shortSha}</Badge>}
-              <Button size="sm" onClick={actions.publishReview} disabled={!state.isPublishingReady}>
-                Publish Review
-              </Button>
-            </div>
+    if (tabId !== "overview") {
+      setSidebarFocus(null);
+    }
+  }, []);
+
+  const header = (
+    <header className="rounded-t-lg border border-border bg-surface shadow-soft">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-sm border border-accent/35 bg-accent/12 px-2 py-0.5 font-mono text-[11px] uppercase tracking-[0.14em] text-accent">
+              CodeLens
+            </span>
+            {state.commit && <Badge tone="accent">{state.commit.shortSha}</Badge>}
+            <Badge tone="positive">+{totalAdditions}</Badge>
+            <Badge tone="danger">-{totalDeletions}</Badge>
           </div>
 
-          <form
-            className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
-            onSubmit={(event) => {
-              event.preventDefault();
-              triggerCommitReload({
-                repositoryPath: repositoryPathInput,
-                commitSha: commitShaInput,
-              });
-            }}
-          >
-            <label className="space-y-1 text-xs text-muted">
-              Repository Path
-              <Input
-                value={repositoryPathInput}
-                onChange={(event) => {
-                  setRepositoryPathInput(event.target.value);
-                  setSelectedPresetId(CUSTOM_PRESET_ID);
-                }}
-                placeholder="."
-                aria-label="Repository path"
-              />
-            </label>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-text">
+              {state.commit ? state.commit.title : "Code Review Workspace"}
+            </p>
+            <CardDescription className="truncate text-xs">
+              {state.commit
+                ? `${state.commit.authorName} · ${state.commit.repositoryPath}`
+                : "Load a commit to start reviewing."}
+            </CardDescription>
+          </div>
+        </div>
 
-            <label className="space-y-1 text-xs text-muted">
-              Commit SHA
-              <Input
-                value={commitShaInput}
-                onChange={(event) => {
-                  setCommitShaInput(event.target.value);
-                  setSelectedPresetId(CUSTOM_PRESET_ID);
-                }}
-                placeholder="HEAD"
-                aria-label="Commit SHA"
-              />
-            </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={statusToneForLoad(state.loadStatus)}>{state.loadStatus}</Badge>
+          <ThemeSwitcher className="hidden sm:inline-flex" />
+          <Button size="sm" onClick={actions.publishReview} disabled={!state.isPublishingReady}>
+            Publish Review
+          </Button>
+        </div>
+      </div>
 
-            <label className="space-y-1 text-xs text-muted">
-              Sample Commits
-              <select
-                className="h-10 w-full rounded-md border border-border bg-surface px-2 text-sm text-text"
-                value={selectedPresetId}
-                onChange={(event) => {
-                  const nextPresetId = event.target.value;
-                  setSelectedPresetId(nextPresetId);
+      <div className="space-y-1 border-b border-border px-4 pb-3 pt-2">
+        <form
+          className="grid gap-2 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_auto]"
+          onSubmit={(event) => {
+            event.preventDefault();
+            triggerCommitReload({
+              repositoryPath: repositoryPathInput,
+              commitSha: commitShaInput,
+            });
+          }}
+        >
+          <label className="space-y-1 text-[11px] uppercase tracking-[0.08em] text-muted">
+            Repository Path
+            <Input
+              value={repositoryPathInput}
+              onChange={(event) => {
+                setRepositoryPathInput(event.target.value);
+                setSelectedPresetId(CUSTOM_PRESET_ID);
+              }}
+              placeholder="."
+              aria-label="Repository path"
+              className="h-9"
+            />
+          </label>
 
-                  if (nextPresetId === CUSTOM_PRESET_ID) {
-                    return;
-                  }
+          <label className="space-y-1 text-[11px] uppercase tracking-[0.08em] text-muted">
+            Commit
+            <Input
+              value={commitShaInput}
+              onChange={(event) => {
+                setCommitShaInput(event.target.value);
+                setSelectedPresetId(CUSTOM_PRESET_ID);
+              }}
+              placeholder="HEAD"
+              aria-label="Commit SHA"
+              className="h-9"
+            />
+          </label>
 
-                  const preset = SAMPLE_COMMIT_PRESETS.find((item) => item.id === nextPresetId);
+          <label className="space-y-1 text-[11px] uppercase tracking-[0.08em] text-muted">
+            Preset
+            <select
+              className="h-9 w-full rounded-md border border-border bg-canvas px-2 text-sm text-text shadow-inset"
+              value={selectedPresetId}
+              onChange={(event) => {
+                const nextPresetId = event.target.value;
+                setSelectedPresetId(nextPresetId);
 
-                  if (!preset) {
-                    return;
-                  }
+                if (nextPresetId === CUSTOM_PRESET_ID) {
+                  return;
+                }
 
-                  setRepositoryPathInput(preset.repositoryPath);
-                  setCommitShaInput(preset.commitSha);
-                  triggerCommitReload({
-                    repositoryPath: preset.repositoryPath,
-                    commitSha: preset.commitSha,
-                  });
-                }}
-                aria-label="Sample commit quick pick"
-              >
-                <option value={CUSTOM_PRESET_ID}>Custom input</option>
-                {SAMPLE_COMMIT_PRESETS.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+                const preset = SAMPLE_COMMIT_PRESETS.find((item) => item.id === nextPresetId);
 
-            <Button type="submit" variant="secondary" className="self-end" disabled={state.loadStatus === "loading"}>
-              Load Commit
-            </Button>
-          </form>
-        </CardBody>
-      </Card>
+                if (!preset) {
+                  return;
+                }
 
-      <TopTabs tabs={REVIEW_TABS} activeTab={activeTab} onChange={setActiveTab} />
-    </div>
+                setRepositoryPathInput(preset.repositoryPath);
+                setCommitShaInput(preset.commitSha);
+                triggerCommitReload({
+                  repositoryPath: preset.repositoryPath,
+                  commitSha: preset.commitSha,
+                });
+              }}
+              aria-label="Sample commit quick pick"
+            >
+              <option value={CUSTOM_PRESET_ID}>Custom input</option>
+              {SAMPLE_COMMIT_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <Button type="submit" variant="secondary" className="h-9 self-end" disabled={state.loadStatus === "loading"}>
+            Load
+          </Button>
+        </form>
+      </div>
+
+      <TopTabs tabs={REVIEW_TABS} activeTab={activeTab} onChange={handleTabChange} />
+    </header>
   );
 
   const mainContent = useMemo(() => {
     if (state.loadStatus === "loading" || state.loadStatus === "idle") {
       return (
-        <Card>
+        <Card className="rounded-none border-0 shadow-none">
           <CardBody className="py-10 text-sm text-muted">Loading commit review data and standards checks...</CardBody>
         </Card>
       );
@@ -185,7 +225,7 @@ export function ReviewWorkspaceContainer() {
 
     if (state.loadStatus === "error") {
       return (
-        <Card>
+        <Card className="rounded-none border-0 shadow-none">
           <CardBody className="py-10 text-sm text-danger">{state.errorMessage ?? "Failed to load review data."}</CardBody>
         </Card>
       );
@@ -199,11 +239,13 @@ export function ReviewWorkspaceContainer() {
           sequencePairs={state.sequencePairs}
           codeSequenceSteps={state.codeSequenceSteps}
           highlightedFileIds={highlightedFileIds}
-          onSelectFiles={(fileIds) => {
-            setHighlightedFileIds(fileIds);
-            const firstFileId = fileIds[0] ?? null;
-            actions.selectFile(firstFileId);
-            setActiveTab("files");
+          onSelectFiles={(selection) => {
+            setHighlightedFileIds(selection.fileIds);
+            setSidebarFocus({
+              label: selection.label ?? "Focused",
+              fileIds: selection.fileIds,
+            });
+            actions.selectFile(selection.fileIds[0] ?? null);
           }}
         />
       );
@@ -211,7 +253,7 @@ export function ReviewWorkspaceContainer() {
 
     if (activeTab === "files") {
       return (
-        <div className="space-y-4">
+        <div className="space-y-4 p-4">
           <DiffViewer
             file={state.activeFile}
             hunks={state.activeFileHunks}
@@ -234,18 +276,24 @@ export function ReviewWorkspaceContainer() {
 
     if (activeTab === "summary") {
       return (
-        <SummaryPanel
-          commit={state.commit}
-          overviewCards={state.overviewCards}
-          fileSummaries={state.fileSummaries}
-          publishPackage={state.publishPackage}
-          canPublish={state.isPublishingReady}
-          onPublishReview={actions.publishReview}
-        />
+        <div className="p-4">
+          <SummaryPanel
+            commit={state.commit}
+            overviewCards={state.overviewCards}
+            fileSummaries={state.fileSummaries}
+            publishPackage={state.publishPackage}
+            canPublish={state.isPublishingReady}
+            onPublishReview={actions.publishReview}
+          />
+        </div>
       );
     }
 
-    return <StandardsPanel checks={state.standardsChecks} counts={state.standardsCounts} />;
+    return (
+      <div className="p-4">
+        <StandardsPanel checks={state.standardsChecks} counts={state.standardsCounts} />
+      </div>
+    );
   }, [
     actions,
     activeTab,
@@ -273,11 +321,14 @@ export function ReviewWorkspaceContainer() {
       header={header}
       sidebar={
         <ChangedFilesSidebar
-          files={state.filteredFiles}
+          files={sidebarFiles}
+          allFiles={state.allFiles}
           allFilesCount={state.allFiles.length}
           activeFileId={state.activeFileId}
           highlightedFileIds={highlightedFileIds}
           filter={state.fileFilter}
+          filterLabel={sidebarFocus?.label ?? null}
+          onClearFilter={() => setSidebarFocus(null)}
           onQueryChange={actions.setFilterQuery}
           onToggleStatus={actions.toggleFilterStatus}
           onOnlyCommentedChange={actions.setOnlyCommented}
@@ -286,6 +337,7 @@ export function ReviewWorkspaceContainer() {
           onSelectFile={(fileId) => {
             setHighlightedFileIds([fileId]);
             actions.selectFile(fileId);
+            setActiveTab("files");
           }}
         />
       }

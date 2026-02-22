@@ -68,13 +68,22 @@ function renderUnifiedLine(hunkId: string, rowIndex: number, line: DiffHunk["lin
 export function DiffViewer({ file, hunks, orientation, onOrientationChange }: DiffViewerProps) {
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="border-b border-border bg-elevated/35">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <CardTitle>Files Diff</CardTitle>
             <CardDescription>
               {file ? file.path : "Select a changed file from the sidebar"}
             </CardDescription>
+            {file && (
+              <div className="mt-2 flex items-center gap-2">
+                <Badge tone={file.status === "added" ? "positive" : file.status === "deleted" ? "danger" : "accent"}>
+                  {file.status}
+                </Badge>
+                <p className="font-mono text-xs text-positive">+{file.additions}</p>
+                <p className="font-mono text-xs text-danger">-{file.deletions}</p>
+              </div>
+            )}
           </div>
 
           <div className="inline-flex items-center gap-1 rounded-md border border-border bg-elevated/30 p-1">
@@ -112,13 +121,13 @@ export function DiffViewer({ file, hunks, orientation, onOrientationChange }: Di
         )}
 
         {hunks.map((hunk) => (
-          <div key={hunk.id} className="overflow-hidden rounded-md border border-border">
-            <div className="flex items-center justify-between gap-2 bg-elevated px-3 py-2">
+          <div key={hunk.id} className="overflow-hidden rounded-md border border-border bg-canvas">
+            <div className="flex items-center justify-between gap-2 border-b border-border bg-surface-subtle px-3 py-2">
               <Badge tone="accent">{hunk.id}</Badge>
               <p className="font-mono text-xs text-muted">{hunk.header}</p>
             </div>
 
-            <div className="max-h-[32rem] overflow-auto">
+            <div className="max-h-[38rem] overflow-auto">
               {orientation === "split"
                 ? hunk.lines.map((line, rowIndex) => renderSplitLine(hunk.id, rowIndex, line))
                 : hunk.lines.map((line, rowIndex) => renderUnifiedLine(hunk.id, rowIndex, line))}

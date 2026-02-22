@@ -10,7 +10,7 @@ export interface TopTabsProps {
 
 export function TopTabs({ tabs, activeTab, onChange }: TopTabsProps) {
   return (
-    <nav className="flex w-full gap-2 overflow-x-auto rounded-lg border border-border bg-surface px-2 py-2 shadow-soft">
+    <nav className="flex w-full gap-1 overflow-x-auto border-b border-border bg-canvas px-3">
       {tabs.map((tab) => (
         <TabButton key={tab.id} label={tab.label} active={tab.id === activeTab} onClick={() => onChange(tab.id)} />
       ))}

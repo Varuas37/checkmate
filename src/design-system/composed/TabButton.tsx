@@ -15,10 +15,10 @@ export function TabButton({ label, active, onClick, className, ...props }: TabBu
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "rounded-md border px-3 py-2 font-mono text-[11px] uppercase tracking-[0.08em] transition-colors",
+        "relative -mb-px border-b-2 px-3 py-2.5 font-mono text-[11px] uppercase tracking-[0.08em] transition-colors",
         active
-          ? "border-accent/45 bg-accent/14 text-text"
-          : "border-border bg-surface text-muted hover:border-border-strong hover:bg-elevated hover:text-text",
+          ? "border-accent text-text"
+          : "border-transparent text-muted hover:border-border-strong hover:text-text",
         className,
       )}
       {...props}
