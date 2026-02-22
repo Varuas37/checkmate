@@ -15,8 +15,7 @@ function isValidProfile(input: Partial<ReviewerProfile> | null | undefined): inp
   }
 
   const name = normalizeValue(input.name);
-  const email = normalizeValue(input.email);
-  return name.length > 0 && email.length > 0;
+  return name.length > 0;
 }
 
 export function readReviewerProfileFromStorage(): ReviewerProfile | null {
@@ -33,7 +32,7 @@ export function readReviewerProfileFromStorage(): ReviewerProfile | null {
 
     return {
       name: parsed.name.trim(),
-      email: parsed.email.trim(),
+      email: parsed.email?.trim() ?? "",
     };
   } catch {
     return null;

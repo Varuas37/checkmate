@@ -34,6 +34,7 @@ export { projectLabelFromPath } from "./projectLabelFromPath.ts";
 export { readRepositoryBranch } from "./readRepositoryBranch.ts";
 export { readRepositoryBranches } from "./readRepositoryBranches.ts";
 export { readRepositoryCommits } from "./readRepositoryCommits.ts";
+export { readRepositoryReviewCommits } from "./readRepositoryReviewCommits.ts";
 export { readTextFile } from "./readTextFile.ts";
 export {
   DEFAULT_AI_ANALYSIS_CONFIG,
@@ -74,6 +75,7 @@ export {
   installCmCliInPath,
   readCmCliStatus,
   readLaunchRequestFromRuntime,
+  readSystemUserName,
   type AgentTrackingInitializationResult,
   type CmCliInstallResult,
   type CmCliStatus,

@@ -3,6 +3,10 @@ interface RuntimeLaunchRequest {
   readonly commitSha: string;
 }
 
+interface ProcessLike {
+  readonly env?: Record<string, string | undefined>;
+}
+
 export interface CmCliStatus {
   readonly installed: boolean;
   readonly installPath: string | null;
@@ -46,6 +50,24 @@ async function invokeTauri<T>(command: string, args?: Record<string, unknown>): 
   return invoke<T>(command, args);
 }
 
+function readSystemUserNameFromEnvironment(): string | null {
+  const processLike = (globalThis as { readonly process?: ProcessLike }).process;
+  const env = processLike?.env;
+  if (!env) {
+    return null;
+  }
+
+  const candidates = [env.USER, env.USERNAME, env.LOGNAME];
+  for (const candidate of candidates) {
+    const normalized = candidate?.trim() ?? "";
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
 function normalizeLaunchRequest(raw: RuntimeLaunchRequest | null | undefined): RuntimeLaunchRequest | null {
   if (!raw) {
     return null;
@@ -74,6 +96,25 @@ export async function readLaunchRequestFromRuntime(): Promise<RuntimeLaunchReque
   } catch {
     return null;
   }
+}
+
+export async function readSystemUserName(): Promise<string | null> {
+  const envFallback = readSystemUserNameFromEnvironment();
+  if (!isTauriRuntime()) {
+    return envFallback;
+  }
+
+  try {
+    const runtimeValue = await invokeTauri<string | null>("read_system_username");
+    const normalized = typeof runtimeValue === "string" ? runtimeValue.trim() : "";
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  } catch {
+    // Ignore runtime failures and return process env fallback.
+  }
+
+  return envFallback;
 }
 
 export async function readCmCliStatus(): Promise<CmCliStatus | null> {

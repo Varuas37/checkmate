@@ -17,7 +17,7 @@ const AGENT_TRACKING_SCHEMA_RELATIVE_PATH: &str = ".checkmate/commit_context.sch
 const AGENT_TRACKING_SCHEMA_MANAGED_MARKER: &str = "\"x-checkmate-managed\": true";
 const AGENT_TRACKING_BLOCK_BODY: &str = r#"## Checkmate Tracking (added by checkmate.sh)
 - Required schema: `.checkmate/commit_context.schema.json` (`checkmate.commit_context.v1`).
-- For each meaningful commit, store `.checkmate/commit_context/<commit_sha>.json`.
+- For each commit, store `.checkmate/commit_context/<commit_sha>.json`.
 - Required fields:
   - `schema_version`, `commit_sha`, `branch`, `title`
   - `rationale`
@@ -161,6 +161,14 @@ pub struct CommitListItem {
     pub author: String,
     pub author_email: String,
     pub authored_at_iso: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewCommitFeed {
+    pub recent_commits: Vec<CommitListItem>,
+    pub branch_only_commits: Vec<CommitListItem>,
+    pub mainline_reference: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1021,27 +1029,7 @@ fi
     )
 }
 
-#[tauri::command]
-fn list_commits(repo_path: String, limit: Option<usize>) -> Result<Vec<CommitListItem>, String> {
-    let repository_path = validate_repository_path(&repo_path)?;
-    let max_count = limit.unwrap_or(120).clamp(1, 500);
-
-    let pretty_format = format!(
-        "--pretty=format:%H{}%h{}%an{}%ae{}%aI{}%s",
-        COMMIT_FIELD_DELIMITER,
-        COMMIT_FIELD_DELIMITER,
-        COMMIT_FIELD_DELIMITER,
-        COMMIT_FIELD_DELIMITER,
-        COMMIT_FIELD_DELIMITER
-    );
-    let args = vec![
-        "log".to_string(),
-        format!("--max-count={}", max_count),
-        "--date=iso-strict".to_string(),
-        pretty_format,
-    ];
-    let output = run_git(&repository_path, &args)?;
-
+fn parse_commit_list_items(output: &str) -> Vec<CommitListItem> {
     let mut commits = Vec::new();
 
     for line in output.lines() {
@@ -1067,7 +1055,121 @@ fn list_commits(repo_path: String, limit: Option<usize>) -> Result<Vec<CommitLis
         });
     }
 
-    Ok(commits)
+    commits
+}
+
+fn read_commit_list_items(
+    repository_path: &Path,
+    max_count: usize,
+    range: Option<&str>,
+) -> Result<Vec<CommitListItem>, String> {
+    let pretty_format = format!(
+        "--pretty=format:%H{}%h{}%an{}%ae{}%aI{}%s",
+        COMMIT_FIELD_DELIMITER,
+        COMMIT_FIELD_DELIMITER,
+        COMMIT_FIELD_DELIMITER,
+        COMMIT_FIELD_DELIMITER,
+        COMMIT_FIELD_DELIMITER
+    );
+    let mut args = vec!["log".to_string()];
+
+    if let Some(trimmed_range) = range
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        args.push(trimmed_range.to_string());
+    }
+
+    args.push(format!("--max-count={}", max_count.clamp(1, 500)));
+    args.push("--date=iso-strict".to_string());
+    args.push(pretty_format);
+
+    let output = run_git(repository_path, &args)?;
+    Ok(parse_commit_list_items(&output))
+}
+
+fn git_reference_exists(repository_path: &Path, reference: &str) -> Result<bool, String> {
+    let args = vec![
+        "rev-parse".to_string(),
+        "--verify".to_string(),
+        reference.to_string(),
+    ];
+    let output = run_git_optional(repository_path, &args)?;
+    Ok(output
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false))
+}
+
+fn resolve_mainline_reference(repository_path: &Path) -> Result<Option<String>, String> {
+    let origin_head_args = vec![
+        "symbolic-ref".to_string(),
+        "--quiet".to_string(),
+        "--short".to_string(),
+        "refs/remotes/origin/HEAD".to_string(),
+    ];
+
+    if let Some(origin_head) = run_git_optional(repository_path, &origin_head_args)?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        if git_reference_exists(repository_path, &origin_head)? {
+            return Ok(Some(origin_head));
+        }
+    }
+
+    let candidates = [
+        "main",
+        "master",
+        "trunk",
+        "origin/main",
+        "origin/master",
+        "origin/trunk",
+        "upstream/main",
+        "upstream/master",
+        "upstream/trunk",
+    ];
+
+    for candidate in candidates {
+        if git_reference_exists(repository_path, candidate)? {
+            return Ok(Some(candidate.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+#[tauri::command]
+fn list_commits(repo_path: String, limit: Option<usize>) -> Result<Vec<CommitListItem>, String> {
+    let repository_path = validate_repository_path(&repo_path)?;
+    let max_count = limit.unwrap_or(120).clamp(1, 500);
+    read_commit_list_items(&repository_path, max_count, None)
+}
+
+#[tauri::command]
+fn list_review_commits(
+    repo_path: String,
+    recent_limit: Option<usize>,
+    branch_only_limit: Option<usize>,
+) -> Result<ReviewCommitFeed, String> {
+    let repository_path = validate_repository_path(&repo_path)?;
+    let recent_max = recent_limit.unwrap_or(15).clamp(1, 200);
+    let branch_only_max = branch_only_limit.unwrap_or(240).clamp(1, 500);
+
+    let recent_commits = read_commit_list_items(&repository_path, recent_max, None)?;
+    let mainline_reference = resolve_mainline_reference(&repository_path)?;
+
+    let branch_only_commits = if let Some(mainline_ref) = &mainline_reference {
+        let range = format!("{}..HEAD", mainline_ref);
+        read_commit_list_items(&repository_path, branch_only_max, Some(&range))?
+    } else {
+        Vec::new()
+    };
+
+    Ok(ReviewCommitFeed {
+        recent_commits,
+        branch_only_commits,
+        mainline_reference,
+    })
 }
 
 #[tauri::command]
@@ -1196,35 +1298,41 @@ fn read_commit_file_versions(
 }
 
 #[tauri::command]
-fn run_claude_prompt(prompt: String) -> Result<String, String> {
+async fn run_claude_prompt(prompt: String) -> Result<String, String> {
     let trimmed_prompt = prompt.trim();
 
     if trimmed_prompt.is_empty() {
         return Err("Claude prompt cannot be empty.".to_string());
     }
 
-    let output = Command::new("claude")
-        .arg("-p")
-        .arg(trimmed_prompt)
-        .output()
-        .map_err(|error| {
-            format!(
-                "Failed to run Claude CLI. Ensure `claude` is installed: {}",
-                error
-            )
-        })?;
+    let prompt_arg = trimmed_prompt.to_string();
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.is_empty() {
-            return Err("Claude CLI execution failed.".to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = Command::new("claude")
+            .arg("-p")
+            .arg(prompt_arg)
+            .output()
+            .map_err(|error| {
+                format!(
+                    "Failed to run Claude CLI. Ensure `claude` is installed: {}",
+                    error
+                )
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                return Err("Claude CLI execution failed.".to_string());
+            }
+
+            return Err(stderr);
         }
 
-        return Err(stderr);
-    }
-
-    String::from_utf8(output.stdout)
-        .map_err(|error| format!("Claude CLI output was not valid UTF-8: {}", error))
+        String::from_utf8(output.stdout)
+            .map_err(|error| format!("Claude CLI output was not valid UTF-8: {}", error))
+    })
+    .await
+    .map_err(|error| format!("Failed to join Claude CLI task: {}", error))?
 }
 
 #[tauri::command]
@@ -1268,7 +1376,16 @@ fn write_app_settings(app: tauri::AppHandle, content: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-fn run_cli_agent_prompt(
+fn read_system_username() -> Option<String> {
+    ["USER", "USERNAME", "LOGNAME"]
+        .into_iter()
+        .find_map(|key| std::env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[tauri::command]
+async fn run_cli_agent_prompt(
     command: String,
     args: Vec<String>,
     prompt: String,
@@ -1285,28 +1402,35 @@ fn run_cli_agent_prompt(
         return Err("CLI agent prompt cannot be empty.".to_string());
     }
 
-    let output = Command::new(trimmed_command)
-        .args(&args)
-        .arg(trimmed_prompt)
-        .output()
-        .map_err(|error| {
-            format!(
-                "Failed to run CLI agent '{}': {}. Ensure it is installed and on your PATH.",
-                trimmed_command, error
-            )
-        })?;
+    let command_name = trimmed_command.to_string();
+    let prompt_arg = trimmed_prompt.to_string();
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.is_empty() {
-            return Err(format!("CLI agent '{}' execution failed.", trimmed_command));
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = Command::new(&command_name)
+            .args(&args)
+            .arg(prompt_arg)
+            .output()
+            .map_err(|error| {
+                format!(
+                    "Failed to run CLI agent '{}': {}. Ensure it is installed and on your PATH.",
+                    command_name, error
+                )
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                return Err(format!("CLI agent '{}' execution failed.", command_name));
+            }
+
+            return Err(stderr);
         }
 
-        return Err(stderr);
-    }
-
-    String::from_utf8(output.stdout)
-        .map_err(|error| format!("CLI agent output was not valid UTF-8: {}", error))
+        String::from_utf8(output.stdout)
+            .map_err(|error| format!("CLI agent output was not valid UTF-8: {}", error))
+    })
+    .await
+    .map_err(|error| format!("Failed to join CLI agent task: {}", error))?
 }
 
 #[tauri::command]
@@ -1483,6 +1607,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_commits,
+            list_review_commits,
             read_commit_details,
             read_commit_patch,
             read_current_branch,
@@ -1492,6 +1617,7 @@ pub fn run() {
             read_text_file,
             read_app_settings,
             write_app_settings,
+            read_system_username,
             run_cli_agent_prompt,
             read_launch_request,
             initialize_agent_tracking,
