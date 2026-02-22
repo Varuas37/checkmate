@@ -3,7 +3,11 @@ import type {
   AnalyseCommitInput,
   SequenceDiagramGenerator,
 } from "../../domain/review/index.ts";
-import { readApiKeyFromStorage } from "../../shared/index.ts";
+import {
+  readActiveCliAgentFromStorage,
+  readApiKeyFromStorage,
+  readCliPreferenceFromStorage,
+} from "../../shared/index.ts";
 
 interface ClaudeSdkClient {
   readonly messages: {
@@ -28,8 +32,8 @@ const MAX_FILES_IN_PROMPT = 20;
 const MAX_HUNKS_IN_PROMPT = 8;
 const MAX_LINES_PER_HUNK = 16;
 const MAX_STEPS = 12;
-const MERMAID_SEQUENCE_SYSTEM_PROMPT =
-  "You are a specialized sub-agent that produces safe Mermaid sequence-step JSON for code-review visualizations. Return only valid JSON.";
+const CUSTOM_SEQUENCE_SYSTEM_PROMPT =
+  "You are a specialized sub-agent that produces structured sequence-step JSON for a custom React sequence renderer. Return only valid JSON.";
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -82,6 +86,18 @@ function sanitizeMessage(value: string, fallback: string): string {
   return normalized.length > 0 ? normalized.slice(0, 84) : fallback;
 }
 
+function sanitizeIdentifier(value: string, fallback: string): string {
+  const normalized = normalizeWhitespace(value)
+    .replaceAll(/[^A-Za-z0-9_-]/g, "_")
+    .replaceAll(/_+/g, "_")
+    .replaceAll(/^_+|_+$/g, "");
+  return normalized.length > 0 ? normalized.slice(0, 48) : fallback;
+}
+
+function tokenFallback(index: number): string {
+  return `S${index + 1}`;
+}
+
 function truncateForPrompt(value: string, max = 900): string {
   if (value.length <= max) {
     return value;
@@ -125,10 +141,13 @@ function buildBasePrompt(input: AnalyseCommitInput): string {
     {
       sequenceSteps: [
         {
-          sourceLabel: "Reviewer",
-          targetLabel: "Infrastructure",
-          message: "MODIFIED localGitAdapter.ts (+15/-2)",
-          filePath: "src/infrastructure/review/localGitAdapter.ts",
+          token: "S1",
+          sourceId: "review_workspace",
+          sourceLabel: "ReviewWorkspace",
+          targetId: "agent_studio_port",
+          targetLabel: "AgentStudioPort",
+          message: "INVOKE fetchMemoryGraph command",
+          filePath: "src/agent-studio/ports/useAgentStudioPort.ts",
         },
       ],
     },
@@ -140,19 +159,28 @@ function buildBasePrompt(input: AnalyseCommitInput): string {
     {
       sequenceSteps: [
         {
+          token: "S1",
+          sourceId: "ui",
           sourceLabel: "UI",
+          targetId: "review_store",
           targetLabel: "ReviewStore",
           message: "DISPATCH analyseCommitRequested",
           filePath: "src/app/store/review/reviewListeners.ts",
         },
         {
+          token: "S2",
+          sourceId: "review_store",
           sourceLabel: "ReviewStore",
+          targetId: "commit_analyser",
           targetLabel: "CommitAnalyser",
           message: "ANALYSE commit diff context",
           filePath: "src/infrastructure/review/claudeSdkCommitAnalyser.ts",
         },
         {
+          token: "S3",
+          sourceId: "commit_analyser",
           sourceLabel: "CommitAnalyser",
+          targetId: "overview_panel",
           targetLabel: "OverviewPanel",
           message: "RETURN sequence-ready insights",
           filePath: "src/interface/review/components/OverviewPanel.tsx",
@@ -175,13 +203,15 @@ function buildBasePrompt(input: AnalyseCommitInput): string {
     hunkPreview,
     "",
     "Task:",
-    "Generate sequence steps that can be transformed directly into Mermaid sequenceDiagram arrows.",
+    "Generate sequence steps for a custom React sequence renderer (actor lanes + message rows).",
     "",
     "Strict output requirements:",
     "- Return ONLY JSON. No markdown fences, no commentary.",
     "- JSON shape must be exactly:",
     schema,
     "- sequenceSteps count: 1-12.",
+    "- token: short unique step token like S1, S2...",
+    "- sourceId and targetId: stable snake_case or kebab-case ids for lane identity (max 48 chars).",
     "- sourceLabel and targetLabel: concise component names (max 28 chars).",
     "- message: concise action text (max 84 chars), plain punctuation only.",
     "- filePath MUST exactly match one changed file path listed above.",
@@ -202,7 +232,7 @@ function buildRetryPrompt(basePrompt: string, previousResponse: string, reason: 
     "- The previous response was invalid.",
     `- Reason: ${reason}`,
     "- Fix and return JSON only using the required schema.",
-    "- Keep each field short and safe for Mermaid text.",
+    "- Keep each field short and safe for UI text rendering.",
     "",
     "Previous invalid response:",
     truncateForPrompt(previousResponse),
@@ -269,6 +299,9 @@ function parseSequenceResponse(
       const targetLabelRaw = (item as Record<string, unknown>)["targetLabel"];
       const messageRaw = (item as Record<string, unknown>)["message"];
       const filePathRaw = (item as Record<string, unknown>)["filePath"];
+      const tokenRaw = (item as Record<string, unknown>)["token"];
+      const sourceIdRaw = (item as Record<string, unknown>)["sourceId"];
+      const targetIdRaw = (item as Record<string, unknown>)["targetId"];
 
       if (
         typeof sourceLabelRaw !== "string" ||
@@ -287,9 +320,22 @@ function parseSequenceResponse(
       const sourceLabel = sanitizeLabel(sourceLabelRaw, "Component");
       const targetLabel = sanitizeLabel(targetLabelRaw, "Component");
       const message = sanitizeMessage(messageRaw, `CHANGED ${filePath.split("/").at(-1) ?? filePath}`);
+      const token =
+        typeof tokenRaw === "string" ? sanitizeIdentifier(tokenRaw, tokenFallback(steps.length)) : tokenFallback(steps.length);
+      const sourceId =
+        typeof sourceIdRaw === "string"
+          ? sanitizeIdentifier(sourceIdRaw, sanitizeIdentifier(sourceLabel.toLowerCase(), "source"))
+          : sanitizeIdentifier(sourceLabel.toLowerCase(), "source");
+      const targetId =
+        typeof targetIdRaw === "string"
+          ? sanitizeIdentifier(targetIdRaw, sanitizeIdentifier(targetLabel.toLowerCase(), "target"))
+          : sanitizeIdentifier(targetLabel.toLowerCase(), "target");
 
       steps.push({
+        token,
+        sourceId,
         sourceLabel,
+        targetId,
         targetLabel,
         message,
         filePath,
@@ -302,7 +348,7 @@ function parseSequenceResponse(
 
     const uniqueByKey = new Map<string, AiSequenceStep>();
     for (const step of steps) {
-      const key = `${step.sourceLabel}|${step.targetLabel}|${step.message}|${step.filePath}`;
+      const key = `${step.token}|${step.sourceId}|${step.targetId}|${step.message}|${step.filePath}`;
       if (!uniqueByKey.has(key)) {
         uniqueByKey.set(key, step);
       }
@@ -366,6 +412,19 @@ async function runClaudePromptViaTauri(prompt: string): Promise<string> {
   return invoke<string>("run_claude_prompt", { prompt });
 }
 
+async function runCliAgentPromptViaTauri(
+  command: string,
+  args: readonly string[],
+  prompt: string,
+): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error("CLI agent is available only in Tauri runtime.");
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("run_cli_agent_prompt", { command, args: [...args], prompt });
+}
+
 export interface ClaudeSdkSequenceDiagramGeneratorOptions {
   readonly apiKey?: string;
   readonly model?: string;
@@ -394,8 +453,32 @@ export class ClaudeSdkSequenceDiagramGenerator implements SequenceDiagramGenerat
   }
 
   async #runPrompt(prompt: string, apiKey: string | null): Promise<string> {
-    if (!apiKey) {
+    const preferCli = readCliPreferenceFromStorage();
+    const activeCliAgent = readActiveCliAgentFromStorage();
+
+    const runViaCli = (): Promise<string> => {
+      if (activeCliAgent && isTauriRuntime()) {
+        return runCliAgentPromptViaTauri(activeCliAgent.command, activeCliAgent.promptArgs, prompt);
+      }
       return runClaudePromptViaTauri(prompt);
+    };
+
+    // Prefer CLI over API: try configured CLI first, fall back to SDK.
+    if (preferCli && activeCliAgent && isTauriRuntime()) {
+      try {
+        return await runViaCli();
+      } catch {
+        if (!apiKey) {
+          throw new Error(
+            `${activeCliAgent.name} CLI failed and no API key is available for fallback.`,
+          );
+        }
+        // Fall through to SDK.
+      }
+    }
+
+    if (!apiKey) {
+      return runViaCli();
     }
 
     try {
@@ -403,7 +486,7 @@ export class ClaudeSdkSequenceDiagramGenerator implements SequenceDiagramGenerat
       const response = await client.messages.create({
         model: this.#model,
         max_tokens: this.#maxOutputTokens,
-        system: MERMAID_SEQUENCE_SYSTEM_PROMPT,
+        system: CUSTOM_SEQUENCE_SYSTEM_PROMPT,
         messages: [{ role: "user", content: prompt }],
       });
 
@@ -413,7 +496,7 @@ export class ClaudeSdkSequenceDiagramGenerator implements SequenceDiagramGenerat
         throw error;
       }
 
-      return runClaudePromptViaTauri(prompt);
+      return runViaCli();
     }
   }
 
@@ -451,7 +534,7 @@ export class ClaudeSdkSequenceDiagramGenerator implements SequenceDiagramGenerat
 
     const details = attemptMessages.length > 0 ? ` ${attemptMessages.join(" | ")}` : "";
     throw new Error(
-      `Failed to generate a Mermaid-safe sequence after ${this.#maxAutoAttempts} attempts.${details}`,
+      `Failed to generate a structured sequence after ${this.#maxAutoAttempts} attempts.${details}`,
     );
   }
 }

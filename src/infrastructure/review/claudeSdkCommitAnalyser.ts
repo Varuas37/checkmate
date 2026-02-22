@@ -8,7 +8,12 @@ import type {
   CommitAnalyser,
 } from "../../domain/review/index.ts";
 import type { ReviewCardKind } from "../../domain/review/index.ts";
-import { readAiAnalysisConfigFromStorage, readApiKeyFromStorage } from "../../shared/index.ts";
+import {
+  readActiveCliAgentFromStorage,
+  readAiAnalysisConfigFromStorage,
+  readApiKeyFromStorage,
+  readCliPreferenceFromStorage,
+} from "../../shared/index.ts";
 
 // ---------------------------------------------------------------------------
 // SDK client interface + factory
@@ -202,6 +207,19 @@ async function runClaudePromptViaTauri(prompt: string): Promise<string> {
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("run_claude_prompt", { prompt });
+}
+
+async function runCliAgentPromptViaTauri(
+  command: string,
+  args: readonly string[],
+  prompt: string,
+): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error("CLI agent is available only in Tauri runtime.");
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("run_cli_agent_prompt", { command, args: [...args], prompt });
 }
 
 function extractTextFromResponse(response: unknown): string {
@@ -512,7 +530,16 @@ function parseLegacyResponse(raw: string, commitId: string): AnalyseCommitOutput
               typeof (item as Record<string, unknown>)["filePath"] === "string",
           )
           .map((item): AiSequenceStep => ({
+            ...(typeof (item as Record<string, unknown>)["token"] === "string"
+              ? { token: (item as Record<string, unknown>)["token"] as string }
+              : {}),
+            ...(typeof (item as Record<string, unknown>)["sourceId"] === "string"
+              ? { sourceId: (item as Record<string, unknown>)["sourceId"] as string }
+              : {}),
             sourceLabel: item.sourceLabel,
+            ...(typeof (item as Record<string, unknown>)["targetId"] === "string"
+              ? { targetId: (item as Record<string, unknown>)["targetId"] as string }
+              : {}),
             targetLabel: item.targetLabel,
             message: item.message,
             filePath: item.filePath,
@@ -620,6 +647,37 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
 
   async analyseCommit(input: AnalyseCommitInput): Promise<AnalyseCommitOutput> {
     const resolvedApiKey = this.#resolveApiKey();
+    const preferCli = readCliPreferenceFromStorage();
+    const activeCliAgent = readActiveCliAgentFromStorage();
+
+    /** Runs the configured CLI agent, or the hardcoded claude fallback if none is set. */
+    const runViaCli = async (prompt: string): Promise<string> => {
+      if (activeCliAgent && isTauriRuntime()) {
+        return runCliAgentPromptViaTauri(activeCliAgent.command, activeCliAgent.promptArgs, prompt);
+      }
+      return runClaudePromptViaTauri(prompt);
+    };
+
+    // -----------------------------------------------------------------------
+    // Prefer CLI over API: try configured CLI first, fall back to SDK
+    // -----------------------------------------------------------------------
+    if (preferCli && activeCliAgent && isTauriRuntime()) {
+      const legacyPrompt = buildLegacyPrompt(input);
+      try {
+        const cliResponse = await runViaCli(legacyPrompt);
+        const parsed = parseLegacyResponse(cliResponse, input.commitId);
+        if (parsed) {
+          return parsed;
+        }
+      } catch {
+        // CLI failed — fall through to SDK if key is available, else throw below.
+        if (!resolvedApiKey) {
+          throw new Error(
+            `${activeCliAgent.name} CLI failed and no API key is available for fallback.`,
+          );
+        }
+      }
+    }
 
     // -----------------------------------------------------------------------
     // No API key → Tauri CLI fallback (single-call, legacy prompt)
@@ -627,16 +685,16 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
     if (!resolvedApiKey) {
       const legacyPrompt = buildLegacyPrompt(input);
       try {
-        const cliResponse = await runClaudePromptViaTauri(legacyPrompt);
+        const cliResponse = await runViaCli(legacyPrompt);
         const parsed = parseLegacyResponse(cliResponse, input.commitId);
         if (!parsed) {
-          throw new Error("Claude CLI response could not be parsed as valid analysis JSON.");
+          throw new Error("CLI response could not be parsed as valid analysis JSON.");
         }
         return parsed;
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Claude CLI fallback failed.";
+        const message = error instanceof Error ? error.message : "CLI fallback failed.";
         throw new Error(
-          `Commit analysis requires ANTHROPIC_API_KEY/VITE_ANTHROPIC_API_KEY or a working Claude CLI login in Tauri (${message}).`,
+          `Commit analysis requires ANTHROPIC_API_KEY or a configured CLI agent (${message}).`,
         );
       }
     }
@@ -720,10 +778,10 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
       }
 
       const legacyPrompt = buildLegacyPrompt(input);
-      const cliResponse = await runClaudePromptViaTauri(legacyPrompt);
+      const cliResponse = await runViaCli(legacyPrompt);
       const parsed = parseLegacyResponse(cliResponse, input.commitId);
       if (!parsed) {
-        throw new Error("Claude CLI response could not be parsed as valid analysis JSON.");
+        throw new Error("CLI response could not be parsed as valid analysis JSON.");
       }
       return parsed;
     }
