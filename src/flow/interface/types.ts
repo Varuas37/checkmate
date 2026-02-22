@@ -75,3 +75,57 @@ export interface WorkflowLoadFailure {
 }
 
 export type WorkflowLoadResult = WorkflowLoadSuccess | WorkflowLoadFailure;
+
+export interface RepoCommit {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  author: string;
+  date: string;
+  prompt: string;
+}
+
+export interface CommitDiffFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  lineHint: number;
+  summary: string;
+  diff: string;
+}
+
+export interface CommitReviewPayload {
+  source: string;
+  repoRoot: string;
+  commit: RepoCommit;
+  prompt: string;
+  overallSummary: string;
+  changedFiles: CommitDiffFile[];
+  schema: FlowSchema;
+}
+
+export interface CommitListLoadSuccess {
+  ok: true;
+  repoRoot: string;
+  commits: RepoCommit[];
+}
+
+export interface CommitListLoadFailure {
+  ok: false;
+  errors: ValidationIssue[];
+}
+
+export type CommitListLoadResult = CommitListLoadSuccess | CommitListLoadFailure;
+
+export interface CommitReviewLoadSuccess {
+  ok: true;
+  value: CommitReviewPayload;
+}
+
+export interface CommitReviewLoadFailure {
+  ok: false;
+  errors: ValidationIssue[];
+}
+
+export type CommitReviewLoadResult = CommitReviewLoadSuccess | CommitReviewLoadFailure;

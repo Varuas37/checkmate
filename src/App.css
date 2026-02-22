@@ -108,6 +108,10 @@ body {
   gap: 0.5rem;
 }
 
+.repo-load-row--full {
+  grid-template-columns: minmax(280px, 1fr) auto;
+}
+
 .repo-path-input {
   min-width: 0;
   width: 100%;
@@ -122,6 +126,17 @@ body {
 .repo-path-input:focus {
   outline: 2px solid #8bc1d0;
   outline-offset: 1px;
+}
+
+.commit-select {
+  font-size: 0.83rem;
+}
+
+.repo-helper-text {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #4b6a73;
+  align-self: center;
 }
 
 .upload-group {
@@ -266,6 +281,10 @@ body {
   fill: #f9653f;
 }
 
+.diagram-clickable {
+  cursor: pointer;
+}
+
 .diagram-edge {
   stroke: #8199a2;
   stroke-width: 2.3;
@@ -293,6 +312,11 @@ body {
 
 .diagram-edge-label--focused {
   fill: #9f351a;
+}
+
+.diagram-edge--selected {
+  stroke: #f06139;
+  stroke-width: 3.6;
 }
 
 .diagram-node rect {
@@ -325,6 +349,12 @@ body {
 
 .diagram-node--focused text {
   fill: #66220f;
+}
+
+.diagram-node--selected rect {
+  stroke: #f06139;
+  stroke-width: 2.8;
+  fill: #fff2ea;
 }
 
 .empty-diagram {
@@ -494,11 +524,182 @@ body {
   font-weight: 700;
 }
 
+.step-nav-description {
+  font-size: 0.74rem;
+  color: #4b6c75;
+}
+
 .step-nav-code {
   font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 0.72rem;
   color: #4a6e77;
   word-break: break-all;
+}
+
+.commit-overview-panel {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.commit-meta-grid {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.commit-meta-line {
+  margin: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.commit-meta-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #50707a;
+}
+
+.commit-meta-value {
+  font-size: 0.86rem;
+  color: #1a3942;
+}
+
+.commit-summary-block {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.commit-summary-text {
+  margin: 0;
+  color: #2a4952;
+  font-size: 0.88rem;
+}
+
+.changed-files-panel {
+  max-height: 320px;
+  overflow: hidden;
+}
+
+.changed-files-list {
+  display: grid;
+  gap: 0.45rem;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 0.1rem;
+}
+
+.changed-file-item {
+  border: 1px solid #c5d7dc;
+  border-radius: 12px;
+  background: #f8fbfc;
+  color: #1c3a43;
+  padding: 0.5rem 0.55rem;
+  display: grid;
+  gap: 0.3rem;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.changed-file-item:hover {
+  border-color: #9fc0c9;
+}
+
+.changed-file-item--active {
+  border-color: #ea7d59;
+  background: #fff2ea;
+}
+
+.changed-file-path {
+  font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.76rem;
+  color: #244a54;
+  word-break: break-all;
+}
+
+.changed-file-meta {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+  font-size: 0.73rem;
+}
+
+.changed-file-status {
+  padding: 0.08rem 0.4rem;
+  border: 1px solid #b8ccd2;
+  border-radius: 999px;
+  background: #eef5f8;
+  color: #2f515c;
+}
+
+.changed-file-additions {
+  color: #1d8059;
+  font-weight: 700;
+}
+
+.changed-file-deletions {
+  color: #b33d34;
+  font-weight: 700;
+}
+
+.changed-file-summary {
+  font-size: 0.8rem;
+  color: #3a5d66;
+}
+
+.diff-panel {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.diff-viewer {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.diff-file-label {
+  margin: 0;
+  font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  color: #315660;
+}
+
+.diff-content {
+  border: 1px solid #173841;
+  border-radius: 12px;
+  background: #0f232a;
+  color: #d9f2f8;
+  max-height: 360px;
+  overflow: auto;
+  padding: 0.35rem 0;
+  font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.76rem;
+  line-height: 1.38;
+}
+
+.diff-line {
+  padding: 0.07rem 0.58rem;
+  white-space: pre;
+}
+
+.diff-line--header {
+  color: #8fbac7;
+  background: rgba(143, 186, 199, 0.08);
+}
+
+.diff-line--hunk {
+  color: #ffd38b;
+  background: rgba(255, 179, 92, 0.12);
+}
+
+.diff-line--added {
+  color: #84d7a1;
+  background: rgba(82, 198, 125, 0.14);
+}
+
+.diff-line--removed {
+  color: #f5a5a0;
+  background: rgba(217, 84, 79, 0.13);
 }
 
 .details-panel {

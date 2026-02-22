@@ -10,6 +10,10 @@ interface DiagramCanvasProps {
   diagram: FlowDiagram;
   focusedNodeIds: ReadonlySet<string>;
   focusedEdgeIds: ReadonlySet<string>;
+  selectedNodeId?: string | null;
+  selectedEdgeId?: string | null;
+  onNodeClick?: (nodeId: string) => void;
+  onEdgeClick?: (edgeId: string) => void;
 }
 
 interface Point {
@@ -30,7 +34,15 @@ interface ViewBoxBounds {
 }
 
 export function DiagramCanvas(props: DiagramCanvasProps): JSX.Element {
-  const { diagram, focusedNodeIds, focusedEdgeIds } = props;
+  const {
+    diagram,
+    focusedNodeIds,
+    focusedEdgeIds,
+    selectedNodeId,
+    selectedEdgeId,
+    onNodeClick,
+    onEdgeClick,
+  } = props;
 
   const nodeById = useMemo(() => {
     return new Map(diagram.nodes.map((node) => [node.id, node]));
@@ -99,16 +111,21 @@ export function DiagramCanvas(props: DiagramCanvasProps): JSX.Element {
               const toAnchor = getNodeAnchor(toNode, fromNode);
               const labelPosition = getLabelPosition(fromAnchor, toAnchor);
               const isFocused = focusedEdgeIds.has(edge.id);
+              const isSelected = selectedEdgeId === edge.id;
 
               return (
-                <g key={edge.id}>
+                <g
+                  key={edge.id}
+                  className={`diagram-edge-group ${onEdgeClick ? "diagram-clickable" : ""}`}
+                  onClick={() => onEdgeClick?.(edge.id)}
+                >
                   <line
                     x1={fromAnchor.x}
                     y1={fromAnchor.y}
                     x2={toAnchor.x}
                     y2={toAnchor.y}
-                    className={`diagram-edge ${isFocused ? "diagram-edge--focused" : ""}`}
-                    markerEnd={isFocused ? "url(#arrow-focused)" : "url(#arrow-default)"}
+                    className={`diagram-edge ${isFocused ? "diagram-edge--focused" : ""} ${isSelected ? "diagram-edge--selected" : ""}`}
+                    markerEnd={isFocused || isSelected ? "url(#arrow-focused)" : "url(#arrow-default)"}
                   />
                   {edge.label !== undefined && edge.label.length > 0 ? (
                     <text
@@ -129,12 +146,14 @@ export function DiagramCanvas(props: DiagramCanvasProps): JSX.Element {
             {diagram.nodes.map((node) => {
               const size = getNodeSize();
               const isFocused = focusedNodeIds.has(node.id);
+              const isSelected = selectedNodeId === node.id;
 
               return (
                 <g
                   key={node.id}
-                  className={`diagram-node ${isFocused ? "diagram-node--focused" : ""}`}
+                  className={`diagram-node ${isFocused ? "diagram-node--focused" : ""} ${isSelected ? "diagram-node--selected" : ""} ${onNodeClick ? "diagram-clickable" : ""}`}
                   transform={`translate(${node.x} ${node.y})`}
+                  onClick={() => onNodeClick?.(node.id)}
                 >
                   <rect width={size.width} height={size.height} rx={14} ry={14} />
                   <text x={size.width / 2} y={size.height / 2 - 2} textAnchor="middle">

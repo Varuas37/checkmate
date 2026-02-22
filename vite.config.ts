@@ -1,17 +1,166 @@
+import { execFile as execFileCallback } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import { promisify } from "node:util";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 const DEFAULT_CONTEXT_LINES = 8;
 const MAX_CONTEXT_LINES = 30;
 const MAX_FILE_SIZE_BYTES = 1_000_000;
+const MAX_DIFF_LINES_PER_FILE = 1200;
+const execFile = promisify(execFileCallback);
+
+interface GitCommit {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  body: string;
+  author: string;
+  date: string;
+}
+
+interface ChangedFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  lineHint: number;
+  summary: string;
+  diff: string;
+}
 
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(payload));
+}
+
+function parsePositiveInt(value: string | null, fallbackValue: number): number {
+  if (value === null) {
+    return fallbackValue;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallbackValue;
+  }
+  return parsed;
+}
+
+function assertCommitHash(commit: string): string {
+  const normalized = commit.trim();
+  if (!/^[0-9a-fA-F]{6,40}$/.test(normalized)) {
+    throw new Error("Invalid commit hash format.");
+  }
+  return normalized;
+}
+
+async function runGit(repoRoot: string, args: string[]): Promise<string> {
+  const { stdout } = await execFile("git", ["-C", repoRoot, ...args], {
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  return stdout;
+}
+
+async function ensureGitRepository(repoRoot: string): Promise<void> {
+  try {
+    await runGit(repoRoot, ["rev-parse", "--is-inside-work-tree"]);
+  } catch {
+    throw new Error(`Path is not a git repository: ${repoRoot}`);
+  }
+}
+
+function inferPromptFromCommit(subject: string, body: string): string {
+  const promptPattern = /(?:^|\n)\s*(?:Prompt|User Prompt|Request)\s*:\s*(.+)/i;
+  const explicitMatch = body.match(promptPattern);
+  if (explicitMatch?.[1]) {
+    return explicitMatch[1].trim();
+  }
+
+  const firstBodyLine = body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (firstBodyLine !== undefined) {
+    return firstBodyLine;
+  }
+
+  return subject.trim();
+}
+
+function classifyArea(filePath: string): string {
+  const normalized = filePath.toLowerCase();
+  if (normalized.endsWith(".test.ts") || normalized.endsWith(".spec.ts")) {
+    return "tests";
+  }
+  if (normalized.endsWith(".css")) {
+    return "styling";
+  }
+  if (normalized.includes("/interface/") || normalized.endsWith(".tsx")) {
+    return "ui";
+  }
+  if (normalized.includes("/domain/")) {
+    return "domain logic";
+  }
+  if (normalized.includes("/infrastructure/") || normalized.includes("vite.config")) {
+    return "infrastructure";
+  }
+  if (normalized.includes("/application/")) {
+    return "application logic";
+  }
+  if (normalized.endsWith(".md")) {
+    return "documentation";
+  }
+  return "core code";
+}
+
+function inferFileSummary(filePath: string, status: string, additions: number, deletions: number): string {
+  const area = classifyArea(filePath);
+  const verb =
+    status === "A" ? "Introduces" : status === "D" ? "Removes" : status.startsWith("R") ? "Renames/updates" : "Updates";
+  return `${verb} ${area} (+${Math.max(0, additions)}/-${Math.max(0, deletions)} lines).`;
+}
+
+function inferOverallSummary(subject: string, files: ChangedFile[]): string {
+  const totalAdditions = files.reduce((sum, file) => sum + Math.max(0, file.additions), 0);
+  const totalDeletions = files.reduce((sum, file) => sum + Math.max(0, file.deletions), 0);
+  const areaCounts = new Map<string, number>();
+  for (const file of files) {
+    const area = classifyArea(file.path);
+    areaCounts.set(area, (areaCounts.get(area) ?? 0) + 1);
+  }
+
+  const topAreas = [...areaCounts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 3)
+    .map(([area]) => area);
+
+  const areaSummary = topAreas.length > 0 ? `Main areas: ${topAreas.join(", ")}.` : "Main areas are mixed.";
+
+  return `${subject}. ${files.length} files changed (+${totalAdditions}/-${totalDeletions}). ${areaSummary}`;
+}
+
+function extractLineHintFromDiff(diff: string): number {
+  const hunkMatch = diff.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/m);
+  if (hunkMatch?.[1] === undefined) {
+    return 1;
+  }
+
+  const parsed = Number.parseInt(hunkMatch[1], 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function trimDiffForDisplay(diff: string): string {
+  const lines = diff.split(/\r?\n/);
+  if (lines.length <= MAX_DIFF_LINES_PER_FILE) {
+    return diff;
+  }
+
+  const head = lines.slice(0, MAX_DIFF_LINES_PER_FILE);
+  head.push("... diff truncated for display ...");
+  return head.join("\n");
 }
 
 function isPathInsideRoot(targetPath: string, rootPath: string): boolean {
@@ -147,6 +296,313 @@ function createSourcePreviewMiddleware() {
 
       sendJson(res, 500, { error: "Unable to read source file." });
     }
+  };
+}
+
+function parseGitLogRecords(stdout: string): GitCommit[] {
+  const records = stdout
+    .split("\x1e")
+    .map((record) => record.trim())
+    .filter((record) => record.length > 0);
+
+  return records
+    .map((record) => {
+      const fields = record.split("\x1f");
+      if (fields.length < 6) {
+        return null;
+      }
+
+      const [hash, shortHash, subject, body, author, date] = fields;
+      return {
+        hash: hash.trim(),
+        shortHash: shortHash.trim(),
+        subject: subject.trim(),
+        body: body.trim(),
+        author: author.trim(),
+        date: date.trim(),
+      } satisfies GitCommit;
+    })
+    .filter((commit): commit is GitCommit => commit !== null);
+}
+
+async function listRepoCommits(repoRoot: string, limit: number): Promise<GitCommit[]> {
+  const stdout = await runGit(repoRoot, [
+    "log",
+    `-n${limit}`,
+    "--date=iso-strict",
+    "--pretty=format:%H%x1f%h%x1f%s%x1f%b%x1f%an%x1f%ad%x1e",
+  ]);
+  return parseGitLogRecords(stdout);
+}
+
+async function readSingleCommit(repoRoot: string, commitHash: string): Promise<GitCommit> {
+  const stdout = await runGit(repoRoot, [
+    "show",
+    "-s",
+    "--date=iso-strict",
+    "--pretty=format:%H%x1f%h%x1f%s%x1f%b%x1f%an%x1f%ad%x1e",
+    commitHash,
+  ]);
+  const parsed = parseGitLogRecords(stdout);
+  const commit = parsed[0];
+  if (commit === undefined) {
+    throw new Error(`Commit not found: ${commitHash}`);
+  }
+  return commit;
+}
+
+type ChangedFileMeta = {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+};
+
+function normalizeStatusPathParts(parts: string[]): { status: string; path: string } | null {
+  if (parts.length < 2) {
+    return null;
+  }
+
+  const rawStatus = parts[0]?.trim();
+  if (rawStatus === undefined || rawStatus.length === 0) {
+    return null;
+  }
+
+  if (rawStatus.startsWith("R") || rawStatus.startsWith("C")) {
+    const renamedPath = parts[2]?.trim() ?? parts[1]?.trim();
+    if (renamedPath === undefined || renamedPath.length === 0) {
+      return null;
+    }
+    return {
+      status: rawStatus[0],
+      path: renamedPath,
+    };
+  }
+
+  const statusPath = parts[1]?.trim();
+  if (statusPath === undefined || statusPath.length === 0) {
+    return null;
+  }
+  return {
+    status: rawStatus[0] ?? "M",
+    path: statusPath,
+  };
+}
+
+async function readChangedFileMetaMap(
+  repoRoot: string,
+  commitHash: string,
+): Promise<Map<string, ChangedFileMeta>> {
+  const metaMap = new Map<string, ChangedFileMeta>();
+
+  const statusOutput = await runGit(repoRoot, [
+    "show",
+    "--name-status",
+    "--format=",
+    commitHash,
+  ]);
+  for (const line of statusOutput.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    const parsed = normalizeStatusPathParts(trimmed.split("\t"));
+    if (parsed === null) {
+      continue;
+    }
+    metaMap.set(parsed.path, {
+      path: parsed.path,
+      status: parsed.status,
+      additions: 0,
+      deletions: 0,
+    });
+  }
+
+  const numstatOutput = await runGit(repoRoot, [
+    "show",
+    "--numstat",
+    "--format=",
+    commitHash,
+  ]);
+  for (const line of numstatOutput.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+
+    const parts = trimmed.split("\t");
+    if (parts.length < 3) {
+      continue;
+    }
+
+    const additions = parts[0] === "-" ? 0 : Number.parseInt(parts[0] ?? "0", 10);
+    const deletions = parts[1] === "-" ? 0 : Number.parseInt(parts[1] ?? "0", 10);
+    const pathValue = parts[2]?.trim();
+    if (pathValue === undefined || pathValue.length === 0) {
+      continue;
+    }
+
+    const existing = metaMap.get(pathValue);
+    if (existing !== undefined) {
+      existing.additions = Number.isFinite(additions) ? additions : 0;
+      existing.deletions = Number.isFinite(deletions) ? deletions : 0;
+      continue;
+    }
+
+    metaMap.set(pathValue, {
+      path: pathValue,
+      status: "M",
+      additions: Number.isFinite(additions) ? additions : 0,
+      deletions: Number.isFinite(deletions) ? deletions : 0,
+    });
+  }
+
+  return metaMap;
+}
+
+function parseDiffByFile(diffOutput: string): Map<string, string> {
+  const fileDiffs = new Map<string, string>();
+  const lines = diffOutput.split(/\r?\n/);
+
+  let currentPath: string | null = null;
+  let currentLines: string[] = [];
+
+  const flushCurrentDiff = () => {
+    if (currentPath === null) {
+      return;
+    }
+    fileDiffs.set(currentPath, currentLines.join("\n").trimEnd());
+  };
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      flushCurrentDiff();
+      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+      currentPath = match?.[2]?.trim() ?? null;
+      currentLines = [line];
+      continue;
+    }
+
+    if (currentPath !== null) {
+      currentLines.push(line);
+    }
+  }
+
+  flushCurrentDiff();
+  return fileDiffs;
+}
+
+async function readChangedFiles(
+  repoRoot: string,
+  commitHash: string,
+): Promise<ChangedFile[]> {
+  const metaMap = await readChangedFileMetaMap(repoRoot, commitHash);
+  const patchOutput = await runGit(repoRoot, [
+    "show",
+    "--no-color",
+    "--unified=5",
+    "--format=",
+    commitHash,
+  ]);
+  const patchByFile = parseDiffByFile(patchOutput);
+
+  const allPaths = new Set<string>([...metaMap.keys(), ...patchByFile.keys()]);
+  const files: ChangedFile[] = [];
+
+  for (const filePath of allPaths) {
+    const meta = metaMap.get(filePath);
+    const diff = patchByFile.get(filePath) ?? "";
+    const status = meta?.status ?? "M";
+    const additions = meta?.additions ?? 0;
+    const deletions = meta?.deletions ?? 0;
+    const summary = inferFileSummary(filePath, status, additions, deletions);
+    const lineHint = extractLineHintFromDiff(diff);
+
+    files.push({
+      path: filePath,
+      status,
+      additions,
+      deletions,
+      lineHint,
+      summary,
+      diff: trimDiffForDisplay(diff),
+    });
+  }
+
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return files;
+}
+
+function buildCommitReviewSchema(commit: GitCommit, files: ChangedFile[]): WorkflowSchema {
+  const baseNodes: WorkflowNode[] = [
+    { id: "prompt", label: "User Prompt", x: 100, y: 80 },
+    { id: "commit", label: `Commit ${commit.shortHash}`, x: 390, y: 80 },
+    { id: "summary", label: "AI Summary", x: 680, y: 80 },
+  ];
+
+  const filesForDiagram = files.slice(0, 12);
+  const fileNodes: WorkflowNode[] = filesForDiagram.map((file, index) => {
+    const column = index % 4;
+    const row = Math.floor(index / 4);
+    const shortLabel = file.path.split("/").slice(-2).join("/");
+    return {
+      id: `file-${index + 1}`,
+      label: shortLabel,
+      x: 100 + column * 250,
+      y: 230 + row * 155,
+    };
+  });
+
+  const nodes = [...baseNodes, ...fileNodes];
+
+  const edges: WorkflowEdge[] = [
+    { id: "e-prompt-commit", from: "prompt", to: "commit", label: "request context" },
+    { id: "e-commit-summary", from: "commit", to: "summary", label: "review narrative" },
+  ];
+
+  const trace: WorkflowTraceStep[] = [];
+  filesForDiagram.forEach((file, index) => {
+    const fileNodeId = `file-${index + 1}`;
+    const edgeToFileId = `e-commit-file-${index + 1}`;
+    const edgeToSummaryId = `e-file-summary-${index + 1}`;
+
+    edges.push({ id: edgeToFileId, from: "commit", to: fileNodeId, label: "changed file" });
+    edges.push({ id: edgeToSummaryId, from: fileNodeId, to: "summary", label: "impact summary" });
+
+    trace.push({
+      id: `s${index + 1}`,
+      title: `Review ${file.path}`,
+      description: file.summary,
+      focusNodeIds: ["commit", fileNodeId, "summary"],
+      focusEdgeIds: [edgeToFileId, edgeToSummaryId],
+      codeRef: {
+        path: file.path,
+        line: file.lineHint,
+      },
+    });
+  });
+
+  if (trace.length === 0) {
+    trace.push({
+      id: "s1",
+      title: "No changed files found",
+      description: "This commit has no file diffs to visualize.",
+      focusNodeIds: ["commit", "summary"],
+      focusEdgeIds: ["e-commit-summary"],
+      codeRef: {
+        path: "README.md",
+        line: 1,
+      },
+    });
+  }
+
+  return {
+    version: "0.1",
+    diagram: {
+      nodes,
+      edges,
+    },
+    trace,
   };
 }
 
@@ -439,8 +895,118 @@ function createWorkflowMiddleware() {
   };
 }
 
+function createReviewMiddleware() {
+  const projectRoot = path.resolve(process.cwd());
+
+  return async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    next: (error?: unknown) => void,
+  ): Promise<void> => {
+    if (req.method !== "GET" || req.url === undefined) {
+      next();
+      return;
+    }
+
+    const requestUrl = new URL(req.url, "http://localhost");
+    const isCommitListRoute = requestUrl.pathname === "/api/review/commits";
+    const isCommitReviewRoute = requestUrl.pathname === "/api/review/commit";
+
+    if (!isCommitListRoute && !isCommitReviewRoute) {
+      next();
+      return;
+    }
+
+    const rawRepoPath = requestUrl.searchParams.get("repoPath");
+    if (rawRepoPath === null || rawRepoPath.trim().length === 0) {
+      sendJson(res, 400, { error: "Missing required query param: repoPath" });
+      return;
+    }
+
+    let repoRoot = projectRoot;
+    try {
+      repoRoot = await resolveBaseRoot(projectRoot, rawRepoPath);
+      await ensureGitRepository(repoRoot);
+    } catch (error) {
+      sendJson(res, 400, {
+        error: error instanceof Error ? error.message : "Invalid repository path.",
+      });
+      return;
+    }
+
+    if (isCommitListRoute) {
+      try {
+        const limit = Math.min(100, parsePositiveInt(requestUrl.searchParams.get("limit"), 30));
+        const commits = await listRepoCommits(repoRoot, limit);
+        sendJson(res, 200, {
+          repoRoot,
+          commits: commits.map((commit) => ({
+            hash: commit.hash,
+            shortHash: commit.shortHash,
+            subject: commit.subject,
+            author: commit.author,
+            date: commit.date,
+            prompt: inferPromptFromCommit(commit.subject, commit.body),
+          })),
+        });
+      } catch (error) {
+        sendJson(res, 422, {
+          error: error instanceof Error ? error.message : "Unable to list commits.",
+        });
+      }
+      return;
+    }
+
+    const rawCommit = requestUrl.searchParams.get("commit");
+    if (rawCommit === null || rawCommit.trim().length === 0) {
+      sendJson(res, 400, { error: "Missing required query param: commit" });
+      return;
+    }
+
+    let commitHash = "";
+    try {
+      commitHash = assertCommitHash(rawCommit);
+    } catch (error) {
+      sendJson(res, 400, {
+        error: error instanceof Error ? error.message : "Invalid commit hash.",
+      });
+      return;
+    }
+
+    try {
+      const commit = await readSingleCommit(repoRoot, commitHash);
+      const files = await readChangedFiles(repoRoot, commitHash);
+      const prompt = inferPromptFromCommit(commit.subject, commit.body);
+      const overallSummary = inferOverallSummary(commit.subject, files);
+      const schema = buildCommitReviewSchema(commit, files);
+
+      sendJson(res, 200, {
+        source: "git-commit-review",
+        repoRoot,
+        commit: {
+          hash: commit.hash,
+          shortHash: commit.shortHash,
+          subject: commit.subject,
+          author: commit.author,
+          date: commit.date,
+          prompt,
+        },
+        prompt,
+        overallSummary,
+        changedFiles: files,
+        schema,
+      });
+    } catch (error) {
+      sendJson(res, 422, {
+        error: error instanceof Error ? error.message : "Unable to load commit review.",
+      });
+    }
+  };
+}
+
 const sourcePreviewMiddleware = createSourcePreviewMiddleware();
 const workflowMiddleware = createWorkflowMiddleware();
+const reviewMiddleware = createReviewMiddleware();
 
 export default defineConfig({
   plugins: [
@@ -448,10 +1014,12 @@ export default defineConfig({
     {
       name: "workflow-source-api",
       configureServer(server) {
+        server.middlewares.use(reviewMiddleware);
         server.middlewares.use(workflowMiddleware);
         server.middlewares.use(sourcePreviewMiddleware);
       },
       configurePreviewServer(server) {
+        server.middlewares.use(reviewMiddleware);
         server.middlewares.use(workflowMiddleware);
         server.middlewares.use(sourcePreviewMiddleware);
       },
