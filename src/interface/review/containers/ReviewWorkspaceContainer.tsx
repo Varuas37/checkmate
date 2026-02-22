@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Skeleton from "react-loading-skeleton";
 
 import {
   AppFrame,
@@ -25,6 +26,7 @@ import {
   readCliAgentsSettingsFromStorage,
   readProjectStandardsPathFromStorage,
   readRecentProjectsFromStorage,
+  readSystemUserName,
   readReviewerProfileFromStorage,
   recordRecentProjectInStorage,
   projectLabelFromPath,
@@ -42,9 +44,11 @@ import {
 import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT, REVIEW_TABS } from "../constants.ts";
 import {
   ChangedFilesSidebar,
+  CommitPanel,
   CommandPalette,
   type CommandPaletteItem,
   DiffViewer,
+  FileSummaryInspector,
   HomeScreen,
   OverviewPanel,
   SettingsPanel,
@@ -189,6 +193,7 @@ export function ReviewWorkspaceContainer() {
   const [branchListRefreshKey, setBranchListRefreshKey] = useState(0);
   const projectSwitcherRef = useRef<HTMLDivElement | null>(null);
   const branchSwitcherRef = useRef<HTMLDivElement | null>(null);
+  const commitFeedHydratedRepositoryRef = useRef<string | null>(null);
   const launchRequest = launchRequestFromLocation ?? launchRequestFromRuntime;
 
   // On mount: read settings.json via Tauri and sync values into localStorage + React state.
@@ -241,6 +246,41 @@ export function ReviewWorkspaceContainer() {
       cancelled = true;
     };
   }, [launchRequestFromLocation]);
+
+  useEffect(() => {
+    const currentName = normalizeInputValue(reviewerName);
+    if (currentName.length > 0) {
+      return;
+    }
+
+    let cancelled = false;
+    void readSystemUserName()
+      .then((value) => {
+        if (cancelled) {
+          return;
+        }
+
+        const normalized = normalizeInputValue(value);
+        if (normalized.length === 0) {
+          return;
+        }
+
+        setReviewerName((current) => {
+          if (normalizeInputValue(current).length > 0) {
+            return current;
+          }
+
+          return normalized;
+        });
+      })
+      .catch(() => {
+        // Ignore runtime lookup failures.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [reviewerName]);
 
   useEffect(() => {
     if (!launchRequestFromRuntime) {
@@ -359,6 +399,26 @@ export function ReviewWorkspaceContainer() {
   const filesById = useMemo(() => {
     return new Map(state.allFiles.map((file) => [file.id, file] as const));
   }, [state.allFiles]);
+
+  const activeFileSummary = useMemo(() => {
+    if (!state.activeFileId) {
+      return null;
+    }
+
+    return state.fileSummaries.find((summary) => summary.fileId === state.activeFileId) ?? null;
+  }, [state.activeFileId, state.fileSummaries]);
+
+  const activeFileFeatureSummaries = useMemo(() => {
+    const activeFileId = state.activeFileId;
+    if (!activeFileId) {
+      return [];
+    }
+
+    return state.sequencePairs.filter((pair) => {
+      return pair.before.fileIds.includes(activeFileId)
+        || pair.after.fileIds.includes(activeFileId);
+    });
+  }, [state.activeFileId, state.sequencePairs]);
 
   const sequenceExplorerTabs = useMemo(() => {
     return sequenceExplorerTabFileIds
@@ -616,9 +676,8 @@ export function ReviewWorkspaceContainer() {
 
   const hasSavedReviewerProfile = useMemo(() => {
     const normalizedName = normalizeInputValue(reviewerName);
-    const normalizedEmail = normalizeInputValue(reviewerEmail);
-    return normalizedName.length > 0 && normalizedEmail.length > 0;
-  }, [reviewerEmail, reviewerName]);
+    return normalizedName.length > 0;
+  }, [reviewerName]);
 
   const hasSavedRepositoryPath = useMemo(() => {
     return normalizeInputValue(startupRepositoryPath).length > 0;
@@ -906,8 +965,8 @@ export function ReviewWorkspaceContainer() {
       const normalizedRepositoryPath = normalizeInputValue(repositoryPathCandidate);
       const normalizedCommitSha = normalizeInputValue(startupCommitSha) || DEFAULT_LOAD_REQUEST.commitSha;
 
-      if (normalizedName.length === 0 || normalizedEmail.length === 0) {
-        setStartupMessage("Set your reviewer name and email before starting a review.");
+      if (normalizedName.length === 0) {
+        setStartupMessage("Set your reviewer name before starting a review.");
         return;
       }
 
@@ -1084,6 +1143,11 @@ export function ReviewWorkspaceContainer() {
     let cancelled = false;
     let isChecking = false;
 
+    if (commitFeedHydratedRepositoryRef.current !== normalizedRepositoryPath) {
+      commitFeedHydratedRepositoryRef.current = normalizedRepositoryPath;
+      void actions.refreshRepositoryCommits(normalizedRepositoryPath, 15);
+    }
+
     const checkForNewCommits = async () => {
       if (isChecking) {
         return;
@@ -1100,7 +1164,7 @@ export function ReviewWorkspaceContainer() {
         const knownHash = state.repositoryCommits[0]?.hash ?? null;
 
         if (latestHash && latestHash !== knownHash) {
-          await actions.refreshRepositoryCommits(normalizedRepositoryPath, 120);
+          await actions.refreshRepositoryCommits(normalizedRepositoryPath, 15);
         }
       } catch {
         // Ignore transient git polling failures.
@@ -1297,8 +1361,9 @@ export function ReviewWorkspaceContainer() {
           )}
 
           {sequenceExplorerActiveFile && !isSequenceExplorerDiffReady && (
-            <div className="flex h-full items-center justify-center px-4 text-sm text-muted">
-              Loading {sequenceExplorerActiveFile.path}...
+            <div className="px-4 py-4">
+              <Skeleton height={13} width="38%" className="mb-2" />
+              <Skeleton height={11} count={6} />
             </div>
           )}
 
@@ -1317,6 +1382,7 @@ export function ReviewWorkspaceContainer() {
               onViewModeChange={actions.setDiffViewMode}
               onAskAgent={actions.askAgent}
               onDeleteComment={actions.deleteComment}
+              onSetThreadStatus={actions.setThreadStatus}
               onCreateThread={actions.createThread}
               defaultAuthorId={reviewerAuthorId}
               toolbarActions={(
@@ -1380,6 +1446,54 @@ export function ReviewWorkspaceContainer() {
     state.commit,
     state.loadStatus,
     state.standardsAnalysisStatus,
+  ]);
+
+  useEffect(() => {
+    if (
+      activeTab !== "summary" ||
+      state.loadStatus !== "loaded" ||
+      !state.commit ||
+      state.aiAnalysisStatus !== "idle"
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let idleId: number | null = null;
+
+    const scheduleAnalysis = () => {
+      if (cancelled) {
+        return;
+      }
+      actions.refreshAiAnalysis();
+    };
+
+    if (typeof globalThis.requestIdleCallback === "function") {
+      idleId = globalThis.requestIdleCallback(() => {
+        scheduleAnalysis();
+      });
+    } else {
+      timeoutId = globalThis.setTimeout(() => {
+        scheduleAnalysis();
+      }, 32);
+    }
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) {
+        globalThis.clearTimeout(timeoutId);
+      }
+      if (idleId !== null && typeof globalThis.cancelIdleCallback === "function") {
+        globalThis.cancelIdleCallback(idleId);
+      }
+    };
+  }, [
+    actions,
+    activeTab,
+    state.aiAnalysisStatus,
+    state.commit,
+    state.loadStatus,
   ]);
 
   const windowControlsInsetClass = isMacOperatingSystem() ? "w-[6.75rem]" : "w-3";
@@ -1555,9 +1669,10 @@ export function ReviewWorkspaceContainer() {
 
             <div className="max-h-[16rem] overflow-y-auto">
               {isBranchListLoading && (
-                <p className="px-3 py-3 text-sm text-muted">
-                  Loading local branches...
-                </p>
+                <div className="space-y-2 px-3 py-3">
+                  <Skeleton height={12} width="56%" />
+                  <Skeleton height={30} count={4} />
+                </div>
               )}
 
               {!isBranchListLoading && branchListError && (
@@ -1777,8 +1892,15 @@ export function ReviewWorkspaceContainer() {
     if (state.loadStatus === "loading" || state.loadStatus === "idle") {
       return (
         <Card className="h-full rounded-none border-0 shadow-none">
-          <CardBody className="flex h-full items-center justify-center py-10 text-sm text-muted">
-            Loading commit review data and standards checks...
+          <CardBody className="py-8">
+            <div className="mx-auto w-full max-w-3xl space-y-4">
+              <Skeleton height={18} width="34%" />
+              <Skeleton height={12} count={2} />
+              <div className="grid gap-3 md:grid-cols-2">
+                <Skeleton height={120} />
+                <Skeleton height={120} />
+              </div>
+            </div>
           </CardBody>
         </Card>
       );
@@ -1828,33 +1950,60 @@ export function ReviewWorkspaceContainer() {
       return (
         <div className="flex h-full min-h-0 flex-col">
           <div className="min-h-0 flex-1">
-            <DiffViewer
-              file={state.activeFile}
-              hunks={state.activeFileHunks}
-              threads={state.threadModels}
-              showInlineThreads={showInlineComments}
-              orientation={state.diffOrientation}
-              viewMode={state.diffViewMode}
-              fileVersions={state.activeFileVersions}
-              fileVersionsStatus={state.activeFileVersionsStatus}
-              fileVersionsError={state.activeFileVersionsError}
-              onOrientationChange={actions.setDiffOrientation}
-              onViewModeChange={actions.setDiffViewMode}
-              onAskAgent={actions.askAgent}
-              onDeleteComment={actions.deleteComment}
-              onCreateThread={actions.createThread}
-              defaultAuthorId={reviewerAuthorId}
-              toolbarActions={(
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => setShowInlineComments((current) => !current)}
-                  className="h-7 px-2"
-                >
-                  {showInlineComments ? "Hide Comments" : "Show Comments"}
-                </Button>
-              )}
-            />
+            {state.fileInspectionMode === "summary" ? (
+              <FileSummaryInspector
+                file={state.activeFile}
+                fileSummary={activeFileSummary}
+                relatedFeatures={activeFileFeatureSummaries}
+                aiAnalysisStatus={state.aiAnalysisStatus}
+                onSeeDiff={() => {
+                  actions.setFileInspectionMode("diff");
+                }}
+                onOpenFeatureFiles={(fileIds) => {
+                  const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
+                  if (uniqueFileIds.length === 0) {
+                    return;
+                  }
+
+                  setHighlightedFileIds(uniqueFileIds);
+                  setSidebarFocus({
+                    label: "Feature Focus",
+                    fileIds: uniqueFileIds,
+                  });
+                  actions.selectFile(uniqueFileIds[0] ?? null);
+                  actions.setFileInspectionMode("diff");
+                }}
+              />
+            ) : (
+              <DiffViewer
+                file={state.activeFile}
+                hunks={state.activeFileHunks}
+                threads={state.threadModels}
+                showInlineThreads={showInlineComments}
+                orientation={state.diffOrientation}
+                viewMode={state.diffViewMode}
+                fileVersions={state.activeFileVersions}
+                fileVersionsStatus={state.activeFileVersionsStatus}
+                fileVersionsError={state.activeFileVersionsError}
+                onOrientationChange={actions.setDiffOrientation}
+                onViewModeChange={actions.setDiffViewMode}
+                onAskAgent={actions.askAgent}
+                onDeleteComment={actions.deleteComment}
+                onSetThreadStatus={actions.setThreadStatus}
+                onCreateThread={actions.createThread}
+                defaultAuthorId={reviewerAuthorId}
+                toolbarActions={(
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setShowInlineComments((current) => !current)}
+                    className="h-7 px-2"
+                  >
+                    {showInlineComments ? "Hide Comments" : "Show Comments"}
+                  </Button>
+                )}
+              />
+            )}
           </div>
         </div>
       );
@@ -1866,15 +2015,45 @@ export function ReviewWorkspaceContainer() {
           <SummaryPanel
             commit={state.commit}
             overviewCards={state.overviewCards}
-            fileSummaries={state.fileSummaries}
+            featureSummaries={state.sequencePairs}
             publishPackage={state.publishPackage}
             publishStatus={state.publishStatus}
-            publishResult={state.publishResult}
-            publishError={state.publishError}
             canPublish={state.isPublishingReady}
+            aiAnalysisStatus={state.aiAnalysisStatus}
+            onOpenFeatureFiles={(fileIds) => {
+              const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
+              if (uniqueFileIds.length === 0) {
+                return;
+              }
+
+              setHighlightedFileIds(uniqueFileIds);
+              setSidebarFocus({
+                label: "Feature Focus",
+                fileIds: uniqueFileIds,
+              });
+              actions.selectFile(uniqueFileIds[0] ?? null);
+              actions.setFileInspectionMode("diff");
+              setActiveTab("files");
+            }}
             onPublishReview={actions.publishReview}
           />
         </div>
+      );
+    }
+
+    if (activeTab === "commit") {
+      return (
+        <CommitPanel
+          commit={state.commit}
+          files={state.allFiles}
+          onOpenFileDiff={(fileId) => {
+            setHighlightedFileIds([fileId]);
+            setSidebarFocus(null);
+            actions.selectFile(fileId);
+            actions.setFileInspectionMode("diff");
+            setActiveTab("files");
+          }}
+        />
       );
     }
 
@@ -1883,14 +2062,12 @@ export function ReviewWorkspaceContainer() {
         {(state.standardsAnalysisStatus === "analysing" ||
           (state.standardsAnalysisStatus === "idle" && state.standardsChecks.length === 0)) && (
           <Card>
-            <CardBody className="flex items-center justify-between gap-3 py-6">
-              <div>
-                <p className="font-display text-sm font-semibold text-text">Generating standards insights...</p>
-                <p className="text-sm text-muted">
-                  Checkmate is evaluating this commit against your configured coding standards.
-                </p>
+            <CardBody className="py-5">
+              <div className="space-y-2">
+                <Skeleton height={15} width="38%" />
+                <Skeleton height={12} width="72%" />
+                <Skeleton height={52} />
               </div>
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent/40 border-t-accent" />
             </CardBody>
           </Card>
         )}
@@ -1924,6 +2101,7 @@ export function ReviewWorkspaceContainer() {
     state.diffOrientation,
     state.diffViewMode,
     state.errorMessage,
+    state.fileInspectionMode,
     state.fileSummaries,
     state.isPublishingReady,
     state.loadStatus,
@@ -1942,8 +2120,12 @@ export function ReviewWorkspaceContainer() {
     state.standardsChecks,
     state.standardsCounts,
     state.threadModels,
+    state.threadCounts,
     state.architectureClusters,
     state.repositoryCommits,
+    activeFileSummary,
+    activeFileFeatureSummaries,
+    filesById,
     showInlineComments,
     reviewerAuthorId,
     isSequenceExplorerOpen,
@@ -2059,9 +2241,11 @@ export function ReviewWorkspaceContainer() {
             activeFileId={state.activeFileId}
             highlightedFileIds={highlightedFileIds}
             filter={state.fileFilter}
+            threadCounts={state.threadCounts}
             filterLabel={sidebarFocus?.label ?? null}
             onClearFilter={() => setSidebarFocus(null)}
             onQueryChange={actions.setFilterQuery}
+            onThreadStatusFilterChange={actions.setThreadStatusFilter}
             onSelectFile={(fileId) => {
               setHighlightedFileIds([fileId]);
               actions.selectFile(fileId);

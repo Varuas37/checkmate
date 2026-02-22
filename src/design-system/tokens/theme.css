@@ -86,3 +86,20 @@
   --shadow-soft: 0 12px 30px hsl(219 24% 18% / 0.09);
   --shadow-inset: inset 0 1px 0 hsl(0 0% 100% / 0.78);
 }
+
+/* react-loading-skeleton: keep shimmer aligned with app theme and motion profile */
+:root .react-loading-skeleton {
+  --animation-duration: 1.2s;
+  --base-color: hsl(var(--color-surface-subtle) / 0.72);
+  --highlight-color: hsl(var(--color-surface-elevated) / 0.96);
+}
+
+:root[data-theme="dark"] .react-loading-skeleton {
+  --base-color: hsl(var(--color-surface-subtle) / 0.86);
+  --highlight-color: hsl(var(--color-border-muted) / 0.96);
+}
+
+:root[data-theme="light"] .react-loading-skeleton {
+  --base-color: hsl(var(--color-surface-subtle) / 0.68);
+  --highlight-color: hsl(var(--color-surface-base) / 0.96);
+}

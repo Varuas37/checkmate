@@ -398,46 +398,6 @@ export function OverviewPanel({
           />
         </div>
 
-        <section className="xl:col-span-12 border-t border-border/60 pt-2">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <p className={sectionEyebrowClass}>Architecture</p>
-              <p className="text-sm font-semibold text-text">Architecture Overview</p>
-            </div>
-            <p className="font-mono text-xs text-muted">{architectureClusters.length} groups</p>
-          </div>
-          {architectureClusters.length > 0 ? (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              {architectureClusters.map((cluster, index) => {
-                const isHighlighted = cluster.fileIds.some((fileId) => highlightedSet.has(fileId));
-                return (
-                  <div key={cluster.id} className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onSelectFiles({
-                          fileIds: cluster.fileIds,
-                          label: cluster.label,
-                        })
-                      }
-                      className={cn(
-                        "rounded-sm px-2 py-1 text-xs transition-colors",
-                        "hover:bg-elevated",
-                        isHighlighted ? "bg-accent/12 text-accent" : "text-text",
-                      )}
-                    >
-                      {cluster.label}
-                      <span className="ml-1 font-mono text-[10px] text-muted">{cluster.fileCount}</span>
-                    </button>
-                    {index < architectureClusters.length - 1 && <span className="text-xs text-muted">{">"}</span>}
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="mt-2 text-sm text-muted">Architecture nodes render after commit data has loaded.</p>
-          )}
-        </section>
       </div>
 
       <Modal

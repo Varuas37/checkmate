@@ -85,11 +85,10 @@ export function HomeScreen({
   const normalizedRepositoryPath = repositoryPath.trim();
   const normalizedCommitSha = commitSha.trim();
   const normalizedName = reviewerName.trim();
-  const normalizedEmail = reviewerEmail.trim();
 
   const projectHint = normalizedRepositoryPath.length > 0 ? normalizedRepositoryPath : "No repository selected";
   const reviewHint =
-    normalizedName.length > 0 && normalizedEmail.length > 0
+    normalizedName.length > 0
       ? `${normalizedName} · ${normalizedCommitSha || "HEAD"}`
       : "Set reviewer identity below";
   const minimalInputClass =
@@ -208,7 +207,7 @@ export function HomeScreen({
                 </label>
               </div>
               <p className="mt-1 text-xs text-muted">
-                Saved locally and used as the default author for review comments.
+                Name is required. Email is optional. This identity is used as the default comment author.
               </p>
             </section>
 

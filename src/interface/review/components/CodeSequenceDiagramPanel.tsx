@@ -8,6 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import Skeleton from "react-loading-skeleton";
 import {
   TransformComponent,
   TransformWrapper,
@@ -593,9 +594,10 @@ export function CodeSequenceDiagramPanel({
         </CardHeader>
         <CardBody className="space-y-2 px-3 pb-2 pt-2">
           {isSequenceGenerating && (
-            <p className="text-xs text-muted">
-              Generating structured sequence data with specialized AI agent...
-            </p>
+            <div className="space-y-2">
+              <Skeleton height={12} width="64%" />
+              <Skeleton height={10} count={2} />
+            </div>
           )}
 
           {steps.length === 0 && !isSequenceGenerating && (

@@ -18,10 +18,19 @@ import {
   loadCommitReviewRequested,
   publishReviewRequested,
   regenerateSequenceRequested,
+  reviewEntitiesActions,
   reviewUiActions,
 } from "../../../app/store/review/index.ts";
-import type { FileChangeStatus, ThreadStatus } from "../../../domain/review/index.ts";
-import { readRepositoryCommits, stripCheckmateMentions } from "../../../shared/index.ts";
+import type {
+  FileChangeStatus,
+  RepositoryCommitSummary,
+  ThreadStatus,
+} from "../../../domain/review/index.ts";
+import {
+  readRepositoryCommits,
+  readRepositoryReviewCommits,
+  stripCheckmateMentions,
+} from "../../../shared/index.ts";
 import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT } from "../constants.ts";
 import type {
   CodeSequenceStep,
@@ -77,6 +86,25 @@ function summarizeRisk(additions: number, deletions: number): string {
   }
 
   return "Low direct churn; focus on correctness and standards alignment.";
+}
+
+function mergeRepositoryCommits(
+  recentCommits: readonly RepositoryCommitSummary[],
+  branchOnlyCommits: readonly RepositoryCommitSummary[],
+): readonly RepositoryCommitSummary[] {
+  const combined = [...recentCommits, ...branchOnlyCommits];
+  const seen = new Set<string>();
+  const deduped: RepositoryCommitSummary[] = [];
+
+  combined.forEach((commit) => {
+    if (seen.has(commit.hash)) {
+      return;
+    }
+    seen.add(commit.hash);
+    deduped.push(commit);
+  });
+
+  return deduped;
 }
 
 function normalizeReloadInput(input: ReloadReviewWorkspaceInput): ReloadReviewWorkspaceInput {
@@ -423,6 +451,39 @@ export function useReviewWorkspace(): {
     ui.askAgentDraftByThreadId,
   ]);
 
+  const threadCounts = useMemo(() => {
+    const activeCommitId = ui.activeCommitId;
+    if (!activeCommitId) {
+      return {
+        all: 0,
+        open: 0,
+        resolved: 0,
+      };
+    }
+
+    let open = 0;
+    let resolved = 0;
+
+    Object.values(entities.threadsById).forEach((thread) => {
+      if (!thread || thread.commitId !== activeCommitId) {
+        return;
+      }
+
+      if (thread.status === "open") {
+        open += 1;
+        return;
+      }
+
+      resolved += 1;
+    });
+
+    return {
+      all: open + resolved,
+      open,
+      resolved,
+    };
+  }, [entities.threadsById, ui.activeCommitId]);
+
   const fileSummaries = useMemo(() => {
     const aiSummaryByPath = new Map(
       hasAiAnalysis && ui.aiAnalysis !== null
@@ -472,17 +533,28 @@ export function useReviewWorkspace(): {
   );
 
   const refreshRepositoryCommits = useCallback(
-    async (repositoryPath: string, limit = 120) => {
+    async (repositoryPath: string, limit = 15) => {
       const normalizedRepositoryPath = repositoryPath.trim();
       if (normalizedRepositoryPath.length === 0) {
         return;
       }
 
       try {
-        const commits = await readRepositoryCommits(normalizedRepositoryPath, limit);
+        const reviewCommitFeed = await readRepositoryReviewCommits(
+          normalizedRepositoryPath,
+          limit,
+          240,
+        );
+        const commits = mergeRepositoryCommits(
+          reviewCommitFeed.recentCommits,
+          reviewCommitFeed.branchOnlyCommits,
+        );
         dispatch(
           reviewUiActions.setRepositoryCommits({
-            commits,
+            commits:
+              commits.length > 0
+                ? commits
+                : await readRepositoryCommits(normalizedRepositoryPath, limit),
           }),
         );
       } catch {
@@ -495,6 +567,17 @@ export function useReviewWorkspace(): {
   const setDiffOrientation = useCallback(
     (orientation: "split" | "unified") => {
       dispatch(reviewUiActions.setDiffOrientation({ orientation }));
+    },
+    [dispatch],
+  );
+
+  const setFileInspectionMode = useCallback(
+    (mode: "summary" | "diff") => {
+      dispatch(
+        reviewUiActions.setFileInspectionMode({
+          mode,
+        }),
+      );
     },
     [dispatch],
   );
@@ -671,6 +754,24 @@ export function useReviewWorkspace(): {
     [dispatch],
   );
 
+  const setThreadStatus = useCallback(
+    (threadId: string, status: ThreadStatus) => {
+      const normalizedThreadId = threadId.trim();
+      if (normalizedThreadId.length === 0) {
+        return;
+      }
+
+      dispatch(
+        reviewEntitiesActions.threadStatusUpdated({
+          threadId: normalizedThreadId,
+          status,
+          updatedAtIso: new Date().toISOString(),
+        }),
+      );
+    },
+    [dispatch],
+  );
+
   const publishReview = useCallback(() => {
     dispatch(
       publishReviewRequested({
@@ -722,6 +823,7 @@ export function useReviewWorkspace(): {
       commit,
       activeFile,
       activeFileId,
+      fileInspectionMode: ui.fileInspectionMode,
       allFiles,
       filteredFiles,
       activeFileHunks,
@@ -737,6 +839,7 @@ export function useReviewWorkspace(): {
       codeSequenceSteps,
       standardsChecks,
       threadModels,
+      threadCounts,
       fileSummaries,
       publishPackage: ui.lastPublishPackage,
       repositoryCommits: ui.repositoryCommits,
@@ -755,6 +858,7 @@ export function useReviewWorkspace(): {
       reloadReviewWorkspace,
       refreshRepositoryCommits,
       selectFile,
+      setFileInspectionMode,
       setDiffOrientation,
       setDiffViewMode,
       setFilterQuery,
@@ -763,6 +867,7 @@ export function useReviewWorkspace(): {
       setOnlyFailingStandards,
       setThreadStatusFilter,
       createThread,
+      setThreadStatus,
       askAgent,
       deleteComment,
       publishReview,

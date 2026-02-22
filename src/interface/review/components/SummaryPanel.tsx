@@ -1,65 +1,43 @@
-import { Badge, Button } from "../../../design-system/index.ts";
+import { Button } from "../../../design-system/index.ts";
 import type { PublishReviewPackage } from "../../../application/review/index.ts";
-import type { CommitReview, OverviewCard, PublishReviewResult } from "../../../domain/review/index.ts";
+import type { CommitReview, OverviewCard } from "../../../domain/review/index.ts";
+import Skeleton from "react-loading-skeleton";
 
-import type { FileSummary } from "../types.ts";
+import type { SequencePair } from "../types.ts";
 
 export interface SummaryPanelProps {
   readonly commit: CommitReview | null;
   readonly overviewCards: readonly OverviewCard[];
-  readonly fileSummaries: readonly FileSummary[];
+  readonly featureSummaries: readonly SequencePair[];
   readonly publishPackage: PublishReviewPackage | null;
   readonly publishStatus: "idle" | "ready" | "publishing" | "published" | "error";
-  readonly publishResult: PublishReviewResult | null;
-  readonly publishError: string | null;
   readonly canPublish: boolean;
+  readonly aiAnalysisStatus: "idle" | "analysing" | "analysed" | "error";
+  readonly onOpenFeatureFiles: (fileIds: readonly string[]) => void;
   readonly onPublishReview: () => void;
 }
 
-function toneForStatus(status: FileSummary["status"]): "positive" | "accent" | "danger" | "caution" {
-  if (status === "added") {
-    return "positive";
-  }
-
-  if (status === "modified") {
-    return "accent";
-  }
-
-  if (status === "deleted") {
-    return "danger";
-  }
-
-  return "caution";
-}
-
-function toneForPublishStatus(status: SummaryPanelProps["publishStatus"]): "positive" | "accent" | "danger" | "neutral" {
-  if (status === "published") {
-    return "positive";
-  }
-
-  if (status === "publishing") {
-    return "accent";
-  }
-
-  if (status === "error") {
-    return "danger";
-  }
-
-  return "neutral";
+function normalizeSummaryText(value: string): string {
+  return value.replaceAll(/\s+/g, " ").trim().toLowerCase();
 }
 
 export function SummaryPanel({
   commit,
   overviewCards,
-  fileSummaries,
+  featureSummaries,
   publishPackage,
   publishStatus,
-  publishResult,
-  publishError,
   canPublish,
+  aiAnalysisStatus,
+  onOpenFeatureFiles,
   onPublishReview,
 }: SummaryPanelProps) {
   const publishPreview = publishPackage ? JSON.stringify(publishPackage, null, 2) : null;
+  const isSummaryLoading = aiAnalysisStatus === "idle" || aiAnalysisStatus === "analysing";
+  const hasDistinctDescription =
+    commit !== null &&
+    normalizeSummaryText(commit.description).length > 0 &&
+    normalizeSummaryText(commit.description) !== normalizeSummaryText(commit.title);
 
   return (
     <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-4 px-1">
@@ -79,14 +57,25 @@ export function SummaryPanel({
 
         {commit && (
           <>
-            <p className="text-sm leading-relaxed text-text">{commit.description}</p>
+            {hasDistinctDescription && (
+              <p className="text-sm leading-relaxed text-text">{commit.description}</p>
+            )}
             <p className="mt-1.5 text-xs text-muted">
               {commit.authorName} · {commit.authorEmail} · {new Date(commit.authoredAtIso).toLocaleString()}
             </p>
           </>
         )}
 
-        {overviewCards.length > 0 ? (
+        {isSummaryLoading ? (
+          <div className="mt-4 space-y-3">
+            <Skeleton height={16} width="46%" />
+            <Skeleton height={14} count={3} />
+            <div className="grid gap-2 md:grid-cols-2">
+              <Skeleton height={74} />
+              <Skeleton height={74} />
+            </div>
+          </div>
+        ) : overviewCards.length > 0 ? (
           <div className="mt-4 grid gap-x-4 gap-y-3 md:grid-cols-2">
             {overviewCards.map((card) => (
               <article key={card.id}>
@@ -96,47 +85,57 @@ export function SummaryPanel({
             ))}
           </div>
         ) : (
-          <p className="mt-4 text-sm text-muted">AI overview cards will appear once commit data is loaded.</p>
+          <p className="mt-4 text-sm text-muted">AI overview cards are generated only when requested.</p>
+        )}
+        {isSummaryLoading && (
+          <p className="mt-3 text-xs text-muted">Generating AI summary in background...</p>
+        )}
+        {aiAnalysisStatus === "error" && (
+          <p className="mt-3 text-xs text-danger">
+            AI summary generation failed. Use Overview &gt; Refresh AI to retry.
+          </p>
         )}
       </section>
 
       <section className="border-b border-border/60 pb-4">
-        <h3 className="text-base font-semibold text-text">Claude Publish Status</h3>
-        <p className="text-sm text-muted">Current handoff state for the review package.</p>
+        <h3 className="text-base font-semibold text-text">Feature Summaries</h3>
+        <p className="text-sm text-muted">
+          Cross-file summaries that group related behavior changes.
+        </p>
 
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <Badge tone={toneForPublishStatus(publishStatus)}>{publishStatus}</Badge>
-          {publishResult && <Badge tone="accent">{publishResult.provider}</Badge>}
-        </div>
+        {isSummaryLoading ? (
+          <div className="mt-3 space-y-2">
+            <Skeleton height={96} />
+            <Skeleton height={96} />
+          </div>
+        ) : featureSummaries.length > 0 ? (
+          <div className="mt-3 space-y-2">
+            {featureSummaries.map((feature) => {
+              const fileIds = [...new Set([...feature.before.fileIds, ...feature.after.fileIds])];
 
-        {publishError && <p className="mt-2 text-sm text-danger">{publishError}</p>}
-        {publishResult && (
-          <>
-            <p className="mt-2 text-sm text-text">{publishResult.summary}</p>
-            <p className="font-mono text-xs text-muted">{publishResult.publicationId}</p>
-          </>
-        )}
-      </section>
-
-      <section className="border-b border-border/60 pb-3">
-        <h3 className="text-base font-semibold text-text">Per-file Summaries</h3>
-        <p className="text-sm text-muted">High-level summary and risk note for each changed file.</p>
-
-        {fileSummaries.length > 0 ? (
-          <div className="mt-2 divide-y divide-border/60">
-            {fileSummaries.map((fileSummary) => (
-              <article key={fileSummary.fileId} className="py-2.5">
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <p className="break-all font-mono text-xs text-text">{fileSummary.path}</p>
-                  <Badge tone={toneForStatus(fileSummary.status)}>{fileSummary.status}</Badge>
-                </div>
-                <p className="text-sm text-text">{fileSummary.summary}</p>
-                <p className="mt-1 text-sm text-muted">{fileSummary.riskNote}</p>
-              </article>
-            ))}
+              return (
+                <article key={feature.id} className="rounded-md border border-border/60 bg-canvas/55 p-3">
+                  <p className="text-sm font-semibold text-text">{feature.after.title}</p>
+                  <p className="mt-1 text-sm text-muted">{feature.after.body}</p>
+                  <p className="mt-2 text-xs text-muted">Before: {feature.before.body}</p>
+                  {fileIds.length > 0 && (
+                    <div className="mt-3 flex justify-end">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2"
+                        onClick={() => onOpenFeatureFiles(fileIds)}
+                      >
+                        Open Related Files
+                      </Button>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
           </div>
         ) : (
-          <p className="mt-2 text-sm text-muted">No changed files available for summary output.</p>
+          <p className="mt-2 text-sm text-muted">Generate AI summary to see grouped feature changes.</p>
         )}
       </section>
 

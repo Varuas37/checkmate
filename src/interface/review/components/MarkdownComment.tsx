@@ -7,6 +7,471 @@ export interface MarkdownCommentProps {
   readonly className?: string;
 }
 
+type SyntaxLanguage =
+  | "typescript"
+  | "javascript"
+  | "json"
+  | "rust"
+  | "shell"
+  | "markdown"
+  | "text";
+
+type SyntaxTokenKind = "plain" | "keyword" | "string" | "comment" | "number" | "type";
+
+interface SyntaxToken {
+  readonly kind: SyntaxTokenKind;
+  readonly text: string;
+}
+
+interface CodeFenceBlockProps {
+  readonly code: string;
+  readonly language: string;
+}
+
+const TS_KEYWORDS = new Set([
+  "as",
+  "async",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "declare",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "enum",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "from",
+  "function",
+  "if",
+  "implements",
+  "import",
+  "in",
+  "instanceof",
+  "interface",
+  "let",
+  "new",
+  "null",
+  "private",
+  "protected",
+  "public",
+  "readonly",
+  "return",
+  "static",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "type",
+  "typeof",
+  "undefined",
+  "var",
+  "void",
+  "while",
+  "with",
+  "yield",
+]);
+
+const RUST_KEYWORDS = new Set([
+  "as",
+  "async",
+  "await",
+  "break",
+  "const",
+  "continue",
+  "crate",
+  "else",
+  "enum",
+  "extern",
+  "false",
+  "fn",
+  "for",
+  "if",
+  "impl",
+  "in",
+  "let",
+  "loop",
+  "match",
+  "mod",
+  "move",
+  "mut",
+  "pub",
+  "ref",
+  "return",
+  "self",
+  "Self",
+  "static",
+  "struct",
+  "super",
+  "trait",
+  "true",
+  "type",
+  "unsafe",
+  "use",
+  "where",
+  "while",
+]);
+
+const SHELL_KEYWORDS = new Set([
+  "case",
+  "do",
+  "done",
+  "elif",
+  "else",
+  "esac",
+  "fi",
+  "for",
+  "function",
+  "if",
+  "in",
+  "then",
+  "until",
+  "while",
+]);
+
+function normalizeFenceLanguage(value: string): SyntaxLanguage {
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length === 0) {
+    return "text";
+  }
+
+  if (
+    normalized === "typescript" ||
+    normalized === "ts" ||
+    normalized === "tsx" ||
+    normalized === "mts" ||
+    normalized === "cts"
+  ) {
+    return "typescript";
+  }
+
+  if (
+    normalized === "javascript" ||
+    normalized === "js" ||
+    normalized === "jsx" ||
+    normalized === "mjs" ||
+    normalized === "cjs"
+  ) {
+    return "javascript";
+  }
+
+  if (normalized === "json" || normalized === "jsonc") {
+    return "json";
+  }
+
+  if (normalized === "rust" || normalized === "rs") {
+    return "rust";
+  }
+
+  if (
+    normalized === "shell" ||
+    normalized === "sh" ||
+    normalized === "bash" ||
+    normalized === "zsh" ||
+    normalized === "fish"
+  ) {
+    return "shell";
+  }
+
+  if (normalized === "markdown" || normalized === "md" || normalized === "mdx") {
+    return "markdown";
+  }
+
+  return "text";
+}
+
+function keywordSetForLanguage(language: SyntaxLanguage): ReadonlySet<string> {
+  if (language === "typescript" || language === "javascript") {
+    return TS_KEYWORDS;
+  }
+
+  if (language === "rust") {
+    return RUST_KEYWORDS;
+  }
+
+  if (language === "shell") {
+    return SHELL_KEYWORDS;
+  }
+
+  return new Set<string>();
+}
+
+function pushSyntaxToken(tokens: SyntaxToken[], kind: SyntaxTokenKind, text: string): void {
+  if (text.length === 0) {
+    return;
+  }
+
+  const previous = tokens[tokens.length - 1];
+  if (previous && previous.kind === kind) {
+    tokens[tokens.length - 1] = {
+      kind,
+      text: `${previous.text}${text}`,
+    };
+    return;
+  }
+
+  tokens.push({
+    kind,
+    text,
+  });
+}
+
+function isWordStart(value: string): boolean {
+  return /[A-Za-z_$]/.test(value);
+}
+
+function isWordPart(value: string): boolean {
+  return /[A-Za-z0-9_$]/.test(value);
+}
+
+function isHexDigit(value: string): boolean {
+  return /[0-9a-fA-F]/.test(value);
+}
+
+function tokenizeSyntaxLine(text: string, language: SyntaxLanguage): readonly SyntaxToken[] {
+  if (text.length === 0) {
+    return [{ kind: "plain", text: "" }];
+  }
+
+  const tokens: SyntaxToken[] = [];
+  const keywords = keywordSetForLanguage(language);
+  let index = 0;
+
+  while (index < text.length) {
+    const current = text[index] ?? "";
+    const next = text[index + 1] ?? "";
+
+    if (current === "/" && next === "/") {
+      pushSyntaxToken(tokens, "comment", text.slice(index));
+      break;
+    }
+
+    if (current === "/" && next === "*") {
+      const close = text.indexOf("*/", index + 2);
+      const end = close >= 0 ? close + 2 : text.length;
+      pushSyntaxToken(tokens, "comment", text.slice(index, end));
+      index = end;
+      continue;
+    }
+
+    if ((language === "shell" || language === "markdown") && current === "#") {
+      pushSyntaxToken(tokens, "comment", text.slice(index));
+      break;
+    }
+
+    if (current === '"' || current === "'" || current === "`") {
+      const quote = current;
+      let cursor = index + 1;
+      let escaped = false;
+
+      while (cursor < text.length) {
+        const value = text[cursor] ?? "";
+        if (escaped) {
+          escaped = false;
+          cursor += 1;
+          continue;
+        }
+
+        if (value === "\\") {
+          escaped = true;
+          cursor += 1;
+          continue;
+        }
+
+        if (value === quote) {
+          cursor += 1;
+          break;
+        }
+
+        cursor += 1;
+      }
+
+      pushSyntaxToken(tokens, "string", text.slice(index, cursor));
+      index = cursor;
+      continue;
+    }
+
+    if (/[0-9]/.test(current)) {
+      let cursor = index + 1;
+      if (current === "0" && (next === "x" || next === "X")) {
+        cursor = index + 2;
+        while (cursor < text.length && isHexDigit(text[cursor] ?? "")) {
+          cursor += 1;
+        }
+      } else {
+        while (cursor < text.length && /[0-9._]/.test(text[cursor] ?? "")) {
+          cursor += 1;
+        }
+      }
+
+      pushSyntaxToken(tokens, "number", text.slice(index, cursor));
+      index = cursor;
+      continue;
+    }
+
+    if (isWordStart(current)) {
+      let cursor = index + 1;
+      while (cursor < text.length && isWordPart(text[cursor] ?? "")) {
+        cursor += 1;
+      }
+
+      const word = text.slice(index, cursor);
+      if (keywords.has(word)) {
+        pushSyntaxToken(tokens, "keyword", word);
+      } else if (/^[A-Z][A-Za-z0-9_]*$/.test(word)) {
+        pushSyntaxToken(tokens, "type", word);
+      } else {
+        pushSyntaxToken(tokens, "plain", word);
+      }
+
+      index = cursor;
+      continue;
+    }
+
+    pushSyntaxToken(tokens, "plain", current);
+    index += 1;
+  }
+
+  return tokens;
+}
+
+function syntaxTokenClass(kind: SyntaxTokenKind): string {
+  if (kind === "keyword") {
+    return "text-accent font-semibold";
+  }
+
+  if (kind === "string") {
+    return "text-caution";
+  }
+
+  if (kind === "comment") {
+    return "text-muted/75 italic";
+  }
+
+  if (kind === "number") {
+    return "text-positive";
+  }
+
+  if (kind === "type") {
+    return "text-accent/90";
+  }
+
+  return "text-text";
+}
+
+function renderHighlightedCode(code: string, language: SyntaxLanguage): ReactNode[] {
+  const lines = code.split("\n");
+
+  return lines.map((line, lineIndex) => {
+    const tokens = tokenizeSyntaxLine(line, language);
+
+    return (
+      <Fragment key={`code-line-${lineIndex}`}>
+        {tokens.map((token, tokenIndex) => (
+          <span
+            key={`code-line-${lineIndex}-${token.kind}-${tokenIndex}`}
+            className={syntaxTokenClass(token.kind)}
+          >
+            {token.text}
+          </span>
+        ))}
+        {lineIndex < lines.length - 1 ? "\n" : null}
+      </Fragment>
+    );
+  });
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall back to the legacy copy command for non-secure clipboard contexts.
+    }
+  }
+
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.setAttribute("readonly", "true");
+  textArea.style.position = "fixed";
+  textArea.style.left = "-9999px";
+  textArea.style.opacity = "0";
+  textArea.style.pointerEvents = "none";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+
+  try {
+    document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textArea);
+  }
+}
+
+function CopyCodeIcon(): ReactNode {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <rect x="2" y="2" width="13" height="13" rx="2" />
+    </svg>
+  );
+}
+
+function CodeFenceBlock({ code, language }: CodeFenceBlockProps): ReactNode {
+  const normalizedLanguage = normalizeFenceLanguage(language);
+
+  return (
+    <div className="relative">
+      <pre className="overflow-x-auto rounded border border-border/60 bg-canvas/70 p-3 pb-8 pr-11 text-xs">
+        <code className={cn("font-mono", language.length > 0 && `language-${language}`)}>
+          {renderHighlightedCode(code, normalizedLanguage)}
+        </code>
+      </pre>
+      <button
+        type="button"
+        className={cn(
+          "absolute bottom-1.5 right-1.5 inline-flex h-6 w-6 items-center justify-center rounded border border-border/70 bg-surface-subtle/70 text-muted transition-colors",
+          "hover:border-accent/45 hover:text-accent",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/65",
+        )}
+        onClick={() => {
+          void copyToClipboard(code);
+        }}
+        aria-label="Copy code block"
+        title="Copy code"
+      >
+        <CopyCodeIcon />
+      </button>
+    </div>
+  );
+}
+
 function renderMention(value: string, key: string): ReactNode {
   return (
     <span
@@ -215,14 +680,7 @@ function renderBlocks(markdown: string): ReactNode[] {
       }
 
       blocks.push(
-        <pre
-          key={nextKey()}
-          className="overflow-x-auto rounded border border-border/60 bg-canvas/70 p-3 text-xs"
-        >
-          <code className={cn(language.length > 0 && `language-${language}`)}>
-            {codeLines.join("\n")}
-          </code>
-        </pre>,
+        <CodeFenceBlock key={nextKey()} code={codeLines.join("\n")} language={language} />,
       );
       continue;
     }

@@ -19,6 +19,7 @@ import type {
   AiAnalysisStatus,
   AiSequenceStatus,
   DiffViewMode,
+  FileInspectionMode,
   FileFilter,
   FileVersionsLoadStatus,
   PublishReviewPackage,
@@ -26,7 +27,7 @@ import type {
   StandardsAnalysisStatus,
 } from "../../application/review/index.ts";
 
-export type ReviewTabId = "overview" | "files" | "summary" | "standards";
+export type ReviewTabId = "overview" | "files" | "commit" | "summary" | "standards";
 
 export interface ReviewTabOption {
   readonly id: ReviewTabId;
@@ -113,6 +114,7 @@ export interface ReviewWorkspaceState {
   readonly commit: CommitReview | null;
   readonly activeFile: ChangedFile | null;
   readonly activeFileId: string | null;
+  readonly fileInspectionMode: FileInspectionMode;
   readonly allFiles: readonly ChangedFile[];
   readonly filteredFiles: readonly ChangedFile[];
   readonly activeFileHunks: readonly DiffHunk[];
@@ -128,6 +130,11 @@ export interface ReviewWorkspaceState {
   readonly codeSequenceSteps: readonly CodeSequenceStep[];
   readonly standardsChecks: readonly StandardsCheck[];
   readonly threadModels: readonly ThreadViewModel[];
+  readonly threadCounts: {
+    readonly all: number;
+    readonly open: number;
+    readonly resolved: number;
+  };
   readonly fileSummaries: readonly FileSummary[];
   readonly publishPackage: PublishReviewPackage | null;
   readonly repositoryCommits: readonly RepositoryCommitSummary[];
@@ -151,6 +158,7 @@ export interface ReviewWorkspaceActions {
   readonly reloadReviewWorkspace: (input: ReloadReviewWorkspaceInput) => void;
   readonly refreshRepositoryCommits: (repositoryPath: string, limit?: number) => Promise<void>;
   readonly selectFile: (fileId: string | null) => void;
+  readonly setFileInspectionMode: (mode: FileInspectionMode) => void;
   readonly setDiffOrientation: (orientation: DiffOrientation) => void;
   readonly setDiffViewMode: (mode: DiffViewMode) => void;
   readonly setFilterQuery: (query: string) => void;
@@ -159,6 +167,7 @@ export interface ReviewWorkspaceActions {
   readonly setOnlyFailingStandards: (enabled: boolean) => void;
   readonly setThreadStatusFilter: (status: ThreadStatus | "all") => void;
   readonly createThread: (input: CreateThreadInput) => { readonly ok: boolean; readonly message: string };
+  readonly setThreadStatus: (threadId: string, status: ThreadStatus) => void;
   readonly askAgent: (threadId: string, prompt: string) => void;
   readonly deleteComment: (commentId: string) => void;
   readonly publishReview: () => void;

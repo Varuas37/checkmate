@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import { Input } from "../../../design-system/index.ts";
 import { cn } from "../../../shared/index.ts";
 import type { FileFilter } from "../../../application/review/index.ts";
-import type { ChangedFile, FileChangeStatus } from "../../../domain/review/index.ts";
+import type { ChangedFile, FileChangeStatus, ThreadStatus } from "../../../domain/review/index.ts";
 
 export interface ChangedFilesSidebarProps {
   readonly files: readonly ChangedFile[];
@@ -12,9 +12,15 @@ export interface ChangedFilesSidebarProps {
   readonly activeFileId: string | null;
   readonly highlightedFileIds: readonly string[];
   readonly filter: FileFilter;
+  readonly threadCounts: {
+    readonly all: number;
+    readonly open: number;
+    readonly resolved: number;
+  };
   readonly filterLabel: string | null;
   readonly onClearFilter: () => void;
   readonly onQueryChange: (query: string) => void;
+  readonly onThreadStatusFilterChange: (status: ThreadStatus | "all") => void;
   readonly onSelectFile: (fileId: string) => void;
 }
 
@@ -107,9 +113,11 @@ export function ChangedFilesSidebar({
   activeFileId,
   highlightedFileIds,
   filter,
+  threadCounts,
   filterLabel,
   onClearFilter,
   onQueryChange,
+  onThreadStatusFilterChange,
   onSelectFile,
 }: ChangedFilesSidebarProps) {
   const highlightedSet = useMemo(() => new Set(highlightedFileIds), [highlightedFileIds]);
@@ -151,6 +159,35 @@ export function ChangedFilesSidebar({
           aria-label="Search changed files"
           className="h-8 text-xs"
         />
+
+        <div className="space-y-1">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted">Thread Status</p>
+          <div className="flex items-center gap-1">
+            {([
+              { id: "all", label: "All", count: threadCounts.all },
+              { id: "open", label: "Open", count: threadCounts.open },
+              { id: "resolved", label: "Resolved", count: threadCounts.resolved },
+            ] as const).map((option) => {
+              const isActive = filter.threadStatus === option.id;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => onThreadStatusFilterChange(option.id)}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.06em] transition-colors",
+                    isActive
+                      ? "border-accent/55 bg-accent/12 text-accent"
+                      : "border-border/70 bg-canvas text-muted hover:text-text",
+                  )}
+                >
+                  <span>{option.label}</span>
+                  <span className="text-[9px]">{option.count}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2 py-1.5">

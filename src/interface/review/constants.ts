@@ -3,6 +3,7 @@ import type { ReviewLoadRequest, ReviewTabOption, SampleCommitPreset } from "./t
 export const REVIEW_TABS: readonly ReviewTabOption[] = [
   { id: "overview", label: "Overview" },
   { id: "files", label: "Files" },
+  { id: "commit", label: "Commit" },
   { id: "summary", label: "Summary" },
   { id: "standards", label: "Standards" },
 ];

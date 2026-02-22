@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import Skeleton from "react-loading-skeleton";
 
 import type { DiffViewMode, FileVersionsLoadStatus } from "../../../application/review/index.ts";
 import type {
@@ -10,7 +11,7 @@ import type {
   DiffLineKind,
   DiffOrientation,
 } from "../../../domain/review/index.ts";
-import { Button, Input, Textarea } from "../../../design-system/index.ts";
+import { Button, Textarea } from "../../../design-system/index.ts";
 import {
   applyCheckmateMentionSuggestion,
   cn,
@@ -92,6 +93,7 @@ export interface DiffViewerProps {
   readonly onViewModeChange: (mode: DiffViewMode) => void;
   readonly onAskAgent?: (threadId: string, prompt: string) => void;
   readonly onDeleteComment?: (commentId: string) => void;
+  readonly onSetThreadStatus?: (threadId: string, status: "open" | "resolved") => void;
   readonly onCreateThread?: (input: CreateThreadInput) => { readonly ok: boolean; readonly message: string };
   readonly defaultAuthorId?: string;
   readonly toolbarActions?: ReactNode;
@@ -103,7 +105,7 @@ function unifiedRowClass(kind: DiffLineKind): string {
   }
 
   if (kind === "remove") {
-    return "bg-danger/8";
+    return "bg-danger/10";
   }
 
   return "bg-canvas";
@@ -123,7 +125,7 @@ function markerClass(kind: DiffLineKind): string {
 
 function paneRowClass(kind: DiffLineKind, side: "left" | "right"): string {
   if (kind === "remove" && side === "left") {
-    return "bg-danger/8";
+    return "bg-danger/10";
   }
 
   if (kind === "add" && side === "right") {
@@ -845,6 +847,10 @@ function renderInlineThreads(
   onPromptChange: (threadId: string, prompt: string) => void,
   onAskAgent: ((threadId: string, prompt: string) => void) | undefined,
   onDeleteComment: ((commentId: string) => void) | undefined,
+  onSetThreadStatus: ((threadId: string, status: "open" | "resolved") => void) | undefined,
+  expandedReplyThreadId: string | null,
+  onToggleReplyComposer: (threadId: string) => void,
+  onCloseReplyComposer: (threadId: string) => void,
 ): ReactNode {
   if (threads.length === 0) {
     return null;
@@ -852,149 +858,200 @@ function renderInlineThreads(
 
   return (
     <div key={rowKey} className="border-b border-border/35 bg-surface-subtle/50 px-3 py-2">
-	      <div className="space-y-2">
-	        {threads.map((threadModel) => (
-	          <article key={threadModel.thread.id} className="rounded-md border border-border/70 bg-canvas/70 px-2 py-2">
-	            {(() => {
-	              const promptValue = promptsByThreadId[threadModel.thread.id] ?? "";
-	              const mentionSuggestion = getCheckmateMentionSuggestion(promptValue);
-	              const hasMention = hasCheckmateMention(promptValue);
-	              return (
-	                <>
-	            <div className="mb-2 flex flex-wrap items-center gap-2">
-	              <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
-	                {threadModel.thread.anchor.side} line {threadModel.thread.anchor.lineNumber}
-	              </span>
-              <span
-                className={cn(
-                  "rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em]",
-                  threadStatusClass(threadModel.thread.status),
-                )}
-              >
-                {threadModel.thread.status}
-              </span>
-            </div>
+      <div className="space-y-2">
+        {threads.map((threadModel) => {
+          const promptValue = promptsByThreadId[threadModel.thread.id] ?? "";
+          const mentionSuggestion = getCheckmateMentionSuggestion(promptValue);
+          const hasMention = hasCheckmateMention(promptValue);
+          const isReplyComposerOpen = expandedReplyThreadId === threadModel.thread.id;
 
-            <div className="space-y-1.5">
-              {threadModel.comments.map((comment) => (
-                <div
-                  key={comment.id}
-                  className="group rounded border border-border/50 bg-surface-subtle/25 px-2 py-1.5"
-                >
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <p className="text-[10px] text-muted">
-                      {comment.authorType} · {comment.authorId}
-                    </p>
-                    {onDeleteComment && (
+          const sendReply = () => {
+            if (!onAskAgent || !hasMention) {
+              return;
+            }
+
+            onAskAgent(threadModel.thread.id, stripCheckmateMentions(promptValue));
+            onPromptChange(threadModel.thread.id, "");
+            onCloseReplyComposer(threadModel.thread.id);
+          };
+
+          return (
+            <article
+              key={threadModel.thread.id}
+              className="rounded-md border border-border/70 bg-canvas/70 px-2 py-2"
+            >
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
+                    {threadModel.thread.anchor.side} line {threadModel.thread.anchor.lineNumber}
+                  </span>
+                  <span
+                    className={cn(
+                      "rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em]",
+                      threadStatusClass(threadModel.thread.status),
+                    )}
+                  >
+                    {threadModel.thread.status}
+                  </span>
+                </div>
+                {onSetThreadStatus && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-[10px]"
+                    onClick={() =>
+                      onSetThreadStatus(
+                        threadModel.thread.id,
+                        threadModel.thread.status === "open" ? "resolved" : "open",
+                      )
+                    }
+                  >
+                    {threadModel.thread.status === "open" ? "Resolve" : "Reopen"}
+                  </Button>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                {threadModel.comments.map((comment) => (
+                  <div
+                    key={comment.id}
+                    className="group rounded border border-border/50 bg-surface-subtle/25 px-2 py-1.5"
+                  >
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <p className="text-[10px] text-muted">
+                        {comment.authorType} · {comment.authorId}
+                      </p>
+                      {onDeleteComment && (
+                        <button
+                          type="button"
+                          className={cn(
+                            "rounded border border-transparent px-1 py-0.5 text-[10px] text-muted transition-colors",
+                            "opacity-0 hover:border-danger/40 hover:bg-danger/10 hover:text-danger",
+                            "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-danger/60",
+                            "group-hover:opacity-100",
+                          )}
+                          onClick={() => {
+                            onDeleteComment(comment.id);
+                          }}
+                          aria-label="Delete comment"
+                          title="Delete comment"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                    <MarkdownComment body={comment.body} className="text-xs leading-5 text-text" />
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-2 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    className="h-7 px-3"
+                    onClick={() => onToggleReplyComposer(threadModel.thread.id)}
+                    disabled={!onAskAgent}
+                  >
+                    Reply
+                  </Button>
+                  {threadModel.askAgentDraft.startsWith("Checkmate is reviewing") && (
+                    <p className="text-[11px] text-muted">{threadModel.askAgentDraft}</p>
+                  )}
+                </div>
+
+                {isReplyComposerOpen && (
+                  <div className="space-y-1">
+                    <input
+                      value={promptValue}
+                      onChange={(event) => {
+                        onPromptChange(threadModel.thread.id, event.target.value);
+                      }}
+                      onKeyDown={(event) => {
+                        if ((event.key === "Tab" || event.key === "ArrowDown") && mentionSuggestion) {
+                          event.preventDefault();
+                          onPromptChange(
+                            threadModel.thread.id,
+                            applyCheckmateMentionSuggestion(promptValue, mentionSuggestion),
+                          );
+                          return;
+                        }
+
+                        if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault();
+                          sendReply();
+                        }
+                      }}
+                      placeholder="Write reply... Mention @checkmate to ask agent"
+                      className="h-7 min-w-0 w-full rounded border border-border bg-canvas px-2 font-mono text-[11px] text-text outline-none transition-colors focus:border-accent"
+                      aria-label="Thread reply input"
+                      disabled={!onAskAgent}
+                    />
+
+                    {mentionSuggestion && (
                       <button
                         type="button"
-                        className={cn(
-                          "rounded border border-transparent px-1 py-0.5 text-[10px] text-muted transition-colors",
-                          "opacity-0 hover:border-danger/40 hover:bg-danger/10 hover:text-danger",
-                          "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-danger/60",
-                          "group-hover:opacity-100",
-                        )}
-                        onClick={() => {
-                          onDeleteComment(comment.id);
+                        className="inline-flex items-center gap-1 rounded border border-border/70 bg-surface-subtle/60 px-2 py-1 text-[10px] text-text transition-colors hover:border-accent/45 hover:text-accent"
+                        onMouseDown={(event) => {
+                          event.preventDefault();
                         }}
-                        aria-label="Delete comment"
-                        title="Delete comment"
+                        onClick={() => {
+                          onPromptChange(
+                            threadModel.thread.id,
+                            applyCheckmateMentionSuggestion(promptValue, mentionSuggestion),
+                          );
+                        }}
                       >
-                        Delete
+                        <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
+                          @checkmate
+                        </span>
+                        <span>Use mention</span>
                       </button>
                     )}
-	                  </div>
-	                  <MarkdownComment body={comment.body} className="text-xs leading-5 text-text" />
-	                </div>
-	              ))}
-	            </div>
 
-	            <div className="mt-2 space-y-1">
-	              <input
-	                value={promptValue}
-	                onChange={(event) => {
-	                  onPromptChange(threadModel.thread.id, event.target.value);
-	                }}
-	                onKeyDown={(event) => {
-	                  if ((event.key === "Tab" || event.key === "ArrowDown") && mentionSuggestion) {
-	                    event.preventDefault();
-	                    onPromptChange(
-	                      threadModel.thread.id,
-	                      applyCheckmateMentionSuggestion(promptValue, mentionSuggestion),
-	                    );
-	                    return;
-	                  }
+                    {hasMention && (
+                      <p className="text-[10px] text-muted">
+                        Agent mention detected:{" "}
+                        <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
+                          @checkmate
+                        </span>
+                      </p>
+                    )}
 
-	                  if (event.key !== "Enter") {
-	                    return;
-	                  }
+                    <p className="text-[10px] text-muted">
+                      Mention `@checkmate` to trigger an agent response for this thread.
+                    </p>
 
-	                  if (mentionSuggestion) {
-	                    event.preventDefault();
-	                    onPromptChange(
-	                      threadModel.thread.id,
-	                      applyCheckmateMentionSuggestion(promptValue, mentionSuggestion),
-	                    );
-	                    return;
-	                  }
-
-	                  if (!onAskAgent || !hasMention) {
-	                    return;
-	                  }
-
-	                  event.preventDefault();
-	                  onAskAgent(threadModel.thread.id, stripCheckmateMentions(promptValue));
-	                  onPromptChange(threadModel.thread.id, "");
-	                }}
-	                placeholder="Reply... Use @checkmate <question> and press Enter"
-	                className="h-7 min-w-0 flex-1 rounded border border-border bg-canvas px-2 font-mono text-[11px] text-text outline-none transition-colors focus:border-accent"
-	                aria-label="Thread reply input"
-	                disabled={!onAskAgent}
-	              />
-	              {mentionSuggestion && (
-	                <button
-	                  type="button"
-	                  className="inline-flex items-center gap-1 rounded border border-border/70 bg-surface-subtle/60 px-2 py-1 text-[10px] text-text transition-colors hover:border-accent/45 hover:text-accent"
-	                  onMouseDown={(event) => {
-	                    event.preventDefault();
-	                  }}
-	                  onClick={() => {
-	                    onPromptChange(
-	                      threadModel.thread.id,
-	                      applyCheckmateMentionSuggestion(promptValue, mentionSuggestion),
-	                    );
-	                  }}
-	                >
-	                  <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
-	                    @checkmate
-	                  </span>
-	                  <span>Use mention</span>
-	                </button>
-	              )}
-	              {hasMention && (
-	                <p className="text-[10px] text-muted">
-	                  Agent mention detected:{" "}
-	                  <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
-	                    @checkmate
-	                  </span>
-	                </p>
-	              )}
-	              <p className="text-[10px] text-muted">
-	                Mention `@checkmate` to trigger an agent response for this thread.
-	              </p>
-	            </div>
-
-	            {threadModel.askAgentDraft.startsWith("Checkmate is reviewing") && (
-	              <p className="mt-2 text-[11px] text-muted">{threadModel.askAgentDraft}</p>
-	            )}
-	                </>
-	              );
-	            })()}
-	          </article>
-	        ))}
-	      </div>
-	    </div>
-	  );
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2"
+                        onClick={() => {
+                          onPromptChange(threadModel.thread.id, "");
+                          onCloseReplyComposer(threadModel.thread.id);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="h-7 px-2"
+                        onClick={sendReply}
+                        disabled={!onAskAgent || !hasMention || promptValue.trim().length === 0}
+                      >
+                        Send
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 interface LineSelectionContext {
@@ -1218,7 +1275,7 @@ function renderFullFileLine(
       key={rowKey}
       className={cn(
         "grid grid-cols-[3.75rem_1.25rem_minmax(0,1fr)] font-mono text-[11px] leading-6",
-        changed && mode === "old" && "bg-danger/8",
+        changed && mode === "old" && "bg-danger/10",
         changed && mode === "new" && "bg-positive/10",
         selected && "ring-inset ring-1 ring-accent/40",
       )}
@@ -1335,6 +1392,7 @@ export function DiffViewer({
   onViewModeChange,
   onAskAgent,
   onDeleteComment,
+  onSetThreadStatus,
   onCreateThread,
   defaultAuthorId,
   toolbarActions,
@@ -1345,11 +1403,15 @@ export function DiffViewer({
   const [selectionPivot, setSelectionPivot] = useState<SelectableLineAnchor | null>(null);
   const [composerAnchor, setComposerAnchor] = useState<SelectableLineAnchor | null>(null);
   const [reviewBody, setReviewBody] = useState("");
-  const [reviewAuthorId, setReviewAuthorId] = useState(defaultAuthorId?.trim() || "reviewer-1");
   const [selectionMessage, setSelectionMessage] = useState<string | null>(null);
   const [revealedThreadId, setRevealedThreadId] = useState<string | null>(null);
+  const [activeReplyThreadId, setActiveReplyThreadId] = useState<string | null>(null);
   const reviewBodyMentionSuggestion = useMemo(() => getCheckmateMentionSuggestion(reviewBody), [reviewBody]);
   const reviewBodyHasMention = useMemo(() => hasCheckmateMention(reviewBody), [reviewBody]);
+  const resolvedAuthorId = useMemo(() => {
+    const normalized = defaultAuthorId?.trim() ?? "";
+    return normalized.length > 0 ? normalized : "reviewer";
+  }, [defaultAuthorId]);
 
   useEffect(() => {
     setExpandedById({});
@@ -1357,6 +1419,7 @@ export function DiffViewer({
     setSelectionPivot(null);
     setComposerAnchor(null);
     setRevealedThreadId(null);
+    setActiveReplyThreadId(null);
     setReviewBody("");
     setSelectionMessage(null);
   }, [file?.id, viewMode]);
@@ -1366,13 +1429,15 @@ export function DiffViewer({
   }, [file?.id]);
 
   useEffect(() => {
-    const normalizedDefaultAuthor = defaultAuthorId?.trim();
-    if (!normalizedDefaultAuthor) {
+    if (!activeReplyThreadId) {
       return;
     }
 
-    setReviewAuthorId(normalizedDefaultAuthor);
-  }, [defaultAuthorId]);
+    const stillExists = threads.some((threadModel) => threadModel.thread.id === activeReplyThreadId);
+    if (!stillExists) {
+      setActiveReplyThreadId(null);
+    }
+  }, [activeReplyThreadId, threads]);
 
   const oldLines = useMemo(() => {
     return splitContentLines(fileVersions?.oldContent ?? null);
@@ -1669,12 +1734,6 @@ export function DiffViewer({
       return;
     }
 
-    const normalizedAuthorId = reviewAuthorId.trim();
-    if (normalizedAuthorId.length === 0) {
-      setSelectionMessage("Author is required.");
-      return;
-    }
-
     if (selectedAnchors.length === 0) {
       setSelectionMessage("Select at least one line.");
       return;
@@ -1689,7 +1748,7 @@ export function DiffViewer({
         side: anchor.side,
         lineNumber: anchor.lineNumber,
         body: normalizedBody,
-        authorId: normalizedAuthorId,
+        authorId: resolvedAuthorId,
       });
 
       if (result.ok) {
@@ -1799,6 +1858,14 @@ export function DiffViewer({
       },
       onAskAgent,
       onDeleteComment,
+      onSetThreadStatus,
+      activeReplyThreadId,
+      (threadId) => {
+        setActiveReplyThreadId((current) => (current === threadId ? null : threadId));
+      },
+      (threadId) => {
+        setActiveReplyThreadId((current) => (current === threadId ? null : current));
+      },
     );
   };
 
@@ -1825,57 +1892,47 @@ export function DiffViewer({
           <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
             {selectedAnchors.length} selected · {composerAnchor.side}:{composerAnchor.lineNumber}
           </p>
-          <div className="grid gap-2 sm:grid-cols-[10.5rem_minmax(0,1fr)]">
-            <label className="space-y-1 text-xs text-muted">
-              Author
-              <Input
-                value={reviewAuthorId}
-                onChange={(event) => setReviewAuthorId(event.target.value)}
-                className="h-8"
-              />
-            </label>
-            <label className="space-y-1 text-xs text-muted">
-              Comment
-              <Textarea
-                rows={3}
-                value={reviewBody}
-                onChange={(event) => setReviewBody(event.target.value)}
-                onKeyDown={(event) => {
-                  if ((event.key === "Tab" || event.key === "ArrowDown") && reviewBodyMentionSuggestion) {
-                    event.preventDefault();
-                    setReviewBody(applyCheckmateMentionSuggestion(reviewBody, reviewBodyMentionSuggestion));
-                  }
+          <label className="space-y-1 text-xs text-muted">
+            Comment
+            <Textarea
+              rows={3}
+              value={reviewBody}
+              onChange={(event) => setReviewBody(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.key === "Tab" || event.key === "ArrowDown") && reviewBodyMentionSuggestion) {
+                  event.preventDefault();
+                  setReviewBody(applyCheckmateMentionSuggestion(reviewBody, reviewBodyMentionSuggestion));
+                }
+              }}
+              placeholder="Write a review comment..."
+              className="text-sm"
+            />
+            {reviewBodyMentionSuggestion && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded border border-border/70 bg-surface-subtle/60 px-2 py-1 text-[10px] text-text transition-colors hover:border-accent/45 hover:text-accent"
+                onMouseDown={(event) => {
+                  event.preventDefault();
                 }}
-                placeholder="Write a review comment..."
-                className="text-sm"
-              />
-              {reviewBodyMentionSuggestion && (
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 rounded border border-border/70 bg-surface-subtle/60 px-2 py-1 text-[10px] text-text transition-colors hover:border-accent/45 hover:text-accent"
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                  }}
-                  onClick={() => {
-                    setReviewBody(applyCheckmateMentionSuggestion(reviewBody, reviewBodyMentionSuggestion));
-                  }}
-                >
-                  <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
-                    @checkmate
-                  </span>
-                  <span>Use mention</span>
-                </button>
-              )}
-              {reviewBodyHasMention && (
-                <p className="text-[10px] text-muted">
-                  Agent mention detected:{" "}
-                  <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
-                    @checkmate
-                  </span>
-                </p>
-              )}
-            </label>
-          </div>
+                onClick={() => {
+                  setReviewBody(applyCheckmateMentionSuggestion(reviewBody, reviewBodyMentionSuggestion));
+                }}
+              >
+                <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
+                  @checkmate
+                </span>
+                <span>Use mention</span>
+              </button>
+            )}
+            {reviewBodyHasMention && (
+              <p className="text-[10px] text-muted">
+                Agent mention detected:{" "}
+                <span className="rounded border border-accent/35 bg-accent/12 px-1 py-0.5 font-mono text-[9px] text-accent">
+                  @checkmate
+                </span>
+              </p>
+            )}
+          </label>
           {selectionMessage && (
             <p className="mt-1 text-xs text-muted">{selectionMessage}</p>
           )}
@@ -1989,6 +2046,14 @@ export function DiffViewer({
           },
           onAskAgent,
           onDeleteComment,
+          onSetThreadStatus,
+          activeReplyThreadId,
+          (threadId) => {
+            setActiveReplyThreadId((current) => (current === threadId ? null : threadId));
+          },
+          (threadId) => {
+            setActiveReplyThreadId((current) => (current === threadId ? null : current));
+          },
         );
 
         if (showInlineThreads && inlineThreads) {
@@ -2045,6 +2110,14 @@ export function DiffViewer({
           },
           onAskAgent,
           onDeleteComment,
+          onSetThreadStatus,
+          activeReplyThreadId,
+          (threadId) => {
+            setActiveReplyThreadId((current) => (current === threadId ? null : threadId));
+          },
+          (threadId) => {
+            setActiveReplyThreadId((current) => (current === threadId ? null : current));
+          },
         );
 
         if (showInlineThreads && inlineThreads) {
@@ -2083,7 +2156,7 @@ export function DiffViewer({
             () => {
               expandRange(row.id, total);
             },
-            fileVersionsStatus === "loading" || fileVersionsStatus === "error" || !canExpand,
+            fileVersionsStatus !== "loaded" || !canExpand,
           ),
         );
       }
@@ -2108,10 +2181,14 @@ export function DiffViewer({
     const lines = mode === "old" ? oldLines : newLines;
     const changedSet = mode === "old" ? changedLines.old : changedLines.next;
 
-    if (fileVersionsStatus === "loading" && lines.length === 0) {
+    if (
+      (fileVersionsStatus === "loading" || fileVersionsStatus === "idle") &&
+      lines.length === 0
+    ) {
       return (
-        <div className="flex h-full items-center justify-center px-6 text-sm text-muted">
-          Loading full file content...
+        <div className="space-y-2 px-4 py-4">
+          <Skeleton height={11} width="32%" />
+          <Skeleton height={10} count={12} />
         </div>
       );
     }
@@ -2150,6 +2227,14 @@ export function DiffViewer({
         },
         onAskAgent,
         onDeleteComment,
+        onSetThreadStatus,
+        activeReplyThreadId,
+        (threadId) => {
+          setActiveReplyThreadId((current) => (current === threadId ? null : threadId));
+        },
+        (threadId) => {
+          setActiveReplyThreadId((current) => (current === threadId ? null : current));
+        },
       );
 
       if (showInlineThreads && inlineThreads) {
