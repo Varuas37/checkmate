@@ -122,6 +122,7 @@ function createStateFixture(): ReviewRootState {
         threadStatus: "open",
       },
       askAgentDraftByThreadId: {},
+      repositoryCommits: [],
       publishStatus: "idle",
       lastPublishPackage: null,
       publishResult: null,

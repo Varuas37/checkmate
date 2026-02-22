@@ -24,10 +24,12 @@ export type {
 
 export type {
   CommitReviewDataSource,
+  ListRepositoryCommitsInput,
   LoadCommitReviewInput,
   LocalGitReviewAdapter,
   PublishReviewRequest,
   PublishReviewResult,
+  RepositoryCommitSummary,
   ReviewPublishProvider,
   ReviewPublisher,
   StandardsEvaluationInput,

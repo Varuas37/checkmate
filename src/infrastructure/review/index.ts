@@ -3,6 +3,11 @@ export {
   StubLocalGitReviewAdapter,
 } from "./localGitAdapter.ts";
 export {
+  createTauriGitCommitReviewDataSource,
+  TauriGitCommitReviewDataSource,
+  type TauriGitCommitReviewDataSourceOptions,
+} from "./tauriGitCommitReviewDataSource.ts";
+export {
   ClaudeSdkReviewPublisher,
   createClaudeSdkReviewPublisher,
   type ClaudeSdkReviewPublisherOptions,

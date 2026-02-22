@@ -3,6 +3,7 @@ import { combineReducers, configureStore } from "@reduxjs/toolkit";
 import type { ReviewRootState } from "../../../application/review/index.ts";
 import {
   createClaudeSdkReviewPublisher,
+  createTauriGitCommitReviewDataSource,
   createMockCommitReviewDataSource,
   createRuleTextStandardsEvaluator,
 } from "../../../infrastructure/review/index.ts";
@@ -32,8 +33,12 @@ export interface CreateReviewStoreOptions {
 }
 
 export function createReviewStore(options: CreateReviewStoreOptions = {}) {
+  const fallbackDataSource = createMockCommitReviewDataSource();
+
   const defaultDependencies: ReviewListenerDependencies = {
-    reviewDataSource: createMockCommitReviewDataSource(),
+    reviewDataSource: createTauriGitCommitReviewDataSource({
+      fallbackDataSource,
+    }),
     standardsEvaluator: createRuleTextStandardsEvaluator(),
     reviewPublisher: createClaudeSdkReviewPublisher(),
     nowIso: () => new Date().toISOString(),

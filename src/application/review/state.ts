@@ -41,6 +41,7 @@ export function createInitialReviewUiState(): ReviewUiState {
     diffOrientation: "split",
     fileFilter: createDefaultFileFilter(),
     askAgentDraftByThreadId: {},
+    repositoryCommits: [],
     publishStatus: "idle",
     lastPublishPackage: null,
     publishResult: null,

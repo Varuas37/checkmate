@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   AppFrame,
@@ -11,7 +11,7 @@ import {
   ThemeSwitcher,
 } from "../../../design-system/index.ts";
 import { selectRepositoryFolder } from "../../../shared/index.ts";
-import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT, REVIEW_TABS, SAMPLE_COMMIT_PRESETS } from "../constants.ts";
+import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT, REVIEW_TABS } from "../constants.ts";
 import {
   ChangedFilesSidebar,
   DiffViewer,
@@ -23,8 +23,6 @@ import {
 } from "../components/index.ts";
 import { useReviewWorkspace } from "../hooks/useReviewWorkspace.ts";
 import type { ReviewLoadRequest, ReviewTabId } from "../types.ts";
-
-const CUSTOM_PRESET_ID = "custom-commit";
 
 function statusToneForLoad(loadStatus: "idle" | "loading" | "loaded" | "error"): "neutral" | "accent" | "positive" | "danger" {
   if (loadStatus === "loading") {
@@ -64,13 +62,19 @@ export function ReviewWorkspaceContainer() {
   const [highlightedFileIds, setHighlightedFileIds] = useState<readonly string[]>([]);
   const [repositoryPathInput, setRepositoryPathInput] = useState(DEFAULT_LOAD_REQUEST.repositoryPath);
   const [commitShaInput, setCommitShaInput] = useState(DEFAULT_LOAD_REQUEST.commitSha);
-  const [selectedPresetId, setSelectedPresetId] = useState<string>(
-    SAMPLE_COMMIT_PRESETS[0]?.id ?? CUSTOM_PRESET_ID,
-  );
+  const [showThreadsPanel, setShowThreadsPanel] = useState(false);
   const [sidebarFocus, setSidebarFocus] = useState<{
     readonly label: string;
     readonly fileIds: readonly string[];
   } | null>(null);
+
+  useEffect(() => {
+    if (!state.commit?.commitSha) {
+      return;
+    }
+
+    setCommitShaInput(state.commit.commitSha);
+  }, [state.commit?.commitSha]);
 
   const totalAdditions = useMemo(() => {
     return state.allFiles.reduce((count, file) => count + file.additions, 0);
@@ -120,7 +124,6 @@ export function ReviewWorkspaceContainer() {
       }
 
       setRepositoryPathInput(selectedPath);
-      setSelectedPresetId(CUSTOM_PRESET_ID);
     } catch {
       // Ignore browse errors; users can still type a path manually.
     }
@@ -186,7 +189,6 @@ export function ReviewWorkspaceContainer() {
                 value={repositoryPathInput}
                 onChange={(event) => {
                   setRepositoryPathInput(event.target.value);
-                  setSelectedPresetId(CUSTOM_PRESET_ID);
                 }}
                 placeholder="."
                 aria-label="Repository path"
@@ -212,7 +214,6 @@ export function ReviewWorkspaceContainer() {
               value={commitShaInput}
               onChange={(event) => {
                 setCommitShaInput(event.target.value);
-                setSelectedPresetId(CUSTOM_PRESET_ID);
               }}
               placeholder="HEAD"
               aria-label="Commit SHA"
@@ -221,37 +222,28 @@ export function ReviewWorkspaceContainer() {
           </label>
 
           <label className="space-y-1 text-[11px] uppercase tracking-[0.08em] text-muted">
-            Preset
+            Repository Commits
             <select
               className="h-9 w-full rounded-md border border-border bg-canvas px-2 text-sm text-text shadow-inset"
-              value={selectedPresetId}
+              value={commitShaInput}
               onChange={(event) => {
-                const nextPresetId = event.target.value;
-                setSelectedPresetId(nextPresetId);
-
-                if (nextPresetId === CUSTOM_PRESET_ID) {
+                const nextCommitSha = event.target.value;
+                if (nextCommitSha.length === 0) {
                   return;
                 }
 
-                const preset = SAMPLE_COMMIT_PRESETS.find((item) => item.id === nextPresetId);
-
-                if (!preset) {
-                  return;
-                }
-
-                setRepositoryPathInput(preset.repositoryPath);
-                setCommitShaInput(preset.commitSha);
+                setCommitShaInput(nextCommitSha);
                 triggerCommitReload({
-                  repositoryPath: preset.repositoryPath,
-                  commitSha: preset.commitSha,
+                  repositoryPath: repositoryPathInput,
+                  commitSha: nextCommitSha,
                 });
               }}
-              aria-label="Sample commit quick pick"
+              aria-label="Repository commit selection"
             >
-              <option value={CUSTOM_PRESET_ID}>Custom input</option>
-              {SAMPLE_COMMIT_PRESETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.label}
+              <option value={commitShaInput}>Current input</option>
+              {state.repositoryCommits.map((commit) => (
+                <option key={commit.hash} value={commit.hash}>
+                  {commit.shortHash} - {commit.summary}
                 </option>
               ))}
             </select>
@@ -323,6 +315,16 @@ export function ReviewWorkspaceContainer() {
     if (activeTab === "files") {
       return (
         <div className="flex h-full min-h-0 flex-col gap-3 p-3 xl:p-4">
+          <div className="flex items-center justify-between">
+            <p className="text-xs uppercase tracking-[0.08em] text-muted">Diff Explorer</p>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setShowThreadsPanel((current) => !current)}
+            >
+              {showThreadsPanel ? "Hide Comments" : "Show Comments"}
+            </Button>
+          </div>
           <div className="min-h-0 flex-1">
             <DiffViewer
               file={state.activeFile}
@@ -331,18 +333,20 @@ export function ReviewWorkspaceContainer() {
               onOrientationChange={actions.setDiffOrientation}
             />
           </div>
-          <div className="shrink-0 overflow-auto xl:max-h-[23rem]">
-            <FileThreadsPanel
-              commitId={state.commit?.id ?? null}
-              file={state.activeFile}
-              hunks={state.activeFileHunks}
-              threads={state.threadModels}
-              publishPackage={state.publishPackage}
-              onCreateThread={actions.createThread}
-              onAskAgent={actions.askAgent}
-              onPublishReview={actions.publishReview}
-            />
-          </div>
+          {showThreadsPanel && (
+            <div className="shrink-0 overflow-auto xl:max-h-[23rem]">
+              <FileThreadsPanel
+                commitId={state.commit?.id ?? null}
+                file={state.activeFile}
+                hunks={state.activeFileHunks}
+                threads={state.threadModels}
+                publishPackage={state.publishPackage}
+                onCreateThread={actions.createThread}
+                onAskAgent={actions.askAgent}
+                onPublishReview={actions.publishReview}
+              />
+            </div>
+          )}
         </div>
       );
     }
@@ -393,6 +397,10 @@ export function ReviewWorkspaceContainer() {
     state.standardsCounts,
     state.threadModels,
     state.architectureClusters,
+    state.repositoryCommits,
+    showThreadsPanel,
+    repositoryPathInput,
+    commitShaInput,
   ]);
 
   return (

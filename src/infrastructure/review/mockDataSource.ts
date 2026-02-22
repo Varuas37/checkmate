@@ -4,8 +4,10 @@ import type {
   CommitReviewAggregate,
   CommitReviewDataSource,
   DiffHunk,
+  ListRepositoryCommitsInput,
   LoadCommitReviewInput,
   OverviewCard,
+  RepositoryCommitSummary,
   ReviewComment,
 } from "../../domain/review/index.ts";
 
@@ -1014,9 +1016,54 @@ function createMockAggregate(input: LoadCommitReviewInput): CommitReviewAggregat
   return createHeadAggregate(input);
 }
 
+function createMockCommitList(limit: number): readonly RepositoryCommitSummary[] {
+  const commits: readonly RepositoryCommitSummary[] = [
+    {
+      hash: "head000000000000000000000000000000000001",
+      shortHash: "head0000",
+      summary: "Introduce review MVP domain flow",
+      author: "Codex",
+      authorEmail: "codex@example.com",
+      authoredAtIso: "2026-02-22T16:45:00.000Z",
+    },
+    {
+      hash: "a11ce5e700000000000000000000000000000001",
+      shortHash: "a11ce5e7",
+      summary: "Harden auth session verification",
+      author: "Clawdia",
+      authorEmail: "clawdia@example.com",
+      authoredAtIso: "2026-02-19T13:26:00.000Z",
+    },
+    {
+      hash: "b7c4d9a200000000000000000000000000000001",
+      shortHash: "b7c4d9a2",
+      summary: "Refine architecture and sequence visualizations",
+      author: "Clawdia",
+      authorEmail: "clawdia@example.com",
+      authoredAtIso: "2026-02-20T11:03:00.000Z",
+    },
+    {
+      hash: "c0ffee4200000000000000000000000000000001",
+      shortHash: "c0ffee42",
+      summary: "Refresh standards rule parsing pipeline",
+      author: "Codex",
+      authorEmail: "codex@example.com",
+      authoredAtIso: "2026-02-21T12:10:00.000Z",
+    },
+  ];
+
+  return commits.slice(0, Math.max(1, limit));
+}
+
 export class MockCommitReviewDataSource implements CommitReviewDataSource {
   async loadCommitReview(input: LoadCommitReviewInput): Promise<CommitReviewAggregate> {
     return createMockAggregate(input);
+  }
+
+  async listRepositoryCommits(
+    input: ListRepositoryCommitsInput,
+  ): Promise<readonly RepositoryCommitSummary[]> {
+    return createMockCommitList(input.limit ?? 50);
   }
 }
 

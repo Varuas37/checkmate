@@ -52,10 +52,18 @@ export function createReviewListenerMiddleware(
       listenerApi.dispatch(reviewUiActions.markLoadStarted());
 
       try {
+        const repositoryCommitsPromise = deps.reviewDataSource
+          .listRepositoryCommits({
+            repositoryPath: action.payload.repositoryPath,
+            limit: 120,
+          })
+          .catch(() => []);
+
         const aggregate = await deps.reviewDataSource.loadCommitReview({
           repositoryPath: action.payload.repositoryPath,
           commitSha: action.payload.commitSha,
         });
+        const repositoryCommits = await repositoryCommitsPromise;
 
         const standardsEvaluation = deps.standardsEvaluator.evaluate({
           commitId: aggregate.commit.id,
@@ -76,6 +84,11 @@ export function createReviewListenerMiddleware(
           reviewUiActions.hydrateForCommit({
             commitId: aggregate.commit.id,
             firstFileId: aggregate.files[0]?.id ?? null,
+          }),
+        );
+        listenerApi.dispatch(
+          reviewUiActions.setRepositoryCommits({
+            commits: repositoryCommits,
           }),
         );
       } catch (error) {

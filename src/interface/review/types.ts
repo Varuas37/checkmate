@@ -8,6 +8,7 @@ import type {
   FileChangeStatus,
   OverviewCard,
   PublishReviewResult,
+  RepositoryCommitSummary,
   ReviewComment,
   StandardsResult,
   StandardsRule,
@@ -113,6 +114,7 @@ export interface ReviewWorkspaceState {
   readonly threadModels: readonly ThreadViewModel[];
   readonly fileSummaries: readonly FileSummary[];
   readonly publishPackage: PublishReviewPackage | null;
+  readonly repositoryCommits: readonly RepositoryCommitSummary[];
   readonly publishStatus: ReviewPublishStatus;
   readonly publishResult: PublishReviewResult | null;
   readonly publishError: string | null;

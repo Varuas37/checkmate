@@ -11,8 +11,23 @@ export interface LoadCommitReviewInput {
   readonly commitSha: string;
 }
 
+export interface ListRepositoryCommitsInput {
+  readonly repositoryPath: string;
+  readonly limit?: number;
+}
+
+export interface RepositoryCommitSummary {
+  readonly hash: string;
+  readonly shortHash: string;
+  readonly summary: string;
+  readonly author: string;
+  readonly authorEmail: string;
+  readonly authoredAtIso: string;
+}
+
 export interface CommitReviewDataSource {
   loadCommitReview(input: LoadCommitReviewInput): Promise<CommitReviewAggregate>;
+  listRepositoryCommits(input: ListRepositoryCommitsInput): Promise<readonly RepositoryCommitSummary[]>;
 }
 
 export interface LocalGitReviewAdapter {

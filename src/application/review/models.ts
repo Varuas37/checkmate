@@ -7,6 +7,7 @@ import type {
   FileChangeStatus,
   OverviewCard,
   PublishReviewResult,
+  RepositoryCommitSummary,
   ReviewComment,
   StandardsResult,
   StandardsRule,
@@ -94,6 +95,7 @@ export interface ReviewUiState {
   diffOrientation: DiffOrientation;
   fileFilter: FileFilter;
   askAgentDraftByThreadId: Record<string, string>;
+  repositoryCommits: readonly RepositoryCommitSummary[];
   publishStatus: ReviewPublishStatus;
   lastPublishPackage: PublishReviewPackage | null;
   publishResult: PublishReviewResult | null;

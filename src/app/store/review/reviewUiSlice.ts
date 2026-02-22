@@ -7,7 +7,7 @@ import {
   type FileFilter,
   type PublishReviewPackage,
 } from "../../../application/review/index.ts";
-import type { DiffOrientation, PublishReviewResult } from "../../../domain/review/index.ts";
+import type { DiffOrientation, PublishReviewResult, RepositoryCommitSummary } from "../../../domain/review/index.ts";
 
 export interface HydrateUiForCommitPayload {
   readonly commitId: string;
@@ -83,6 +83,19 @@ function clonePublishResult(result: PublishReviewResult): PublishReviewResult {
   };
 }
 
+function cloneRepositoryCommits(
+  commits: readonly RepositoryCommitSummary[],
+): RepositoryCommitSummary[] {
+  return commits.map((commit) => ({
+    hash: commit.hash,
+    shortHash: commit.shortHash,
+    summary: commit.summary,
+    author: commit.author,
+    authorEmail: commit.authorEmail,
+    authoredAtIso: commit.authoredAtIso,
+  }));
+}
+
 const initialState = createInitialReviewUiState();
 
 export const reviewUiSlice = createSlice({
@@ -144,6 +157,12 @@ export const reviewUiSlice = createSlice({
       const nextDrafts = { ...state.askAgentDraftByThreadId };
       delete nextDrafts[action.payload.threadId];
       state.askAgentDraftByThreadId = nextDrafts;
+    },
+    setRepositoryCommits(
+      state,
+      action: PayloadAction<{ readonly commits: readonly RepositoryCommitSummary[] }>,
+    ): void {
+      state.repositoryCommits = cloneRepositoryCommits(action.payload.commits);
     },
     publishStarted(state, action: PayloadAction<PublishStartedPayload>): void {
       state.lastPublishPackage = clonePublishPackage(action.payload.pkg);

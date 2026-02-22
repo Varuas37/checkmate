@@ -25,6 +25,10 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 900;
 const DEFAULT_SYSTEM_PROMPT =
   "You are assisting with publishing structured code-review feedback for downstream agent actions.";
 
+function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
 function trimToNull(value: string | null | undefined): string | null {
   if (!value) {
     return null;
@@ -145,6 +149,17 @@ async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
   return client;
 }
 
+async function runClaudePromptViaTauri(prompt: string): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error("Claude CLI fallback is available only in Tauri runtime.");
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("run_claude_prompt", {
+    prompt,
+  });
+}
+
 export interface ClaudeSdkReviewPublisherOptions {
   readonly apiKey?: string;
   readonly model?: string;
@@ -172,10 +187,29 @@ export class ClaudeSdkReviewPublisher implements ReviewPublisher {
   }
 
   async publishReview(input: PublishReviewRequest): Promise<PublishReviewResult> {
+    const prompt = this.#createPrompt(input);
+
     if (!this.#apiKey) {
-      throw new Error(
-        "Claude publish adapter requires ANTHROPIC_API_KEY or VITE_ANTHROPIC_API_KEY.",
-      );
+      try {
+        const cliResponse = await runClaudePromptViaTauri(prompt);
+        const cliSummary = truncateSummary(cliResponse.trim());
+
+        return {
+          provider: "claude-sdk",
+          requestId: input.requestId,
+          publicationId: `claude-cli-${input.requestId}`,
+          publishedAtIso: this.#nowIso(),
+          summary:
+            cliSummary.length > 0
+              ? cliSummary
+              : `Review package for ${input.commitSha} accepted by Claude CLI adapter.`,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Claude CLI fallback failed.";
+        throw new Error(
+          `Claude publish requires ANTHROPIC_API_KEY/VITE_ANTHROPIC_API_KEY or a working Claude CLI login in Tauri (${message}).`,
+        );
+      }
     }
 
     const client = await this.#createClient(this.#apiKey);
@@ -186,7 +220,7 @@ export class ClaudeSdkReviewPublisher implements ReviewPublisher {
       messages: [
         {
           role: "user",
-          content: this.#createPrompt(input),
+          content: prompt,
         },
       ],
     });

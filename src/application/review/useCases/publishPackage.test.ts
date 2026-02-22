@@ -145,6 +145,7 @@ function createStateFixture(): ReviewRootState {
       askAgentDraftByThreadId: {
         "thread-1": "Explain whether this type can be narrowed.",
       },
+      repositoryCommits: [],
       publishStatus: "ready",
       lastPublishPackage: null,
       publishResult: null,

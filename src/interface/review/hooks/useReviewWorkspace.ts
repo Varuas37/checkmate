@@ -556,6 +556,7 @@ export function useReviewWorkspace(): {
       threadModels,
       fileSummaries,
       publishPackage: ui.lastPublishPackage,
+      repositoryCommits: ui.repositoryCommits,
       publishStatus: ui.publishStatus,
       publishResult: ui.publishResult,
       publishError: ui.publishError,
