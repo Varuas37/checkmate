@@ -1,5 +1,6 @@
 import type {
   ChangedFile,
+  CommitFileVersions,
   CommentThread,
   CommitReviewAggregate,
   CommitReviewDataSource,
@@ -7,6 +8,7 @@ import type {
   ListRepositoryCommitsInput,
   LoadCommitReviewInput,
   OverviewCard,
+  ReadCommitFileVersionsInput,
   RepositoryCommitSummary,
   ReviewComment,
 } from "../../domain/review/index.ts";
@@ -1055,6 +1057,63 @@ function createMockCommitList(limit: number): readonly RepositoryCommitSummary[]
   return commits.slice(0, Math.max(1, limit));
 }
 
+function synthesizeMockFileContent(
+  hunks: readonly DiffHunk[],
+  side: "old" | "new",
+): string | null {
+  const lines: string[] = [];
+
+  hunks.forEach((hunk) => {
+    hunk.lines.forEach((line) => {
+      if (side === "old" && line.kind !== "add") {
+        lines.push(line.text);
+      }
+
+      if (side === "new" && line.kind !== "remove") {
+        lines.push(line.text);
+      }
+    });
+  });
+
+  if (lines.length === 0) {
+    return null;
+  }
+
+  return lines.join("\n");
+}
+
+function readMockFileVersions(input: ReadCommitFileVersionsInput): CommitFileVersions {
+  const aggregate = createMockAggregate({
+    repositoryPath: input.repositoryPath,
+    commitSha: input.commitSha,
+  });
+  const file = aggregate.files.find((candidate) => {
+    return (
+      candidate.path === input.newPath
+      || candidate.path === input.oldPath
+      || candidate.previousPath === input.oldPath
+    );
+  });
+
+  if (!file) {
+    return {
+      oldContent: null,
+      newContent: null,
+    };
+  }
+
+  const fileHunks = aggregate.hunks.filter((hunk) => hunk.fileId === file.id);
+  const oldContent =
+    file.status === "added" ? null : synthesizeMockFileContent(fileHunks, "old");
+  const newContent =
+    file.status === "deleted" ? null : synthesizeMockFileContent(fileHunks, "new");
+
+  return {
+    oldContent,
+    newContent,
+  };
+}
+
 export class MockCommitReviewDataSource implements CommitReviewDataSource {
   async loadCommitReview(input: LoadCommitReviewInput): Promise<CommitReviewAggregate> {
     return createMockAggregate(input);
@@ -1064,6 +1123,10 @@ export class MockCommitReviewDataSource implements CommitReviewDataSource {
     input: ListRepositoryCommitsInput,
   ): Promise<readonly RepositoryCommitSummary[]> {
     return createMockCommitList(input.limit ?? 50);
+  }
+
+  async readCommitFileVersions(input: ReadCommitFileVersionsInput): Promise<CommitFileVersions> {
+    return readMockFileVersions(input);
   }
 }
 

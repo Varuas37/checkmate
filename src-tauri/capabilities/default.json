@@ -3,10 +3,13 @@
   "identifier": "default",
   "description": "Default minimal desktop capability set.",
   "windows": [
-    "main"
+    "main",
+    "project-*"
   ],
   "permissions": [
     "core:default",
-    "dialog:default"
+    "dialog:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-create"
   ]
 }

@@ -52,6 +52,7 @@ Optional future mode: web viewer (read-only or limited mode).
 4. Diff-first UX: selecting a file immediately opens code diff context; secondary insights are linked from diff state.
 5. AI per-commit diagrams: generate both before/after architectural flow and code-level sequence diagrams per commit.
 6. Theme support now: ship dark/light themes with tokenized design foundations so additional themes can be added later without rework.
+7. Launcher/home screen should use a command-list style (Zed-inspired): centered layout, low-noise action rows, quick-open project flow, and visible recent projects.
 
 ## 7) Core UX Information Architecture
 Main review workflow tabs:

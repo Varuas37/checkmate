@@ -22,6 +22,10 @@ export interface CommentAddedPayload {
   readonly comment: ReviewComment;
 }
 
+export interface CommentDeletedPayload {
+  readonly commentId: string;
+}
+
 export interface StandardsEvaluatedPayload {
   readonly commitId: string;
   readonly rules: readonly StandardsRule[];
@@ -79,6 +83,47 @@ export const reviewEntitiesSlice = createSlice({
         messageIds: nextMessageIds,
         updatedAtIso: comment.createdAtIso,
       };
+    },
+    commentDeleted(state, action: PayloadAction<CommentDeletedPayload>): void {
+      const commentId = action.payload.commentId;
+      const comment = state.commentsById[commentId];
+      if (!comment) {
+        return;
+      }
+
+      const threadId = comment.threadId;
+      delete state.commentsById[commentId];
+
+      const commentIds = state.commentIdsByThreadId[threadId] ?? [];
+      const nextCommentIds = commentIds.filter((id) => id !== commentId);
+      if (nextCommentIds.length > 0) {
+        state.commentIdsByThreadId[threadId] = nextCommentIds;
+      } else {
+        delete state.commentIdsByThreadId[threadId];
+      }
+
+      const thread = state.threadsById[threadId];
+      if (!thread) {
+        return;
+      }
+
+      const nextMessageIds = thread.messageIds.filter((id) => id !== commentId);
+      if (nextMessageIds.length > 0) {
+        state.threadsById[threadId] = {
+          ...thread,
+          messageIds: nextMessageIds,
+        };
+        return;
+      }
+
+      delete state.threadsById[threadId];
+      const fileThreadIds = state.threadIdsByFileId[thread.fileId] ?? [];
+      const nextFileThreadIds = fileThreadIds.filter((id) => id !== threadId);
+      if (nextFileThreadIds.length > 0) {
+        state.threadIdsByFileId[thread.fileId] = nextFileThreadIds;
+      } else {
+        delete state.threadIdsByFileId[thread.fileId];
+      }
     },
     standardsEvaluated(state, action: PayloadAction<StandardsEvaluatedPayload>): void {
       const { commitId, rules, results } = action.payload;

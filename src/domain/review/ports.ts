@@ -1,7 +1,9 @@
 import type {
   ChangedFile,
+  CommitReview,
   CommitReviewAggregate,
   DiffHunk,
+  ReviewCardKind,
   StandardsResult,
   StandardsRule,
 } from "./entities.ts";
@@ -16,6 +18,18 @@ export interface ListRepositoryCommitsInput {
   readonly limit?: number;
 }
 
+export interface ReadCommitFileVersionsInput {
+  readonly repositoryPath: string;
+  readonly commitSha: string;
+  readonly oldPath: string;
+  readonly newPath: string;
+}
+
+export interface CommitFileVersions {
+  readonly oldContent: string | null;
+  readonly newContent: string | null;
+}
+
 export interface RepositoryCommitSummary {
   readonly hash: string;
   readonly shortHash: string;
@@ -28,6 +42,7 @@ export interface RepositoryCommitSummary {
 export interface CommitReviewDataSource {
   loadCommitReview(input: LoadCommitReviewInput): Promise<CommitReviewAggregate>;
   listRepositoryCommits(input: ListRepositoryCommitsInput): Promise<readonly RepositoryCommitSummary[]>;
+  readCommitFileVersions(input: ReadCommitFileVersionsInput): Promise<CommitFileVersions>;
 }
 
 export interface LocalGitReviewAdapter {
@@ -71,4 +86,54 @@ export interface PublishReviewResult {
 
 export interface ReviewPublisher {
   publishReview(input: PublishReviewRequest): Promise<PublishReviewResult>;
+}
+
+export interface AnalyseCommitInput {
+  readonly commitId: string;
+  readonly commit: CommitReview;
+  readonly files: readonly ChangedFile[];
+  readonly hunks: readonly DiffHunk[];
+}
+
+export interface AiOverviewCard {
+  readonly kind: ReviewCardKind;
+  readonly title: string;
+  readonly body: string;
+}
+
+export interface AiSequenceStep {
+  readonly sourceLabel: string;
+  readonly targetLabel: string;
+  readonly message: string;
+  readonly filePath: string;
+}
+
+export interface AiFlowComparison {
+  readonly beforeTitle: string;
+  readonly beforeBody: string;
+  readonly afterTitle: string;
+  readonly afterBody: string;
+  readonly filePaths: readonly string[];
+}
+
+export interface AiFileSummary {
+  readonly filePath: string;
+  readonly summary: string;
+  readonly riskNote: string;
+}
+
+export interface AnalyseCommitOutput {
+  readonly commitId: string;
+  readonly overviewCards: readonly AiOverviewCard[];
+  readonly sequenceSteps: readonly AiSequenceStep[];
+  readonly flowComparisons: readonly AiFlowComparison[];
+  readonly fileSummaries: readonly AiFileSummary[];
+}
+
+export interface CommitAnalyser {
+  analyseCommit(input: AnalyseCommitInput): Promise<AnalyseCommitOutput>;
+}
+
+export interface SequenceDiagramGenerator {
+  generateSequenceSteps(input: AnalyseCommitInput): Promise<readonly AiSequenceStep[]>;
 }

@@ -1,9 +1,11 @@
 import type {
+  CommitFileVersions,
   CommitReviewAggregate,
   CommitReviewDataSource,
   ListRepositoryCommitsInput,
   LoadCommitReviewInput,
   LocalGitReviewAdapter,
+  ReadCommitFileVersionsInput,
   RepositoryCommitSummary,
 } from "../../domain/review/index.ts";
 
@@ -26,5 +28,9 @@ export class LocalGitBackedCommitReviewDataSource implements CommitReviewDataSou
 
   async listRepositoryCommits(_input: ListRepositoryCommitsInput): Promise<readonly RepositoryCommitSummary[]> {
     throw new Error("Local git commit listing is not implemented yet.");
+  }
+
+  async readCommitFileVersions(_input: ReadCommitFileVersionsInput): Promise<CommitFileVersions> {
+    throw new Error("Local git file version loading is not implemented yet.");
   }
 }

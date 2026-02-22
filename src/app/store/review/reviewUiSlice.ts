@@ -4,10 +4,18 @@ import {
   createDefaultFileFilter,
   createInitialReviewUiState,
   toggleDiffOrientation as toggleDiffOrientationValue,
+  type DiffViewMode,
   type FileFilter,
   type PublishReviewPackage,
 } from "../../../application/review/index.ts";
-import type { DiffOrientation, PublishReviewResult, RepositoryCommitSummary } from "../../../domain/review/index.ts";
+import type {
+  AiSequenceStep,
+  AnalyseCommitOutput,
+  CommitFileVersions,
+  DiffOrientation,
+  PublishReviewResult,
+  RepositoryCommitSummary,
+} from "../../../domain/review/index.ts";
 
 export interface HydrateUiForCommitPayload {
   readonly commitId: string;
@@ -23,6 +31,29 @@ export interface PublishStartedPayload {
   readonly pkg: PublishReviewPackage;
 }
 
+export interface SetDiffViewModePayload {
+  readonly mode: DiffViewMode;
+}
+
+export interface FileVersionsLoadStartedPayload {
+  readonly fileId: string;
+}
+
+export interface FileVersionsLoadedPayload {
+  readonly fileId: string;
+  readonly versions: CommitFileVersions;
+}
+
+export interface FileVersionsLoadFailedPayload {
+  readonly fileId: string;
+  readonly errorMessage: string;
+}
+
+export interface SequenceGenerationSucceededPayload {
+  readonly commitId: string;
+  readonly sequenceSteps: readonly AiSequenceStep[];
+}
+
 function cloneFileFilter(filter: FileFilter) {
   return {
     query: filter.query,
@@ -30,6 +61,13 @@ function cloneFileFilter(filter: FileFilter) {
     onlyCommented: filter.onlyCommented,
     onlyFailingStandards: filter.onlyFailingStandards,
     threadStatus: filter.threadStatus,
+  };
+}
+
+function cloneFileVersions(input: CommitFileVersions): CommitFileVersions {
+  return {
+    oldContent: input.oldContent,
+    newContent: input.newContent,
   };
 }
 
@@ -111,12 +149,21 @@ export const reviewUiSlice = createSlice({
       state.lastError = null;
       state.activeCommitId = action.payload.commitId;
       state.activeFileId = action.payload.firstFileId;
+      state.diffViewMode = "changes";
       state.fileFilter = cloneFileFilter(createDefaultFileFilter());
       state.publishStatus = "ready";
       state.lastPublishPackage = null;
       state.publishResult = null;
       state.publishError = null;
       state.askAgentDraftByThreadId = {};
+      state.fileVersionsByFileId = {};
+      state.fileVersionsLoadStatusByFileId = {};
+      state.fileVersionsErrorByFileId = {};
+      state.aiAnalysisStatus = "idle";
+      state.aiAnalysis = null;
+      state.aiAnalysisError = null;
+      state.aiSequenceStatus = "idle";
+      state.aiSequenceError = null;
     },
     markLoadFailed(state, action: PayloadAction<{ readonly errorMessage: string }>): void {
       state.loadStatus = "error";
@@ -127,6 +174,9 @@ export const reviewUiSlice = createSlice({
     },
     setDiffOrientation(state, action: PayloadAction<{ readonly orientation: DiffOrientation }>): void {
       state.diffOrientation = action.payload.orientation;
+    },
+    setDiffViewMode(state, action: PayloadAction<SetDiffViewModePayload>): void {
+      state.diffViewMode = action.payload.mode;
     },
     toggleDiffOrientation(state): void {
       state.diffOrientation = toggleDiffOrientationValue(state.diffOrientation);
@@ -164,6 +214,19 @@ export const reviewUiSlice = createSlice({
     ): void {
       state.repositoryCommits = cloneRepositoryCommits(action.payload.commits);
     },
+    fileVersionsLoadStarted(state, action: PayloadAction<FileVersionsLoadStartedPayload>): void {
+      state.fileVersionsLoadStatusByFileId[action.payload.fileId] = "loading";
+      state.fileVersionsErrorByFileId[action.payload.fileId] = null;
+    },
+    fileVersionsLoaded(state, action: PayloadAction<FileVersionsLoadedPayload>): void {
+      state.fileVersionsByFileId[action.payload.fileId] = cloneFileVersions(action.payload.versions);
+      state.fileVersionsLoadStatusByFileId[action.payload.fileId] = "loaded";
+      state.fileVersionsErrorByFileId[action.payload.fileId] = null;
+    },
+    fileVersionsLoadFailed(state, action: PayloadAction<FileVersionsLoadFailedPayload>): void {
+      state.fileVersionsLoadStatusByFileId[action.payload.fileId] = "error";
+      state.fileVersionsErrorByFileId[action.payload.fileId] = action.payload.errorMessage;
+    },
     publishStarted(state, action: PayloadAction<PublishStartedPayload>): void {
       state.lastPublishPackage = clonePublishPackage(action.payload.pkg);
       state.publishStatus = "publishing";
@@ -179,6 +242,96 @@ export const reviewUiSlice = createSlice({
       state.publishStatus = "error";
       state.publishResult = null;
       state.publishError = action.payload.errorMessage;
+    },
+    aiAnalysisStarted(state): void {
+      state.aiAnalysisStatus = "analysing";
+      state.aiAnalysisError = null;
+      state.aiSequenceStatus = "idle";
+      state.aiSequenceError = null;
+    },
+    aiAnalysisSucceeded(
+      state,
+      action: PayloadAction<{ readonly output: AnalyseCommitOutput }>,
+    ): void {
+      state.aiAnalysisStatus = "analysed";
+      const output = action.payload.output;
+      state.aiAnalysis = {
+        commitId: output.commitId,
+        overviewCards: output.overviewCards.map((c) => ({ kind: c.kind, title: c.title, body: c.body })),
+        flowComparisons: output.flowComparisons.map((pair) => ({
+          beforeTitle: pair.beforeTitle,
+          beforeBody: pair.beforeBody,
+          afterTitle: pair.afterTitle,
+          afterBody: pair.afterBody,
+          filePaths: [...pair.filePaths],
+        })),
+        sequenceSteps: output.sequenceSteps.map((s) => ({
+          sourceLabel: s.sourceLabel,
+          targetLabel: s.targetLabel,
+          message: s.message,
+          filePath: s.filePath,
+        })),
+        fileSummaries: output.fileSummaries.map((f) => ({
+          filePath: f.filePath,
+          summary: f.summary,
+          riskNote: f.riskNote,
+        })),
+      };
+      state.aiAnalysisError = null;
+      state.aiSequenceStatus = output.sequenceSteps.length > 0 ? "ready" : "idle";
+      state.aiSequenceError = null;
+    },
+    aiAnalysisFailed(state, action: PayloadAction<{ readonly errorMessage: string }>): void {
+      state.aiAnalysisStatus = "error";
+      state.aiAnalysisError = action.payload.errorMessage;
+      state.aiSequenceStatus = "error";
+      state.aiSequenceError = action.payload.errorMessage;
+    },
+    sequenceGenerationStarted(
+      state,
+      action: PayloadAction<{ readonly commitId: string }>,
+    ): void {
+      if (!state.aiAnalysis || state.aiAnalysis.commitId !== action.payload.commitId) {
+        return;
+      }
+
+      state.aiSequenceStatus = "generating";
+      state.aiSequenceError = null;
+      state.aiAnalysis = {
+        ...state.aiAnalysis,
+        sequenceSteps: [],
+      };
+    },
+    sequenceGenerationSucceeded(
+      state,
+      action: PayloadAction<SequenceGenerationSucceededPayload>,
+    ): void {
+      if (!state.aiAnalysis || state.aiAnalysis.commitId !== action.payload.commitId) {
+        return;
+      }
+
+      state.aiAnalysis = {
+        ...state.aiAnalysis,
+        sequenceSteps: action.payload.sequenceSteps.map((step) => ({
+          sourceLabel: step.sourceLabel,
+          targetLabel: step.targetLabel,
+          message: step.message,
+          filePath: step.filePath,
+        })),
+      };
+      state.aiSequenceStatus = "ready";
+      state.aiSequenceError = null;
+    },
+    sequenceGenerationFailed(
+      state,
+      action: PayloadAction<{ readonly commitId: string; readonly errorMessage: string }>,
+    ): void {
+      if (!state.aiAnalysis || state.aiAnalysis.commitId !== action.payload.commitId) {
+        return;
+      }
+
+      state.aiSequenceStatus = "error";
+      state.aiSequenceError = action.payload.errorMessage;
     },
   },
 });

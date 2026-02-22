@@ -1,8 +1,11 @@
 export {
+  analyseCommitRequested,
   askAgentDraftRequested,
   createCommentThreadRequested,
+  deleteCommentRequested,
   loadCommitReviewRequested,
   publishReviewRequested,
+  regenerateSequenceRequested,
 } from "./reviewActions.ts";
 
 export { reviewEntitiesActions, reviewEntitiesReducer } from "./reviewEntitiesSlice.ts";

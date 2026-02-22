@@ -23,7 +23,17 @@ export type {
 } from "./entities.ts";
 
 export type {
+  CommitFileVersions,
+  AiFlowComparison,
+  AiFileSummary,
+  AiOverviewCard,
+  AiSequenceStep,
+  AnalyseCommitInput,
+  AnalyseCommitOutput,
+  CommitAnalyser,
+  SequenceDiagramGenerator,
   CommitReviewDataSource,
+  ReadCommitFileVersionsInput,
   ListRepositoryCommitsInput,
   LoadCommitReviewInput,
   LocalGitReviewAdapter,

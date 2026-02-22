@@ -12,6 +12,10 @@ export interface AskAgentDraftRequestedPayload {
   readonly reviewerPrompt?: string;
 }
 
+export interface DeleteCommentRequestedPayload {
+  readonly commentId: string;
+}
+
 export interface PublishReviewRequestedPayload {
   readonly requestedBy: string;
 }
@@ -28,6 +32,26 @@ export const askAgentDraftRequested = createAction<AskAgentDraftRequestedPayload
   "review/askAgentDraftRequested",
 );
 
+export const deleteCommentRequested = createAction<DeleteCommentRequestedPayload>(
+  "review/deleteCommentRequested",
+);
+
 export const publishReviewRequested = createAction<PublishReviewRequestedPayload>(
   "review/publishReviewRequested",
+);
+
+export interface AnalyseCommitRequestedPayload {
+  readonly commitId: string;
+}
+
+export const analyseCommitRequested = createAction<AnalyseCommitRequestedPayload>(
+  "review/analyseCommitRequested",
+);
+
+export interface RegenerateSequenceRequestedPayload {
+  readonly commitId: string;
+}
+
+export const regenerateSequenceRequested = createAction<RegenerateSequenceRequestedPayload>(
+  "review/regenerateSequenceRequested",
 );

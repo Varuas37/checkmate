@@ -1,5 +1,9 @@
 export type {
+  AiAnalysisStatus,
+  AiSequenceStatus,
+  DiffViewMode,
   FileFilter,
+  FileVersionsLoadStatus,
   PublishReviewCommentPayload,
   PublishReviewFilePayload,
   PublishReviewPackage,

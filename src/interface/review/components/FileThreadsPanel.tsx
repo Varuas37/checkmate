@@ -21,6 +21,8 @@ function toneForThread(status: "open" | "resolved"): "accent" | "positive" {
   return status === "open" ? "accent" : "positive";
 }
 
+const CHECKMATE_MENTION_PATTERN = /^@checkmate\b\s*/i;
+
 export function FileThreadsPanel({
   commitId,
   file,
@@ -237,19 +239,26 @@ export function FileThreadsPanel({
                       [thread.thread.id]: nextPrompt,
                     }));
                   }}
-                  placeholder="Optional Ask Agent prompt"
-                />
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") {
+                      return;
+                    }
 
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => {
-                    const prompt = agentPromptByThreadId[thread.thread.id] ?? "";
+                    const rawPrompt = agentPromptByThreadId[thread.thread.id] ?? "";
+                    if (!CHECKMATE_MENTION_PATTERN.test(rawPrompt.trim())) {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    const prompt = rawPrompt.trim().replace(CHECKMATE_MENTION_PATTERN, "").trim();
                     onAskAgent(thread.thread.id, prompt);
+                    setAgentPromptByThreadId((current) => ({
+                      ...current,
+                      [thread.thread.id]: "",
+                    }));
                   }}
-                >
-                  Ask Agent
-                </Button>
+                  placeholder="Reply... Use @checkmate <question> and press Enter"
+                />
 
                 {thread.askAgentDraft.length > 0 && (
                   <pre className="max-h-40 overflow-auto rounded-md bg-elevated p-2 font-mono text-xs text-text">

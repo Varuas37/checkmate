@@ -28,6 +28,13 @@ pub struct CommitDetails {
     pub parent_commit_shas: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFileVersions {
+    pub old_content: Option<String>,
+    pub new_content: Option<String>,
+}
+
 fn validate_repository_path(repo_path: &str) -> Result<PathBuf, String> {
     let trimmed = repo_path.trim();
 
@@ -76,6 +83,20 @@ fn validate_commit_reference(reference: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+fn validate_file_reference(path: &str, label: &str) -> Result<String, String> {
+    let trimmed = path.trim();
+
+    if trimmed.is_empty() {
+        return Err(format!("{} is required.", label));
+    }
+
+    if trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err(format!("{} must not contain newline characters.", label));
+    }
+
+    Ok(trimmed.to_string())
+}
+
 fn run_git(repo_path: &Path, args: &[String]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
@@ -96,6 +117,23 @@ fn run_git(repo_path: &Path, args: &[String]) -> Result<String, String> {
     }
 
     String::from_utf8(output.stdout).map_err(|error| format!("Git output was not valid UTF-8: {}", error))
+}
+
+fn run_git_optional(repo_path: &Path, args: &[String]) -> Result<Option<String>, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Failed to execute git command: {}", error))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let text =
+        String::from_utf8(output.stdout).map_err(|error| format!("Git output was not valid UTF-8: {}", error))?;
+    Ok(Some(text))
 }
 
 #[tauri::command]
@@ -224,6 +262,44 @@ fn read_commit_patch(repo_path: String, commit_hash: String) -> Result<String, S
 }
 
 #[tauri::command]
+fn read_commit_file_versions(
+    repo_path: String,
+    commit_hash: String,
+    old_path: String,
+    new_path: String,
+) -> Result<CommitFileVersions, String> {
+    let repository_path = validate_repository_path(&repo_path)?;
+    let commit_reference = validate_commit_reference(&commit_hash)?;
+    let old_file_path = validate_file_reference(&old_path, "Old file path")?;
+    let new_file_path = validate_file_reference(&new_path, "New file path")?;
+
+    let parent_args = vec![
+        "rev-parse".to_string(),
+        format!("{}^", commit_reference),
+    ];
+    let parent_commit = run_git_optional(&repository_path, &parent_args)?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let old_content = if let Some(parent_sha) = parent_commit {
+        let old_spec = format!("{}:{}", parent_sha, old_file_path);
+        let old_args = vec!["show".to_string(), old_spec];
+        run_git_optional(&repository_path, &old_args)?
+    } else {
+        None
+    };
+
+    let new_spec = format!("{}:{}", commit_reference, new_file_path);
+    let new_args = vec!["show".to_string(), new_spec];
+    let new_content = run_git_optional(&repository_path, &new_args)?;
+
+    Ok(CommitFileVersions {
+        old_content,
+        new_content,
+    })
+}
+
+#[tauri::command]
 fn run_claude_prompt(prompt: String) -> Result<String, String> {
     let trimmed_prompt = prompt.trim();
 
@@ -256,6 +332,7 @@ pub fn run() {
             list_commits,
             read_commit_details,
             read_commit_patch,
+            read_commit_file_versions,
             run_claude_prompt
         ])
         .run(tauri::generate_context!())

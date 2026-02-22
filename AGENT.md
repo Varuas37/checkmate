@@ -22,6 +22,7 @@
 1. Preserve DDD dependency direction: `domain` -> `application` -> `infrastructure` -> `interface` -> `app`.
 2. Keep business logic out of `interface` and framework concerns out of `domain`.
 3. Preserve design-system consistency: token-driven styling, shared primitives/composed components first, and no ad-hoc visual variants without documented justification.
+4. Default visual direction is minimal and low-chrome: avoid boxed/card-heavy layouts for launcher/startup surfaces unless a box is functionally required.
 
 ## Conflict Handling
 1. If a request conflicts with `coding_standards.md`, flag the conflict explicitly.

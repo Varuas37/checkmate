@@ -1,5 +1,7 @@
 import type {
+  AnalyseCommitOutput,
   ChangedFile,
+  CommitFileVersions,
   CommentThread,
   CommitReview,
   DiffHunk,
@@ -87,19 +89,35 @@ export type ReviewLoadStatus = "idle" | "loading" | "loaded" | "error";
 
 export type ReviewPublishStatus = "idle" | "ready" | "publishing" | "published" | "error";
 
+export type AiAnalysisStatus = "idle" | "analysing" | "analysed" | "error";
+export type AiSequenceStatus = "idle" | "generating" | "ready" | "error";
+
+export type DiffViewMode = "changes" | "old" | "new";
+
+export type FileVersionsLoadStatus = "idle" | "loading" | "loaded" | "error";
+
 export interface ReviewUiState {
   loadStatus: ReviewLoadStatus;
   lastError: string | null;
   activeCommitId: string | null;
   activeFileId: string | null;
   diffOrientation: DiffOrientation;
+  diffViewMode: DiffViewMode;
   fileFilter: FileFilter;
   askAgentDraftByThreadId: Record<string, string>;
+  fileVersionsByFileId: Record<string, CommitFileVersions>;
+  fileVersionsLoadStatusByFileId: Record<string, FileVersionsLoadStatus>;
+  fileVersionsErrorByFileId: Record<string, string | null>;
   repositoryCommits: readonly RepositoryCommitSummary[];
   publishStatus: ReviewPublishStatus;
   lastPublishPackage: PublishReviewPackage | null;
   publishResult: PublishReviewResult | null;
   publishError: string | null;
+  aiAnalysisStatus: AiAnalysisStatus;
+  aiAnalysis: AnalyseCommitOutput | null;
+  aiAnalysisError: string | null;
+  aiSequenceStatus: AiSequenceStatus;
+  aiSequenceError: string | null;
 }
 
 export interface ReviewRootState {

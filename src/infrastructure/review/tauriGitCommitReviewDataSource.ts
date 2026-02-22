@@ -1,5 +1,6 @@
 import type {
   ChangedFile,
+  CommitFileVersions,
   CommitReviewAggregate,
   CommitReviewDataSource,
   DiffHunk,
@@ -8,6 +9,7 @@ import type {
   ListRepositoryCommitsInput,
   LoadCommitReviewInput,
   OverviewCard,
+  ReadCommitFileVersionsInput,
   RepositoryCommitSummary,
 } from "../../domain/review/index.ts";
 
@@ -20,6 +22,11 @@ interface TauriCommitDetails {
   readonly authorEmail: string;
   readonly authoredAtIso: string;
   readonly parentCommitShas: readonly string[];
+}
+
+interface TauriCommitFileVersions {
+  readonly oldContent?: string | null;
+  readonly newContent?: string | null;
 }
 
 interface ParsedHunk {
@@ -453,6 +460,32 @@ export class TauriGitCommitReviewDataSource implements CommitReviewDataSource {
       });
 
       return normalizeCommitList(items);
+    } catch (error) {
+      throw new Error(messageForError(error));
+    }
+  }
+
+  async readCommitFileVersions(input: ReadCommitFileVersionsInput): Promise<CommitFileVersions> {
+    if (!isTauriRuntime()) {
+      if (!this.#fallbackDataSource) {
+        throw new Error("Commit file version loading requires Tauri runtime.");
+      }
+
+      return this.#fallbackDataSource.readCommitFileVersions(input);
+    }
+
+    try {
+      const versions = await invokeTauri<TauriCommitFileVersions>("read_commit_file_versions", {
+        repoPath: input.repositoryPath,
+        commitHash: input.commitSha,
+        oldPath: input.oldPath,
+        newPath: input.newPath,
+      });
+
+      return {
+        oldContent: versions.oldContent ?? null,
+        newContent: versions.newContent ?? null,
+      };
     } catch (error) {
       throw new Error(messageForError(error));
     }

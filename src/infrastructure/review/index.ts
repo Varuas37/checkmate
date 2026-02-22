@@ -12,6 +12,16 @@ export {
   createClaudeSdkReviewPublisher,
   type ClaudeSdkReviewPublisherOptions,
 } from "./claudeSdkReviewPublisher.ts";
+export {
+  ClaudeSdkCommitAnalyser,
+  createClaudeSdkCommitAnalyser,
+  type ClaudeSdkCommitAnalyserOptions,
+} from "./claudeSdkCommitAnalyser.ts";
+export {
+  ClaudeSdkSequenceDiagramGenerator,
+  createClaudeSdkSequenceDiagramGenerator,
+  type ClaudeSdkSequenceDiagramGeneratorOptions,
+} from "./claudeSdkSequenceDiagramGenerator.ts";
 export { createMockCommitReviewDataSource, MockCommitReviewDataSource } from "./mockDataSource.ts";
 export {
   createRuleTextStandardsEvaluator,

@@ -1,4 +1,4 @@
-import { Badge, Button, Card, CardBody, CardDescription, CardHeader, CardTitle } from "../../../design-system/index.ts";
+import { Badge, Button } from "../../../design-system/index.ts";
 import type { PublishReviewPackage } from "../../../application/review/index.ts";
 import type { CommitReview, OverviewCard, PublishReviewResult } from "../../../domain/review/index.ts";
 
@@ -32,6 +32,22 @@ function toneForStatus(status: FileSummary["status"]): "positive" | "accent" | "
   return "caution";
 }
 
+function toneForPublishStatus(status: SummaryPanelProps["publishStatus"]): "positive" | "accent" | "danger" | "neutral" {
+  if (status === "published") {
+    return "positive";
+  }
+
+  if (status === "publishing") {
+    return "accent";
+  }
+
+  if (status === "error") {
+    return "danger";
+  }
+
+  return "neutral";
+}
+
 export function SummaryPanel({
   commit,
   overviewCards,
@@ -46,105 +62,92 @@ export function SummaryPanel({
   const publishPreview = publishPackage ? JSON.stringify(publishPackage, null, 2) : null;
 
   return (
-    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-3">
-      <Card>
-        <CardBody className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="space-y-1">
-              <p className="text-xs uppercase tracking-[0.16em] text-muted">Summary</p>
-              <CardTitle>Commit Narrative</CardTitle>
-              <CardDescription>{commit ? `${commit.title} (${commit.shortSha})` : "No active commit selected."}</CardDescription>
-            </div>
-            <Button size="sm" onClick={onPublishReview} disabled={!canPublish}>
-              {publishStatus === "publishing" ? "Publishing..." : "Publish Review"}
-            </Button>
-          </div>
-
-          {commit && (
-            <div className="rounded-md border border-border bg-elevated/30 p-3">
-              <p className="text-sm leading-relaxed text-text">{commit.description}</p>
-              <p className="mt-2 text-xs text-muted">
-                {commit.authorName} · {commit.authorEmail} · {new Date(commit.authoredAtIso).toLocaleString()}
-              </p>
-            </div>
-          )}
-
-          <div className="grid gap-2 md:grid-cols-2">
-            {overviewCards.map((card) => (
-              <div key={card.id} className="rounded-md border border-border bg-surface px-3 py-2">
-                <h4 className="mb-1 font-display text-sm font-semibold text-text">{card.title}</h4>
-                <p className="text-sm text-muted">{card.body}</p>
-              </div>
-            ))}
-
-            {overviewCards.length === 0 && (
-              <p className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted">
-                AI overview cards will appear once commit data is loaded.
-              </p>
-            )}
-          </div>
-        </CardBody>
-      </Card>
-
-      <Card>
-        <CardHeader className="border-b-0 pb-0">
-          <CardTitle>Claude Publish Status</CardTitle>
-          <CardDescription>Current handoff state for the review package.</CardDescription>
-        </CardHeader>
-        <CardBody className="space-y-2 pt-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={publishStatus === "published" ? "positive" : publishStatus === "error" ? "danger" : publishStatus === "publishing" ? "accent" : "neutral"}>
-              {publishStatus}
-            </Badge>
-            {publishResult && <Badge tone="accent">{publishResult.provider}</Badge>}
-          </div>
-
-          {publishError && <p className="text-sm text-danger">{publishError}</p>}
-
-          {publishResult && (
-            <div className="rounded-md border border-border bg-elevated/30 p-3">
-              <p className="text-sm text-text">{publishResult.summary}</p>
-              <p className="mt-1 font-mono text-xs text-muted">{publishResult.publicationId}</p>
-            </div>
-          )}
-        </CardBody>
-      </Card>
-
-      <Card>
-        <CardHeader className="border-b-0 pb-0">
-          <CardTitle>Per-file Summaries</CardTitle>
-          <CardDescription>High-level summary and risk note for each changed file.</CardDescription>
-        </CardHeader>
-        <CardBody className="space-y-0">
-          {fileSummaries.map((fileSummary) => (
-            <div key={fileSummary.fileId} className="border-b border-border py-3 last:border-b-0">
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <p className="break-all font-mono text-xs text-text">{fileSummary.path}</p>
-                <Badge tone={toneForStatus(fileSummary.status)}>{fileSummary.status}</Badge>
-              </div>
-              <p className="text-sm text-text">{fileSummary.summary}</p>
-              <p className="mt-1 text-sm text-muted">{fileSummary.riskNote}</p>
-            </div>
-          ))}
-
-          {fileSummaries.length === 0 && (
-            <p className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted">
-              No changed files available for summary output.
+    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-4 px-1">
+      <section className="border-b border-border/60 pb-4">
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <p className="text-xs uppercase tracking-[0.14em] text-muted">Summary</p>
+            <h2 className="font-display text-xl font-semibold tracking-tight text-text">Commit Narrative</h2>
+            <p className="text-sm text-muted">
+              {commit ? `${commit.title} (${commit.shortSha})` : "No active commit selected."}
             </p>
-          )}
-        </CardBody>
-      </Card>
+          </div>
+          <Button size="sm" onClick={onPublishReview} disabled={!canPublish}>
+            {publishStatus === "publishing" ? "Publishing..." : "Publish Review"}
+          </Button>
+        </div>
+
+        {commit && (
+          <>
+            <p className="text-sm leading-relaxed text-text">{commit.description}</p>
+            <p className="mt-1.5 text-xs text-muted">
+              {commit.authorName} · {commit.authorEmail} · {new Date(commit.authoredAtIso).toLocaleString()}
+            </p>
+          </>
+        )}
+
+        {overviewCards.length > 0 ? (
+          <div className="mt-4 grid gap-x-4 gap-y-3 md:grid-cols-2">
+            {overviewCards.map((card) => (
+              <article key={card.id}>
+                <h3 className="mb-1 text-sm font-semibold text-text">{card.title}</h3>
+                <p className="text-sm text-muted">{card.body}</p>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-4 text-sm text-muted">AI overview cards will appear once commit data is loaded.</p>
+        )}
+      </section>
+
+      <section className="border-b border-border/60 pb-4">
+        <h3 className="text-base font-semibold text-text">Claude Publish Status</h3>
+        <p className="text-sm text-muted">Current handoff state for the review package.</p>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Badge tone={toneForPublishStatus(publishStatus)}>{publishStatus}</Badge>
+          {publishResult && <Badge tone="accent">{publishResult.provider}</Badge>}
+        </div>
+
+        {publishError && <p className="mt-2 text-sm text-danger">{publishError}</p>}
+        {publishResult && (
+          <>
+            <p className="mt-2 text-sm text-text">{publishResult.summary}</p>
+            <p className="font-mono text-xs text-muted">{publishResult.publicationId}</p>
+          </>
+        )}
+      </section>
+
+      <section className="border-b border-border/60 pb-3">
+        <h3 className="text-base font-semibold text-text">Per-file Summaries</h3>
+        <p className="text-sm text-muted">High-level summary and risk note for each changed file.</p>
+
+        {fileSummaries.length > 0 ? (
+          <div className="mt-2 divide-y divide-border/60">
+            {fileSummaries.map((fileSummary) => (
+              <article key={fileSummary.fileId} className="py-2.5">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <p className="break-all font-mono text-xs text-text">{fileSummary.path}</p>
+                  <Badge tone={toneForStatus(fileSummary.status)}>{fileSummary.status}</Badge>
+                </div>
+                <p className="text-sm text-text">{fileSummary.summary}</p>
+                <p className="mt-1 text-sm text-muted">{fileSummary.riskNote}</p>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-muted">No changed files available for summary output.</p>
+        )}
+      </section>
 
       {publishPreview && (
-        <Card>
-          <CardHeader className="border-b-0 pb-0">
-            <CardTitle>Latest Publish Payload</CardTitle>
-            <CardDescription>Mock package preview generated by the publish use-case.</CardDescription>
-          </CardHeader>
-          <CardBody className="pt-2">
-            <pre className="max-h-72 overflow-auto rounded-md bg-elevated p-3 font-mono text-xs text-text">{publishPreview}</pre>
-          </CardBody>
-        </Card>
+        <section>
+          <h3 className="text-sm font-semibold text-text">Latest Publish Payload</h3>
+          <p className="text-sm text-muted">Mock package preview generated by the publish use-case.</p>
+          <pre className="mt-2 max-h-72 overflow-auto rounded-md border border-border/60 bg-elevated/35 p-3 font-mono text-xs text-text">
+            {publishPreview}
+          </pre>
+        </section>
       )}
     </div>
   );

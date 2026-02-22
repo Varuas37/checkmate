@@ -114,6 +114,7 @@ function createStateFixture(): ReviewRootState {
       activeCommitId: "commit-1",
       activeFileId: "file-b",
       diffOrientation: "split",
+      diffViewMode: "changes",
       fileFilter: {
         query: "",
         statuses: [],
@@ -122,11 +123,19 @@ function createStateFixture(): ReviewRootState {
         threadStatus: "open",
       },
       askAgentDraftByThreadId: {},
+      fileVersionsByFileId: {},
+      fileVersionsLoadStatusByFileId: {},
+      fileVersionsErrorByFileId: {},
       repositoryCommits: [],
       publishStatus: "idle",
       lastPublishPackage: null,
       publishResult: null,
       publishError: null,
+      aiAnalysisStatus: "idle",
+      aiAnalysis: null,
+      aiAnalysisError: null,
+      aiSequenceStatus: "idle",
+      aiSequenceError: null,
     },
   };
 }

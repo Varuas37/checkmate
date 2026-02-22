@@ -1,5 +1,6 @@
 import type {
   ChangedFile,
+  CommitFileVersions,
   CommentSide,
   CommentThread,
   CommitReview,
@@ -14,7 +15,15 @@ import type {
   StandardsRule,
   ThreadStatus,
 } from "../../domain/review/index.ts";
-import type { FileFilter, PublishReviewPackage, ReviewPublishStatus } from "../../application/review/index.ts";
+import type {
+  AiAnalysisStatus,
+  AiSequenceStatus,
+  DiffViewMode,
+  FileFilter,
+  FileVersionsLoadStatus,
+  PublishReviewPackage,
+  ReviewPublishStatus,
+} from "../../application/review/index.ts";
 
 export type ReviewTabId = "overview" | "files" | "summary" | "standards";
 
@@ -105,6 +114,10 @@ export interface ReviewWorkspaceState {
   readonly filteredFiles: readonly ChangedFile[];
   readonly activeFileHunks: readonly DiffHunk[];
   readonly diffOrientation: DiffOrientation;
+  readonly diffViewMode: DiffViewMode;
+  readonly activeFileVersions: CommitFileVersions | null;
+  readonly activeFileVersionsStatus: FileVersionsLoadStatus;
+  readonly activeFileVersionsError: string | null;
   readonly fileFilter: FileFilter;
   readonly overviewCards: readonly OverviewCard[];
   readonly architectureClusters: readonly ArchitectureCluster[];
@@ -124,12 +137,16 @@ export interface ReviewWorkspaceState {
     readonly fail: number;
   };
   readonly isPublishingReady: boolean;
+  readonly aiAnalysisStatus: AiAnalysisStatus;
+  readonly aiSequenceStatus: AiSequenceStatus;
+  readonly aiSequenceError: string | null;
 }
 
 export interface ReviewWorkspaceActions {
   readonly reloadReviewWorkspace: (input: ReloadReviewWorkspaceInput) => void;
   readonly selectFile: (fileId: string | null) => void;
   readonly setDiffOrientation: (orientation: DiffOrientation) => void;
+  readonly setDiffViewMode: (mode: DiffViewMode) => void;
   readonly setFilterQuery: (query: string) => void;
   readonly toggleFilterStatus: (status: FileChangeStatus) => void;
   readonly setOnlyCommented: (enabled: boolean) => void;
@@ -137,5 +154,8 @@ export interface ReviewWorkspaceActions {
   readonly setThreadStatusFilter: (status: ThreadStatus | "all") => void;
   readonly createThread: (input: CreateThreadInput) => { readonly ok: boolean; readonly message: string };
   readonly askAgent: (threadId: string, prompt: string) => void;
+  readonly deleteComment: (commentId: string) => void;
   readonly publishReview: () => void;
+  readonly refreshAiAnalysis: () => void;
+  readonly retrySequenceGeneration: () => void;
 }

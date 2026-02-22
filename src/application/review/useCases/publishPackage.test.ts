@@ -135,6 +135,7 @@ function createStateFixture(): ReviewRootState {
       activeCommitId: "commit-1",
       activeFileId: "file-1",
       diffOrientation: "unified",
+      diffViewMode: "changes",
       fileFilter: {
         query: "review",
         statuses: ["added", "modified"],
@@ -145,11 +146,19 @@ function createStateFixture(): ReviewRootState {
       askAgentDraftByThreadId: {
         "thread-1": "Explain whether this type can be narrowed.",
       },
+      fileVersionsByFileId: {},
+      fileVersionsLoadStatusByFileId: {},
+      fileVersionsErrorByFileId: {},
       repositoryCommits: [],
       publishStatus: "ready",
       lastPublishPackage: null,
       publishResult: null,
       publishError: null,
+      aiAnalysisStatus: "idle",
+      aiAnalysis: null,
+      aiAnalysisError: null,
+      aiSequenceStatus: "idle",
+      aiSequenceError: null,
     },
   };
 }

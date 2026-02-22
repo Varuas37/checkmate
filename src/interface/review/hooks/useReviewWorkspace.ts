@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useMemo } from "react";
 
 import {
   selectActiveCommit,
@@ -10,10 +10,13 @@ import {
   selectReviewUi,
 } from "../../../application/review/index.ts";
 import {
+  analyseCommitRequested,
   askAgentDraftRequested,
   createCommentThreadRequested,
+  deleteCommentRequested,
   loadCommitReviewRequested,
   publishReviewRequested,
+  regenerateSequenceRequested,
   reviewUiActions,
 } from "../../../app/store/review/index.ts";
 import type { FileChangeStatus, ThreadStatus } from "../../../domain/review/index.ts";
@@ -76,6 +79,8 @@ function normalizeReloadInput(input: ReloadReviewWorkspaceInput): ReloadReviewWo
   };
 }
 
+const CHECKMATE_MENTION_PATTERN = /^@checkmate\b\s*/i;
+
 export function useReviewWorkspace(): {
   readonly state: ReviewWorkspaceState;
   readonly actions: ReviewWorkspaceActions;
@@ -90,20 +95,8 @@ export function useReviewWorkspace(): {
   const entities = useReviewSelector(selectReviewEntities);
   const ui = useReviewSelector(selectReviewUi);
 
-  useEffect(() => {
-    if (ui.loadStatus !== "idle") {
-      return;
-    }
-
-    dispatch(
-      loadCommitReviewRequested(
-        normalizeReloadInput({
-          ...DEFAULT_LOAD_REQUEST,
-          standardsRuleText: DEFAULT_STANDARDS_RULE_TEXT,
-        }),
-      ),
-    );
-  }, [dispatch, ui.loadStatus]);
+  const hasAiAnalysis =
+    ui.aiAnalysis !== null && ui.aiAnalysis.commitId === ui.activeCommitId;
 
   const overviewCards = useMemo(() => {
     const activeCommitId = ui.activeCommitId;
@@ -112,13 +105,30 @@ export function useReviewWorkspace(): {
       return [];
     }
 
+    if (hasAiAnalysis && ui.aiAnalysis !== null) {
+      return ui.aiAnalysis.overviewCards.map((card, index) => ({
+        id: `ai-card-${activeCommitId}-${index}`,
+        commitId: activeCommitId,
+        kind: card.kind,
+        title: card.title,
+        body: card.body,
+        rank: index + 1,
+      }));
+    }
+
     const cardIds = entities.overviewCardIdsByCommitId[activeCommitId] ?? [];
 
     return cardIds
       .map((cardId) => entities.overviewCardsById[cardId])
       .filter((card): card is NonNullable<typeof card> => card !== undefined)
       .sort((left, right) => left.rank - right.rank);
-  }, [entities.overviewCardIdsByCommitId, entities.overviewCardsById, ui.activeCommitId]);
+  }, [
+    entities.overviewCardIdsByCommitId,
+    entities.overviewCardsById,
+    hasAiAnalysis,
+    ui.activeCommitId,
+    ui.aiAnalysis,
+  ]);
 
   const activeFileHunks = useMemo(() => {
     if (!activeFile) {
@@ -138,6 +148,17 @@ export function useReviewWorkspace(): {
         return left.id.localeCompare(right.id);
       });
   }, [activeFile, entities.hunkIdsByFileId, entities.hunksById]);
+
+  const activeFileVersions =
+    activeFileId !== null ? ui.fileVersionsByFileId[activeFileId] ?? null : null;
+  const activeFileVersionsStatus =
+    activeFileId !== null
+      ? ui.fileVersionsLoadStatusByFileId[activeFileId] ?? "idle"
+      : "idle";
+  const activeFileVersionsError =
+    activeFileId !== null
+      ? ui.fileVersionsErrorByFileId[activeFileId] ?? null
+      : null;
 
   const architectureClusters = useMemo(() => {
     const clusters = new Map<
@@ -187,6 +208,31 @@ export function useReviewWorkspace(): {
   }, [allFiles]);
 
   const sequencePairs = useMemo(() => {
+    if (hasAiAnalysis && ui.aiAnalysis !== null && ui.aiAnalysis.flowComparisons.length > 0) {
+      return ui.aiAnalysis.flowComparisons.slice(0, 8).map((pair, index) => {
+        const fileIds = pair.filePaths
+          .map((filePath) => allFiles.find((file) => file.path === filePath)?.id ?? null)
+          .filter((fileId): fileId is string => fileId !== null);
+
+        const uniqueFileIds = [...new Set(fileIds)];
+        return {
+          id: `ai-flow-${index + 1}`,
+          before: {
+            id: `ai-flow-before-${index + 1}`,
+            title: pair.beforeTitle,
+            body: pair.beforeBody,
+            fileIds: uniqueFileIds,
+          },
+          after: {
+            id: `ai-flow-after-${index + 1}`,
+            title: pair.afterTitle,
+            body: pair.afterBody,
+            fileIds: uniqueFileIds,
+          },
+        };
+      });
+    }
+
     return allFiles.map((file, index) => {
       const linkedCard = overviewCards.length > 0 ? overviewCards[index % overviewCards.length] : null;
       const layer = titleCase(deriveLayer(file.path));
@@ -210,9 +256,23 @@ export function useReviewWorkspace(): {
         },
       };
     });
-  }, [allFiles, overviewCards]);
+  }, [allFiles, hasAiAnalysis, overviewCards, ui.aiAnalysis]);
 
   const codeSequenceSteps = useMemo<readonly CodeSequenceStep[]>(() => {
+    if (hasAiAnalysis && ui.aiAnalysis !== null) {
+      return ui.aiAnalysis.sequenceSteps.slice(0, 12).map((step, index) => {
+        const matchedFile = allFiles.find((f) => f.path === step.filePath);
+        return {
+          id: `ai-step-${index + 1}`,
+          token: `F${index + 1}`,
+          sourceLabel: step.sourceLabel,
+          targetLabel: step.targetLabel,
+          message: step.message,
+          fileIds: matchedFile ? [matchedFile.id] : [],
+        };
+      });
+    }
+
     const prioritizedFiles = [...allFiles]
       .sort((left, right) => {
         const leftChurn = left.additions + left.deletions;
@@ -245,7 +305,7 @@ export function useReviewWorkspace(): {
       previousActor = targetLabel;
       return step;
     });
-  }, [allFiles]);
+  }, [allFiles, hasAiAnalysis, ui.aiAnalysis]);
 
   const standardsChecks = useMemo(() => {
     const activeCommitId = ui.activeCommitId;
@@ -348,7 +408,25 @@ export function useReviewWorkspace(): {
   ]);
 
   const fileSummaries = useMemo(() => {
+    const aiSummaryByPath = new Map(
+      hasAiAnalysis && ui.aiAnalysis !== null
+        ? ui.aiAnalysis.fileSummaries.map((s) => [s.filePath, s] as const)
+        : [],
+    );
+
     return allFiles.map((file) => {
+      const aiSummary = aiSummaryByPath.get(file.path);
+
+      if (aiSummary) {
+        return {
+          fileId: file.id,
+          path: file.path,
+          status: file.status,
+          summary: aiSummary.summary,
+          riskNote: aiSummary.riskNote,
+        };
+      }
+
       const firstHunkId = entities.hunkIdsByFileId[file.id]?.[0] ?? null;
       const firstHunk = firstHunkId ? entities.hunksById[firstHunkId] : null;
       const headerNote = firstHunk?.header ? ` Primary hunk ${firstHunk.header}.` : "";
@@ -361,7 +439,7 @@ export function useReviewWorkspace(): {
         riskNote: summarizeRisk(file.additions, file.deletions),
       };
     });
-  }, [allFiles, entities.hunkIdsByFileId, entities.hunksById]);
+  }, [allFiles, entities.hunkIdsByFileId, entities.hunksById, hasAiAnalysis, ui.aiAnalysis]);
 
   const selectFile = useCallback(
     (fileId: string | null) => {
@@ -380,6 +458,13 @@ export function useReviewWorkspace(): {
   const setDiffOrientation = useCallback(
     (orientation: "split" | "unified") => {
       dispatch(reviewUiActions.setDiffOrientation({ orientation }));
+    },
+    [dispatch],
+  );
+
+  const setDiffViewMode = useCallback(
+    (mode: "changes" | "old" | "new") => {
+      dispatch(reviewUiActions.setDiffViewMode({ mode }));
     },
     [dispatch],
   );
@@ -507,12 +592,17 @@ export function useReviewWorkspace(): {
 
   const askAgent = useCallback(
     (threadId: string, prompt: string) => {
-      const normalizedPrompt = prompt.trim();
+      const normalizedThreadId = threadId.trim();
+      if (normalizedThreadId.length === 0) {
+        return;
+      }
+
+      const normalizedPrompt = prompt.trim().replace(CHECKMATE_MENTION_PATTERN, "").trim();
 
       if (normalizedPrompt.length === 0) {
         dispatch(
           askAgentDraftRequested({
-            threadId,
+            threadId: normalizedThreadId,
           }),
         );
         return;
@@ -520,8 +610,24 @@ export function useReviewWorkspace(): {
 
       dispatch(
         askAgentDraftRequested({
-          threadId,
+          threadId: normalizedThreadId,
           reviewerPrompt: normalizedPrompt,
+        }),
+      );
+    },
+    [dispatch],
+  );
+
+  const deleteComment = useCallback(
+    (commentId: string) => {
+      const normalizedCommentId = commentId.trim();
+      if (normalizedCommentId.length === 0) {
+        return;
+      }
+
+      dispatch(
+        deleteCommentRequested({
+          commentId: normalizedCommentId,
         }),
       );
     },
@@ -536,6 +642,30 @@ export function useReviewWorkspace(): {
     );
   }, [dispatch]);
 
+  const refreshAiAnalysis = useCallback(() => {
+    if (!ui.activeCommitId) {
+      return;
+    }
+
+    dispatch(
+      analyseCommitRequested({
+        commitId: ui.activeCommitId,
+      }),
+    );
+  }, [dispatch, ui.activeCommitId]);
+
+  const retrySequenceGeneration = useCallback(() => {
+    if (!ui.activeCommitId) {
+      return;
+    }
+
+    dispatch(
+      regenerateSequenceRequested({
+        commitId: ui.activeCommitId,
+      }),
+    );
+  }, [dispatch, ui.activeCommitId]);
+
   return {
     state: {
       loadStatus: ui.loadStatus,
@@ -547,6 +677,10 @@ export function useReviewWorkspace(): {
       filteredFiles,
       activeFileHunks,
       diffOrientation: ui.diffOrientation,
+      diffViewMode: ui.diffViewMode,
+      activeFileVersions,
+      activeFileVersionsStatus,
+      activeFileVersionsError,
       fileFilter: ui.fileFilter,
       overviewCards,
       architectureClusters,
@@ -562,11 +696,15 @@ export function useReviewWorkspace(): {
       publishError: ui.publishError,
       standardsCounts,
       isPublishingReady: ui.activeCommitId !== null,
+      aiAnalysisStatus: ui.aiAnalysisStatus,
+      aiSequenceStatus: ui.aiSequenceStatus,
+      aiSequenceError: ui.aiSequenceError,
     },
     actions: {
       reloadReviewWorkspace,
       selectFile,
       setDiffOrientation,
+      setDiffViewMode,
       setFilterQuery,
       toggleFilterStatus,
       setOnlyCommented,
@@ -574,7 +712,10 @@ export function useReviewWorkspace(): {
       setThreadStatusFilter,
       createThread,
       askAgent,
+      deleteComment,
       publishReview,
+      refreshAiAnalysis,
+      retrySequenceGeneration,
     },
   };
 }

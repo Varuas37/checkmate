@@ -39,13 +39,22 @@ export function createInitialReviewUiState(): ReviewUiState {
     activeCommitId: null,
     activeFileId: null,
     diffOrientation: "split",
+    diffViewMode: "changes",
     fileFilter: createDefaultFileFilter(),
     askAgentDraftByThreadId: {},
+    fileVersionsByFileId: {},
+    fileVersionsLoadStatusByFileId: {},
+    fileVersionsErrorByFileId: {},
     repositoryCommits: [],
     publishStatus: "idle",
     lastPublishPackage: null,
     publishResult: null,
     publishError: null,
+    aiAnalysisStatus: "idle",
+    aiAnalysis: null,
+    aiAnalysisError: null,
+    aiSequenceStatus: "idle",
+    aiSequenceError: null,
   };
 }
 

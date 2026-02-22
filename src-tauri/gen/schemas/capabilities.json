@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default minimal desktop capability set.","local":true,"windows":["main"],"permissions":["core:default","dialog:default"]}}
+{"default":{"identifier":"default","description":"Default minimal desktop capability set.","local":true,"windows":["main","project-*"],"permissions":["core:default","dialog:default","core:webview:allow-create-webview-window","core:window:allow-create"]}}

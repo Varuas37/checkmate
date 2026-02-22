@@ -3,6 +3,7 @@ import type {
   PublishReviewResult,
   ReviewPublisher,
 } from "../../domain/review/index.ts";
+import { readApiKeyFromStorage } from "../../shared/index.ts";
 
 interface ClaudeSdkClient {
   readonly messages: {
@@ -20,7 +21,7 @@ interface ClaudeSdkClient {
 
 type ClaudeSdkClientFactory = (apiKey: string) => Promise<ClaudeSdkClient>;
 
-const DEFAULT_CLAUDE_MODEL = "claude-3-5-sonnet-latest";
+const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6";
 const DEFAULT_MAX_OUTPUT_TOKENS = 900;
 const DEFAULT_SYSTEM_PROMPT =
   "You are assisting with publishing structured code-review feedback for downstream agent actions.";
@@ -119,6 +120,15 @@ function extractPublicationId(response: unknown, fallbackId: string): string {
   return trimmedId.length > 0 ? trimmedId : fallbackId;
 }
 
+function isMissingClaudeSdkError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return message.includes("@anthropic-ai/sdk") || message.includes("anthropic constructor");
+}
+
 async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
   let sdkModule: unknown;
 
@@ -138,8 +148,12 @@ async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
 
   const ClientConstructor = candidate as new (options: {
     readonly apiKey: string;
+    readonly dangerouslyAllowBrowser?: boolean;
   }) => ClaudeSdkClient;
-  const client = new ClientConstructor({ apiKey });
+  const client = new ClientConstructor({
+    apiKey,
+    dangerouslyAllowBrowser: true,
+  });
 
   if (!client.messages || typeof client.messages.create !== "function") {
     throw new Error("Claude SDK client is missing messages.create().");
@@ -169,7 +183,7 @@ export interface ClaudeSdkReviewPublisherOptions {
 }
 
 export class ClaudeSdkReviewPublisher implements ReviewPublisher {
-  readonly #apiKey: string | null;
+  readonly #apiKeyOverride: string | null;
   readonly #model: string;
   readonly #maxOutputTokens: number;
   readonly #nowIso: () => string;
@@ -177,7 +191,7 @@ export class ClaudeSdkReviewPublisher implements ReviewPublisher {
   readonly #createClient: ClaudeSdkClientFactory;
 
   constructor(options: ClaudeSdkReviewPublisherOptions = {}) {
-    this.#apiKey = trimToNull(options.apiKey) ?? resolveDefaultApiKey();
+    this.#apiKeyOverride = trimToNull(options.apiKey);
     this.#model = trimToNull(options.model) ?? DEFAULT_CLAUDE_MODEL;
     this.#maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
     this.#nowIso = options.nowIso ?? (() => new Date().toISOString());
@@ -185,10 +199,15 @@ export class ClaudeSdkReviewPublisher implements ReviewPublisher {
     this.#createClient = options.createClient ?? createClaudeSdkClient;
   }
 
+  #resolveApiKey(): string | null {
+    return this.#apiKeyOverride ?? readApiKeyFromStorage() ?? resolveDefaultApiKey();
+  }
+
   async publishReview(input: PublishReviewRequest): Promise<PublishReviewResult> {
     const prompt = this.#createPrompt(input);
+    const resolvedApiKey = this.#resolveApiKey();
 
-    if (!this.#apiKey) {
+    if (!resolvedApiKey) {
       try {
         const cliResponse = await runClaudePromptViaTauri(prompt);
         const cliSummary = truncateSummary(cliResponse.trim());
@@ -211,32 +230,60 @@ export class ClaudeSdkReviewPublisher implements ReviewPublisher {
       }
     }
 
-    const client = await this.#createClient(this.#apiKey);
-    const response = await client.messages.create({
-      model: this.#model,
-      max_tokens: this.#maxOutputTokens,
-      system: DEFAULT_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-    });
+    try {
+      const client = await this.#createClient(resolvedApiKey);
+      const response = await client.messages.create({
+        model: this.#model,
+        max_tokens: this.#maxOutputTokens,
+        system: DEFAULT_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+      });
 
-    const summaryText = extractSummaryFromResponse(response);
-    const summary =
-      summaryText.length > 0
-        ? truncateSummary(summaryText)
-        : `Review package for ${input.commitSha} accepted by Claude adapter.`;
+      const summaryText = extractSummaryFromResponse(response);
+      const summary =
+        summaryText.length > 0
+          ? truncateSummary(summaryText)
+          : `Review package for ${input.commitSha} accepted by Claude adapter.`;
 
-    return {
-      provider: "claude-sdk",
-      requestId: input.requestId,
-      publicationId: extractPublicationId(response, input.requestId),
-      publishedAtIso: this.#nowIso(),
-      summary,
-    };
+      return {
+        provider: "claude-sdk",
+        requestId: input.requestId,
+        publicationId: extractPublicationId(response, input.requestId),
+        publishedAtIso: this.#nowIso(),
+        summary,
+      };
+    } catch (error) {
+      if (!isTauriRuntime() || !isMissingClaudeSdkError(error)) {
+        throw error;
+      }
+
+      try {
+        const cliResponse = await runClaudePromptViaTauri(prompt);
+        const cliSummary = truncateSummary(cliResponse.trim());
+
+        return {
+          provider: "claude-sdk",
+          requestId: input.requestId,
+          publicationId: `claude-cli-${input.requestId}`,
+          publishedAtIso: this.#nowIso(),
+          summary:
+            cliSummary.length > 0
+              ? cliSummary
+              : `Review package for ${input.commitSha} accepted by Claude CLI adapter.`,
+        };
+      } catch (cliError) {
+        const sdkMessage = error instanceof Error ? error.message : "Claude SDK client setup failed.";
+        const cliMessage = cliError instanceof Error ? cliError.message : "Claude CLI fallback failed.";
+        throw new Error(
+          `Claude publish failed in SDK path (${sdkMessage}) and CLI fallback (${cliMessage}).`,
+        );
+      }
+    }
   }
 }
 
