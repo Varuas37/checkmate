@@ -217,6 +217,11 @@ Use layered controls:
 3. CI: enforce tests and policy checks.
 4. Merge controls: branch protection + merge queue [R12][R13].
 
+Repository setup:
+1. Run `yarn hooks:install` after cloning.
+2. Verify with `yarn hooks:path` (expected output: `.githooks`).
+3. Emergency local bypass only: `CM_BYPASS_COMMIT_MSG_HOOK=1 git commit ...` or `git commit --no-verify`.
+
 ## 15) Future-Ready Direction
 1. Keep git as canonical DAG/history.
 2. Add richer metadata and workflow orchestration in `.cm`.

@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MESSAGE_FILE="${1:-}"
+
+if [[ -z "$MESSAGE_FILE" || ! -f "$MESSAGE_FILE" ]]; then
+  exit 0
+fi
+
+if [[ "${CM_BYPASS_COMMIT_MSG_HOOK:-0}" == "1" ]]; then
+  exit 0
+fi
+
+FIRST_LINE="$(sed -n '1p' "$MESSAGE_FILE" | tr -d '\r')"
+
+if [[ -z "${FIRST_LINE// }" ]]; then
+  echo "commit-msg: first line (subject) is required." >&2
+  exit 1
+fi
+
+# Allow git-generated commit flows.
+if [[ "$FIRST_LINE" =~ ^(Merge|Revert|fixup!|squash!) ]]; then
+  exit 0
+fi
+
+HEADER_PATTERN='^(feat|fix|refactor|perf|test|docs|chore)(\([a-zA-Z0-9._/-]+\))?(!)?: .+'
+
+if ! [[ "$FIRST_LINE" =~ $HEADER_PATTERN ]]; then
+  cat >&2 <<'EOF'
+commit-msg: invalid subject format.
+Expected: <type>(<scope>): <imperative subject>
+Allowed types: feat|fix|refactor|perf|test|docs|chore
+Example: feat(pre-commit): add scope-aware commit planner
+EOF
+  exit 1
+fi
+
+COMMIT_TYPE="${BASH_REMATCH[1]}"
+
+if (( ${#FIRST_LINE} > 72 )); then
+  echo "commit-msg: subject should be <= 72 characters." >&2
+  exit 1
+fi
+
+has_trailer() {
+  local trailer_name="$1"
+  grep -Eq "^${trailer_name}:[[:space:]]*.+$" "$MESSAGE_FILE"
+}
+
+has_section_with_bullet() {
+  local section_name="$1"
+  awk -v section="$section_name" '
+    BEGIN { in_section = 0; has_bullet = 0 }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+
+      if (line ~ ("^" section ":[[:space:]]*$") || line ~ ("^" section ":[[:space:]].+$")) {
+        in_section = 1
+        next
+      }
+
+      if (in_section && line ~ "^[A-Za-z][A-Za-z -]*:[[:space:]]*$") {
+        in_section = 0
+      }
+
+      if (in_section && line ~ "^- .+$") {
+        has_bullet = 1
+      }
+    }
+    END { exit(has_bullet ? 0 : 1) }
+  ' "$MESSAGE_FILE"
+}
+
+if ! has_section_with_bullet "Why"; then
+  echo "commit-msg: include a 'Why:' section followed by at least one '- ' bullet." >&2
+  exit 1
+fi
+
+if ! has_section_with_bullet "What"; then
+  echo "commit-msg: include a 'What:' section followed by at least one '- ' bullet." >&2
+  exit 1
+fi
+
+if ! has_section_with_bullet "Validation"; then
+  echo "commit-msg: include a 'Validation:' section followed by at least one '- ' bullet." >&2
+  exit 1
+fi
+
+if ! has_trailer "Risk"; then
+  echo "commit-msg: include trailer 'Risk: <low|medium|high>'." >&2
+  exit 1
+fi
+
+HAS_SCOPE_TRAILER=0
+HAS_RUN_TRAILER=0
+
+if has_trailer "Scope-Id"; then
+  HAS_SCOPE_TRAILER=1
+fi
+
+if has_trailer "Run-Ids"; then
+  HAS_RUN_TRAILER=1
+fi
+
+if [[ "$HAS_SCOPE_TRAILER" -ne "$HAS_RUN_TRAILER" ]]; then
+  echo "commit-msg: Scope-Id and Run-Ids must either both be present or both be absent." >&2
+  exit 1
+fi
+
+REQUIRE_AGENTIC_TRAILERS="${CM_REQUIRE_SCOPE_TRAILERS:-0}"
+if [[ "$COMMIT_TYPE" =~ ^(feat|fix|refactor|perf)$ ]]; then
+  REQUIRE_AGENTIC_TRAILERS=1
+fi
+
+if [[ "$REQUIRE_AGENTIC_TRAILERS" == "1" ]]; then
+  if [[ "$HAS_SCOPE_TRAILER" -ne 1 || "$HAS_RUN_TRAILER" -ne 1 ]]; then
+    cat >&2 <<'EOF'
+commit-msg: this commit type requires agentic trailers:
+- Scope-Id: <scope_id>
+- Run-Ids: <run_id_1>,<run_id_2>
+Use docs/chore/test for non-agentic changes or set CM_REQUIRE_SCOPE_TRAILERS=0 only for exceptional local cases.
+EOF
+    exit 1
+  fi
+fi
+
+if ! grep -Eq '^Risk:[[:space:]]*(low|medium|high)$' "$MESSAGE_FILE"; then
+  echo "commit-msg: Risk trailer must be one of low|medium|high." >&2
+  exit 1
+fi
+
+exit 0

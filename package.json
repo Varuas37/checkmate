@@ -12,7 +12,9 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "typecheck": "tsc -b",
-    "test": "node --test --import tsx \"src/**/*.test.ts\""
+    "test": "node --test --import tsx \"src/**/*.test.ts\"",
+    "hooks:install": "bash scripts/install-git-hooks.sh",
+    "hooks:path": "git config --get core.hooksPath"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
