@@ -80,3 +80,7 @@ export {
   type CmCliInstallResult,
   type CmCliStatus,
 } from "./desktopIntegration.ts";
+export {
+  testAnthropicApiConnection,
+  testCliAgentConnection,
+} from "./integrationConnection.ts";

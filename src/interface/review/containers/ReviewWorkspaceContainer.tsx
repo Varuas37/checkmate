@@ -31,6 +31,8 @@ import {
   recordRecentProjectInStorage,
   projectLabelFromPath,
   selectRepositoryFolder,
+  testAnthropicApiConnection,
+  testCliAgentConnection,
   writeAiAnalysisConfigToStorage,
   writeApiKeyToStorage,
   writeAppSettingsFile,
@@ -2143,8 +2145,8 @@ export function ReviewWorkspaceContainer() {
             }
             setStoredApiKey(trimmed);
             void writeAppSettingsFile({ apiKey: trimmed });
-            setShowSettings(false);
           }}
+          onTestApiConnection={testAnthropicApiConnection}
           onSaveMaxChurn={(n) => {
             writeAiAnalysisConfigToStorage({ maxChurnThreshold: n });
             setMaxChurnThreshold(n);
@@ -2159,6 +2161,7 @@ export function ReviewWorkspaceContainer() {
             setCliAgentsSettings(settings);
             void writeAppSettingsFile({ cliAgents: settings });
           }}
+          onTestCliConnection={testCliAgentConnection}
           onClose={() => setShowSettings(false)}
         />
       </>
@@ -2214,8 +2217,8 @@ export function ReviewWorkspaceContainer() {
           }
           setStoredApiKey(trimmed);
           void writeAppSettingsFile({ apiKey: trimmed });
-          setShowSettings(false);
         }}
+        onTestApiConnection={testAnthropicApiConnection}
         onSaveMaxChurn={(n) => {
           writeAiAnalysisConfigToStorage({ maxChurnThreshold: n });
           setMaxChurnThreshold(n);
@@ -2230,6 +2233,7 @@ export function ReviewWorkspaceContainer() {
           setCliAgentsSettings(settings);
           void writeAppSettingsFile({ cliAgents: settings });
         }}
+        onTestCliConnection={testCliAgentConnection}
         onClose={() => setShowSettings(false)}
       />
       <CommandPalette

@@ -24,9 +24,11 @@ export interface SettingsPanelProps {
   readonly onInstallCmCli: () => Promise<CmCliInstallResult>;
   readonly onRefreshCmCliStatus: () => Promise<void>;
   readonly onSave: (apiKey: string) => void;
+  readonly onTestApiConnection: (apiKey: string) => Promise<string>;
   readonly onSaveMaxChurn: (maxChurn: number) => void;
   readonly onSaveProjectStandardsPath: (standardsPath: string) => void;
   readonly onSaveCliAgents: (settings: CliAgentsSettings) => void;
+  readonly onTestCliConnection: (agent: CliAgentConfig) => Promise<string>;
   readonly onClose: () => void;
 }
 
@@ -88,6 +90,49 @@ interface AgentEditDraft {
   readonly promptArgs: string;
 }
 
+type ConnectionStatus = "idle" | "testing" | "connected" | "failed";
+
+function connectionStatusLabel(status: ConnectionStatus): string {
+  if (status === "connected") {
+    return "Connected";
+  }
+
+  if (status === "failed") {
+    return "Connection failed";
+  }
+
+  if (status === "testing") {
+    return "Testing";
+  }
+
+  return "Not tested";
+}
+
+function connectionStatusDotClass(status: ConnectionStatus): string {
+  if (status === "connected") {
+    return "bg-emerald-500";
+  }
+
+  if (status === "failed") {
+    return "bg-danger";
+  }
+
+  if (status === "testing") {
+    return "animate-pulse bg-accent";
+  }
+
+  return "bg-muted";
+}
+
+function toConnectionSummary(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 120) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, 117)}...`;
+}
+
 export function SettingsPanel({
   open,
   initialApiKey,
@@ -100,9 +145,11 @@ export function SettingsPanel({
   onInstallCmCli,
   onRefreshCmCliStatus,
   onSave,
+  onTestApiConnection,
   onSaveMaxChurn,
   onSaveProjectStandardsPath,
   onSaveCliAgents,
+  onTestCliConnection,
   onClose,
 }: SettingsPanelProps) {
   const [draft, setDraft] = useState(initialApiKey);
@@ -117,6 +164,11 @@ export function SettingsPanel({
   const [draftCliAgents, setDraftCliAgents] = useState<CliAgentsSettings>(initialCliAgents);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [agentEditDraft, setAgentEditDraft] = useState<AgentEditDraft | null>(null);
+  const [apiConnectionStatus, setApiConnectionStatus] = useState<ConnectionStatus>("idle");
+  const [apiConnectionMessage, setApiConnectionMessage] = useState<string | null>(null);
+  const [cliConnectionStatus, setCliConnectionStatus] = useState<ConnectionStatus>("idle");
+  const [cliConnectionMessage, setCliConnectionMessage] = useState<string | null>(null);
+  const [testedCliAgentId, setTestedCliAgentId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -134,6 +186,11 @@ export function SettingsPanel({
     setDraftCliAgents(initialCliAgents);
     setEditingAgentId(null);
     setAgentEditDraft(null);
+    setApiConnectionStatus("idle");
+    setApiConnectionMessage(null);
+    setCliConnectionStatus("idle");
+    setCliConnectionMessage(null);
+    setTestedCliAgentId(null);
     setActiveSection("projects");
     // Only re-initialise when the modal opens, not on every prop change while open.
     // Local state is authoritative while open; changes propagate up via callbacks.
@@ -169,17 +226,94 @@ export function SettingsPanel({
     }
   };
 
+  const activeCliAgent = useMemo(() => {
+    if (!draftCliAgents.activeAgentId) {
+      return null;
+    }
+
+    return draftCliAgents.agents.find((agent) => agent.id === draftCliAgents.activeAgentId) ?? null;
+  }, [draftCliAgents]);
+
+  const runApiConnectionTest = async (apiKeyOverride?: string) => {
+    const apiKeyToTest = (apiKeyOverride ?? draft).trim();
+    if (apiKeyToTest.length === 0) {
+      setApiConnectionStatus("failed");
+      setApiConnectionMessage("Add an API key before running a connection test.");
+      return;
+    }
+
+    setApiConnectionStatus("testing");
+    setApiConnectionMessage(null);
+
+    try {
+      const response = await onTestApiConnection(apiKeyToTest);
+      const summary = toConnectionSummary(response);
+      setApiConnectionStatus("connected");
+      setApiConnectionMessage(
+        summary.length > 0 ? `Connected. Provider response: ${summary}` : "Connected.",
+      );
+    } catch (error) {
+      setApiConnectionStatus("failed");
+      setApiConnectionMessage(getErrorMessage(error));
+    }
+  };
+
+  const runCliConnectionTest = async (agentOverride?: CliAgentConfig | null) => {
+    const agent = agentOverride ?? activeCliAgent;
+    if (!agent) {
+      setCliConnectionStatus("failed");
+      setCliConnectionMessage("Select an active CLI agent before running a connection test.");
+      setTestedCliAgentId(null);
+      return;
+    }
+
+    setCliConnectionStatus("testing");
+    setCliConnectionMessage(null);
+    setTestedCliAgentId(agent.id);
+
+    try {
+      const response = await onTestCliConnection(agent);
+      const summary = toConnectionSummary(response);
+      setCliConnectionStatus("connected");
+      setCliConnectionMessage(
+        summary.length > 0
+          ? `Connected via ${agent.name}. Agent response: ${summary}`
+          : `Connected via ${agent.name}.`,
+      );
+    } catch (error) {
+      setCliConnectionStatus("failed");
+      setCliConnectionMessage(getErrorMessage(error));
+    }
+  };
+
   const saveApiKeyDraft = () => {
     const normalized = draft.trim();
     onSave(normalized);
     setDraft(normalized);
     setIsApiKeyEditing(false);
+
+    if (normalized.length > 0) {
+      void runApiConnectionTest(normalized);
+    } else {
+      setApiConnectionStatus("idle");
+      setApiConnectionMessage(null);
+    }
   };
 
   const setActiveCliAgent = (agentId: string) => {
     const next: CliAgentsSettings = { ...draftCliAgents, activeAgentId: agentId };
     setDraftCliAgents(next);
     onSaveCliAgents(next);
+
+    const selectedAgent = next.agents.find((agent) => agent.id === agentId) ?? null;
+    if (selectedAgent) {
+      void runCliConnectionTest(selectedAgent);
+      return;
+    }
+
+    setCliConnectionStatus("idle");
+    setCliConnectionMessage(null);
+    setTestedCliAgentId(null);
   };
 
   const togglePreferCli = () => {
@@ -222,15 +356,23 @@ export function SettingsPanel({
     const next: CliAgentsSettings = { ...draftCliAgents, agents: updatedAgents };
     setDraftCliAgents(next);
     onSaveCliAgents(next);
+
+    const updatedActiveAgent = next.agents.find((agent) => agent.id === next.activeAgentId) ?? null;
+    if (updatedActiveAgent && updatedActiveAgent.id === editingAgentId) {
+      void runCliConnectionTest(updatedActiveAgent);
+    } else if (!updatedActiveAgent) {
+      setCliConnectionStatus("idle");
+      setCliConnectionMessage(null);
+      setTestedCliAgentId(null);
+    }
+
     setEditingAgentId(null);
     setAgentEditDraft(null);
   };
 
   const currentBackendLabel = useMemo(() => {
     const hasApiKey = draft.trim().length > 0;
-    const activeAgent = draftCliAgents.activeAgentId
-      ? draftCliAgents.agents.find((a) => a.id === draftCliAgents.activeAgentId)
-      : null;
+    const activeAgent = activeCliAgent;
 
     if (draftCliAgents.preferCliOverApi && activeAgent) {
       return `${activeAgent.name} CLI (preferred over API)`;
@@ -248,7 +390,12 @@ export function SettingsPanel({
     }
 
     return "Claude CLI hardcoded fallback (no API key, no agent configured)";
-  }, [draft, draftCliAgents]);
+  }, [activeCliAgent, draft, draftCliAgents.preferCliOverApi]);
+
+  const activeCliConnectionStatus: ConnectionStatus =
+    activeCliAgent && testedCliAgentId === activeCliAgent.id ? cliConnectionStatus : "idle";
+  const activeCliConnectionMessage =
+    activeCliAgent && testedCliAgentId === activeCliAgent.id ? cliConnectionMessage : null;
 
   const hasActiveRepositoryPath = activeRepositoryPath.trim().length > 0;
 
@@ -575,6 +722,8 @@ export function SettingsPanel({
                         setDraft("");
                         setIsApiKeyVisible(false);
                         onSave("");
+                        setApiConnectionStatus("idle");
+                        setApiConnectionMessage(null);
                       }}
                       aria-label="Delete API key"
                       title="Delete API key"
@@ -603,6 +752,32 @@ export function SettingsPanel({
                 <p className="text-xs text-muted">
                   Stored in localStorage. Click the key to toggle visibility.
                 </p>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <div className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-canvas px-2 py-1">
+                    <span
+                      className={cn("h-2.5 w-2.5 rounded-full", connectionStatusDotClass(apiConnectionStatus))}
+                      aria-hidden="true"
+                    />
+                    <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-text">
+                      {connectionStatusLabel(apiConnectionStatus)}
+                    </span>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={apiConnectionStatus === "testing" || draft.trim().length === 0}
+                    onClick={() => {
+                      void runApiConnectionTest();
+                    }}
+                  >
+                    {apiConnectionStatus === "testing" ? "Testing..." : "Test Connection"}
+                  </Button>
+                </div>
+                {apiConnectionMessage && (
+                  <p className={cn("text-xs", apiConnectionStatus === "failed" ? "text-danger" : "text-muted")}>
+                    {apiConnectionMessage}
+                  </p>
+                )}
               </div>
             </section>
           )}
@@ -621,6 +796,45 @@ export function SettingsPanel({
                   Current backend
                 </p>
                 <p className="font-mono text-xs text-text">{currentBackendLabel}</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-canvas px-2 py-1">
+                    <span
+                      className={cn(
+                        "h-2.5 w-2.5 rounded-full",
+                        connectionStatusDotClass(activeCliConnectionStatus),
+                      )}
+                      aria-hidden="true"
+                    />
+                    <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-text">
+                      {connectionStatusLabel(activeCliConnectionStatus)}
+                    </span>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!activeCliAgent || activeCliConnectionStatus === "testing"}
+                    onClick={() => {
+                      void runCliConnectionTest();
+                    }}
+                  >
+                    {activeCliConnectionStatus === "testing" ? "Testing..." : "Test Connection"}
+                  </Button>
+                </div>
+                {!activeCliAgent && (
+                  <p className="mt-1 text-xs text-muted">
+                    Select an active CLI agent before running a connection test.
+                  </p>
+                )}
+                {activeCliConnectionMessage && (
+                  <p
+                    className={cn(
+                      "mt-1 text-xs",
+                      activeCliConnectionStatus === "failed" ? "text-danger" : "text-muted",
+                    )}
+                  >
+                    {activeCliConnectionMessage}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-1">
@@ -716,15 +930,15 @@ export function SettingsPanel({
                                 Set active
                               </Button>
                             )}
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 px-2 font-mono text-[11px] uppercase tracking-[0.06em]"
-                                onClick={() => {
-                                  startEditingAgent(agent);
-                                }}
-                              >
-                                Edit
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2 font-mono text-[11px] uppercase tracking-[0.06em]"
+                              onClick={() => {
+                                startEditingAgent(agent);
+                              }}
+                            >
+                              Edit
                             </Button>
                           </div>
                         </div>
