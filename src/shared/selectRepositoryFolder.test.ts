@@ -7,6 +7,7 @@ test("selectRepositoryFolder returns Tauri-selected path before web fallback", a
   let webFallbackCalls = 0;
 
   const selected = await selectRepositoryFolder({
+    isTauriRuntime: () => true,
     selectWithTauriDialog: async () => "/Users/reviewer/repo",
     selectWithWebFallback: async () => {
       webFallbackCalls += 1;
@@ -18,10 +19,11 @@ test("selectRepositoryFolder returns Tauri-selected path before web fallback", a
   assert.equal(webFallbackCalls, 0);
 });
 
-test("selectRepositoryFolder uses web fallback when Tauri returns null", async () => {
+test("selectRepositoryFolder does not use web fallback when Tauri returns null", async () => {
   let webFallbackCalls = 0;
 
   const selected = await selectRepositoryFolder({
+    isTauriRuntime: () => true,
     selectWithTauriDialog: async () => null,
     selectWithWebFallback: async () => {
       webFallbackCalls += 1;
@@ -29,17 +31,34 @@ test("selectRepositoryFolder uses web fallback when Tauri returns null", async (
     },
   });
 
-  assert.equal(selected, "/fallback/repo");
-  assert.equal(webFallbackCalls, 1);
+  assert.equal(selected, null);
+  assert.equal(webFallbackCalls, 0);
 });
 
-test("selectRepositoryFolder uses web fallback when Tauri selection throws", async () => {
+test("selectRepositoryFolder does not use web fallback when Tauri selection throws", async () => {
   let webFallbackCalls = 0;
 
   const selected = await selectRepositoryFolder({
+    isTauriRuntime: () => true,
     selectWithTauriDialog: async () => {
       throw new Error("dialog unavailable");
     },
+    selectWithWebFallback: async () => {
+      webFallbackCalls += 1;
+      return "/fallback/repo";
+    },
+  });
+
+  assert.equal(selected, null);
+  assert.equal(webFallbackCalls, 0);
+});
+
+test("selectRepositoryFolder uses web fallback outside Tauri runtime", async () => {
+  let webFallbackCalls = 0;
+
+  const selected = await selectRepositoryFolder({
+    isTauriRuntime: () => false,
+    selectWithTauriDialog: async () => "/Users/reviewer/repo",
     selectWithWebFallback: async () => {
       webFallbackCalls += 1;
       return "/fallback/repo";

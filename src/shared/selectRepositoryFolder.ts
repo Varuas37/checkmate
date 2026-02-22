@@ -13,6 +13,22 @@ function normalizeSelectedPath(value: string | null | undefined): string | null 
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function isTauriRuntime(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  if ("__TAURI_INTERNALS__" in window || "__TAURI__" in window) {
+    return true;
+  }
+
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  return /tauri/i.test(navigator.userAgent);
+}
+
 function isAbortError(error: unknown): boolean {
   if (!error || typeof error !== "object") {
     return false;
@@ -23,7 +39,7 @@ function isAbortError(error: unknown): boolean {
 }
 
 async function selectFolderWithTauriDialog(): Promise<string | null> {
-  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+  if (!isTauriRuntime()) {
     return null;
   }
 
@@ -72,6 +88,7 @@ async function selectFolderWithWebFallback(): Promise<string | null> {
 }
 
 export interface SelectRepositoryFolderDependencies {
+  readonly isTauriRuntime: () => boolean;
   readonly selectWithTauriDialog: () => Promise<string | null>;
   readonly selectWithWebFallback: () => Promise<string | null>;
 }
@@ -79,18 +96,19 @@ export interface SelectRepositoryFolderDependencies {
 export async function selectRepositoryFolder(
   dependencies: Partial<SelectRepositoryFolderDependencies> = {},
 ): Promise<string | null> {
+  const tauriRuntime = dependencies.isTauriRuntime ?? isTauriRuntime;
   const selectWithTauriDialog =
     dependencies.selectWithTauriDialog ?? selectFolderWithTauriDialog;
   const selectWithWebFallback =
     dependencies.selectWithWebFallback ?? selectFolderWithWebFallback;
 
-  try {
-    const tauriSelection = await selectWithTauriDialog();
-    if (tauriSelection) {
-      return tauriSelection;
+  if (tauriRuntime()) {
+    try {
+      return await selectWithTauriDialog();
+    } catch {
+      // If Tauri dialog fails, avoid browser prompt in desktop runtime.
+      return null;
     }
-  } catch {
-    // The helper intentionally falls back to browser mechanisms if Tauri dialog is unavailable.
   }
 
   return selectWithWebFallback();

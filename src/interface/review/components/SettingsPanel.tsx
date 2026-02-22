@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button, Input, Modal, ThemeSwitcher } from "../../../design-system/index.ts";
 import { cn } from "../../../shared/index.ts";
-import type { CliAgentConfig, CliAgentsSettings, RecentProjectEntry } from "../../../shared/index.ts";
+import type {
+  CliAgentConfig,
+  CliAgentsSettings,
+  CmCliInstallResult,
+  CmCliStatus,
+  RecentProjectEntry,
+} from "../../../shared/index.ts";
 
 export interface SettingsPanelProps {
   readonly open: boolean;
@@ -12,10 +18,13 @@ export interface SettingsPanelProps {
   readonly initialCliAgents: CliAgentsSettings;
   readonly activeRepositoryPath: string;
   readonly recentProjects: readonly RecentProjectEntry[];
+  readonly cmCliStatus: CmCliStatus | null;
   readonly onOpenProjectInCurrentWindow: () => void | Promise<void>;
   readonly onOpenProjectInNewWindow: () => void | Promise<void>;
   readonly onOpenRecentProjectInCurrentWindow: (repositoryPath: string) => void | Promise<void>;
   readonly onOpenRecentProjectInNewWindow: (repositoryPath: string) => void | Promise<void>;
+  readonly onInstallCmCli: () => Promise<CmCliInstallResult>;
+  readonly onRefreshCmCliStatus: () => Promise<void>;
   readonly onSave: (apiKey: string) => void;
   readonly onSaveMaxChurn: (maxChurn: number) => void;
   readonly onSaveProjectStandardsPath: (standardsPath: string) => void;
@@ -35,7 +44,7 @@ const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   {
     id: "projects",
     label: "Projects",
-    detail: "Open and switch repositories",
+    detail: "Repositories and cm command",
   },
   {
     id: "appearance",
@@ -89,10 +98,13 @@ export function SettingsPanel({
   initialCliAgents,
   activeRepositoryPath,
   recentProjects,
+  cmCliStatus,
   onOpenProjectInCurrentWindow,
   onOpenProjectInNewWindow,
   onOpenRecentProjectInCurrentWindow,
   onOpenRecentProjectInNewWindow,
+  onInstallCmCli,
+  onRefreshCmCliStatus,
   onSave,
   onSaveMaxChurn,
   onSaveProjectStandardsPath,
@@ -106,6 +118,9 @@ export function SettingsPanel({
   const [projectStandardsPathDraft, setProjectStandardsPathDraft] = useState(initialProjectStandardsPath);
   const [isProjectActionRunning, setIsProjectActionRunning] = useState(false);
   const [projectActionError, setProjectActionError] = useState<string | null>(null);
+  const [cmCliActionError, setCmCliActionError] = useState<string | null>(null);
+  const [cmCliActionMessage, setCmCliActionMessage] = useState<string | null>(null);
+  const [isCmCliActionRunning, setIsCmCliActionRunning] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("projects");
   const [draftCliAgents, setDraftCliAgents] = useState<CliAgentsSettings>(initialCliAgents);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
@@ -121,16 +136,23 @@ export function SettingsPanel({
     setIsApiKeyEditing(false);
     setChurnDraft(String(initialMaxChurn));
     setProjectStandardsPathDraft(initialProjectStandardsPath);
+    setIsProjectActionRunning(false);
+    setProjectActionError(null);
+    setCmCliActionError(null);
+    setCmCliActionMessage(null);
+    setIsCmCliActionRunning(false);
     setDraftCliAgents(initialCliAgents);
     setEditingAgentId(null);
     setAgentEditDraft(null);
-    setProjectActionError(null);
     setActiveSection("projects");
-  }, [initialApiKey, initialCliAgents, initialMaxChurn, initialProjectStandardsPath, open]);
+    // Only re-initialise when the modal opens, not on every prop change while open.
+    // Local state is authoritative while open; changes propagate up via callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const getErrorMessage = (error: unknown): string => {
     if (!error) {
-      return "Failed to open project.";
+      return "Action failed.";
     }
 
     if (error instanceof Error) {
@@ -153,6 +175,23 @@ export function SettingsPanel({
       setProjectActionError(getErrorMessage(error));
     } finally {
       setIsProjectActionRunning(false);
+    }
+  };
+
+  const runCmCliAction = async (action: () => Promise<void>) => {
+    if (isCmCliActionRunning) {
+      return;
+    }
+
+    setCmCliActionError(null);
+    setCmCliActionMessage(null);
+    setIsCmCliActionRunning(true);
+    try {
+      await action();
+    } catch (error) {
+      setCmCliActionError(getErrorMessage(error));
+    } finally {
+      setIsCmCliActionRunning(false);
     }
   };
 
@@ -238,8 +277,8 @@ export function SettingsPanel({
   }, [draft, draftCliAgents]);
 
   return (
-    <Modal open={open} onClose={onClose} title="Settings" panelClassName="max-w-2xl">
-      <div className="grid min-h-[32rem] gap-0 md:grid-cols-[15rem_minmax(0,1fr)]">
+    <Modal open={open} onClose={onClose} title="Settings" panelClassName="max-w-4xl">
+      <div className="grid min-h-[32rem] gap-0 md:grid-cols-[13rem_minmax(0,1fr)]">
         <aside className="border-b border-border/60 pb-2 md:border-b-0 md:border-r md:pb-0 md:pr-3">
           <p className="px-1 pb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-muted">Preferences</p>
           <nav className="space-y-1">
@@ -270,45 +309,54 @@ export function SettingsPanel({
               {projectActionError}
             </p>
           )}
+          {cmCliActionError && (
+            <p className="rounded-sm border border-danger/45 bg-danger/10 px-2 py-1.5 text-xs text-danger">
+              {cmCliActionError}
+            </p>
+          )}
+          {cmCliActionMessage && (
+            <p className="rounded-sm border border-accent/40 bg-accent/10 px-2 py-1.5 text-xs text-accent">
+              {cmCliActionMessage}
+            </p>
+          )}
 
           {activeSection === "projects" && (
             <section className="space-y-3">
               <header>
                 <h3 className="text-base font-semibold text-text">Projects</h3>
-                <p className="text-sm text-muted">Open a project in this window or in a new review window.</p>
+                <p className="text-sm text-muted">Open repositories and configure the `cm` shell command.</p>
               </header>
 
-              <div className="border-y border-border/60 py-2">
+              <div className="space-y-2 border-y border-border/60 py-3">
                 <p className="text-[11px] uppercase tracking-[0.1em] text-muted">Current Project</p>
-                <p className="truncate pt-1 font-mono text-xs text-text">
-                  {activeRepositoryPath.length > 0 ? activeRepositoryPath : "No project loaded"}
+                <p className="truncate font-mono text-xs text-text">
+                  {activeRepositoryPath.trim().length > 0 ? activeRepositoryPath : "No project loaded"}
                 </p>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={isProjectActionRunning}
+                    onClick={() => {
+                      void runProjectAction(onOpenProjectInCurrentWindow);
+                    }}
+                  >
+                    Open Project
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={isProjectActionRunning}
+                    onClick={() => {
+                      void runProjectAction(onOpenProjectInNewWindow);
+                    }}
+                  >
+                    Open New Project
+                  </Button>
+                </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={isProjectActionRunning}
-                  onClick={() => {
-                    void runProjectAction(onOpenProjectInCurrentWindow);
-                  }}
-                >
-                  Open Project
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={isProjectActionRunning}
-                  onClick={() => {
-                    void runProjectAction(onOpenProjectInNewWindow);
-                  }}
-                >
-                  Open New Project
-                </Button>
-              </div>
-
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 border-b border-border/60 pb-3">
                 <p className="text-[11px] uppercase tracking-[0.1em] text-muted">Recent Projects</p>
                 {recentProjects.length === 0 && (
                   <p className="rounded-sm border border-dashed border-border/70 px-2 py-2 text-sm text-muted">
@@ -347,6 +395,51 @@ export function SettingsPanel({
                     </Button>
                   </div>
                 ))}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-[11px] uppercase tracking-[0.1em] text-muted">Shell Command</p>
+                <p className="text-sm text-muted">
+                  Install a global <code className="font-mono text-xs">cm</code> command.
+                </p>
+                <p className="font-mono text-xs text-text">
+                  {cmCliStatus?.installed && cmCliStatus.installPath
+                    ? cmCliStatus.onPath
+                      ? `Installed: ${cmCliStatus.installPath}`
+                      : `Installed (not on PATH): ${cmCliStatus.installPath}`
+                    : "Not installed"}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={isCmCliActionRunning}
+                    onClick={() => {
+                      void runCmCliAction(async () => {
+                        const result = await onInstallCmCli();
+                        setCmCliActionMessage(result.message);
+                      });
+                    }}
+                  >
+                    {cmCliStatus?.installed ? "Reinstall cm in PATH" : "Install cm in PATH"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={isCmCliActionRunning}
+                    onClick={() => {
+                      void runCmCliAction(async () => {
+                        await onRefreshCmCliStatus();
+                      });
+                    }}
+                  >
+                    Refresh Status
+                  </Button>
+                </div>
+                <p className="text-xs text-muted">
+                  Usage: <code className="font-mono">cm .</code> opens HEAD,{" "}
+                  <code className="font-mono">cm . --draft</code> opens uncommitted draft changes.
+                </p>
               </div>
             </section>
           )}
@@ -657,10 +750,10 @@ export function SettingsPanel({
                           </div>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-start gap-2">
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
-                              <span className="whitespace-nowrap text-sm font-medium text-text">{agent.name}</span>
+                              <span className="text-sm font-medium text-text">{agent.name}</span>
                               {isActive && (
                                 <span className="rounded-sm border border-accent/40 bg-accent/12 px-1.5 py-0.5 font-mono text-[10px] tracking-wide text-accent">
                                   active
@@ -675,12 +768,12 @@ export function SettingsPanel({
                               {" <prompt>"}
                             </p>
                           </div>
-                          <div className="flex shrink-0 gap-1.5">
+                          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
                             {!isActive && (
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                className="h-7 px-2 text-xs"
+                                className="h-7 px-2 font-mono text-[11px] uppercase tracking-[0.06em]"
                                 onClick={() => {
                                   setActiveCliAgent(agent.id);
                                 }}
@@ -688,15 +781,15 @@ export function SettingsPanel({
                                 Set active
                               </Button>
                             )}
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 px-2 text-xs"
-                              onClick={() => {
-                                startEditingAgent(agent);
-                              }}
-                            >
-                              Edit
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 font-mono text-[11px] uppercase tracking-[0.06em]"
+                                onClick={() => {
+                                  startEditingAgent(agent);
+                                }}
+                              >
+                                Edit
                             </Button>
                           </div>
                         </div>

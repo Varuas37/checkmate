@@ -68,3 +68,10 @@ export {
   writeAppSettingsFile,
   type AppSettingsFile,
 } from "./settings/appSettingsFile.ts";
+export {
+  installCmCliInPath,
+  readCmCliStatus,
+  readLaunchRequestFromRuntime,
+  type CmCliInstallResult,
+  type CmCliStatus,
+} from "./desktopIntegration.ts";

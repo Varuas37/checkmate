@@ -9,11 +9,14 @@ import {
 } from "../../../design-system/index.ts";
 import {
   clearApiKeyFromStorage,
+  installCmCliInPath,
   APP_NAME,
   DEFAULT_AI_ANALYSIS_CONFIG,
   openProjectInNewWindow,
   readRepositoryBranch,
   readRepositoryBranches,
+  readCmCliStatus,
+  readLaunchRequestFromRuntime,
   readAiAnalysisConfigFromStorage,
   readAndSyncAppSettingsFile,
   readApiKeyFromStorage,
@@ -30,6 +33,8 @@ import {
   writeCliAgentsSettingsToStorage,
   writeProjectStandardsPathToStorage,
   writeReviewerProfileToStorage,
+  type CmCliInstallResult,
+  type CmCliStatus,
   type CliAgentsSettings,
 } from "../../../shared/index.ts";
 import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT, REVIEW_TABS } from "../constants.ts";
@@ -117,7 +122,15 @@ function isMacOperatingSystem(): boolean {
 export function ReviewWorkspaceContainer() {
   const { state, actions } = useReviewWorkspace();
   const launchRequestFromLocation = useMemo(resolveLaunchRequestFromLocation, []);
+  const [launchRequestFromRuntime, setLaunchRequestFromRuntime] = useState<{
+    readonly repositoryPath: string;
+    readonly commitSha: string;
+  } | null>(null);
+  const [isLaunchRequestResolved, setIsLaunchRequestResolved] = useState(
+    launchRequestFromLocation !== null,
+  );
   const savedReviewerProfile = useMemo(() => readReviewerProfileFromStorage(), []);
+  const [cmCliStatus, setCmCliStatus] = useState<CmCliStatus | null>(null);
 
   const [activeTab, setActiveTab] = useState<ReviewTabId>("files");
   const [highlightedFileIds, setHighlightedFileIds] = useState<readonly string[]>([]);
@@ -174,6 +187,7 @@ export function ReviewWorkspaceContainer() {
   const [branchListRefreshKey, setBranchListRefreshKey] = useState(0);
   const projectSwitcherRef = useRef<HTMLDivElement | null>(null);
   const branchSwitcherRef = useRef<HTMLDivElement | null>(null);
+  const launchRequest = launchRequestFromLocation ?? launchRequestFromRuntime;
 
   // On mount: read settings.json via Tauri and sync values into localStorage + React state.
   // Falls back silently — existing localStorage values are the initial state either way.
@@ -196,6 +210,68 @@ export function ReviewWorkspaceContainer() {
         // Non-critical — ignore read failures.
       });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (launchRequestFromLocation) {
+      setIsLaunchRequestResolved(true);
+      return;
+    }
+
+    let cancelled = false;
+    void readLaunchRequestFromRuntime()
+      .then((request) => {
+        if (cancelled) {
+          return;
+        }
+
+        setLaunchRequestFromRuntime(request);
+        setIsLaunchRequestResolved(true);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+
+        setIsLaunchRequestResolved(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [launchRequestFromLocation]);
+
+  useEffect(() => {
+    if (!launchRequestFromRuntime) {
+      return;
+    }
+
+    setStartupRepositoryPath(launchRequestFromRuntime.repositoryPath);
+    setStartupCommitSha(launchRequestFromRuntime.commitSha);
+    setStartupMessage(null);
+  }, [launchRequestFromRuntime]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void readCmCliStatus()
+      .then((status) => {
+        if (cancelled) {
+          return;
+        }
+
+        setCmCliStatus(status);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+
+        setCmCliStatus(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!state.commit?.commitSha) {
@@ -908,6 +984,32 @@ export function ReviewWorkspaceContainer() {
     [openProjectFromSwitcherInNewWindow],
   );
 
+  const refreshCmCliStatus = useCallback(async () => {
+    const status = await readCmCliStatus();
+    setCmCliStatus(status);
+  }, []);
+
+  const installCmCliCommand = useCallback(async (): Promise<CmCliInstallResult> => {
+    const installResult = await installCmCliInPath();
+    try {
+      const latestStatus = await readCmCliStatus();
+      setCmCliStatus(
+        latestStatus ?? {
+          installed: true,
+          installPath: installResult.installPath,
+          onPath: installResult.onPath,
+        },
+      );
+    } catch {
+      setCmCliStatus({
+        installed: true,
+        installPath: installResult.installPath,
+        onPath: installResult.onPath,
+      });
+    }
+    return installResult;
+  }, []);
+
   useEffect(() => {
     if (!isStartingFromHome) {
       return;
@@ -921,20 +1023,37 @@ export function ReviewWorkspaceContainer() {
   }, [isStartingFromHome, state.loadStatus]);
 
   useEffect(() => {
-    if (hasAttemptedAutoStart || state.loadStatus !== "idle" || state.commit) {
+    if (!isLaunchRequestResolved || hasAttemptedAutoStart || state.loadStatus !== "idle" || state.commit) {
       return;
     }
 
     setHasAttemptedAutoStart(true);
 
+    const launchRepositoryPath = normalizeInputValue(launchRequest?.repositoryPath ?? "");
+    const launchCommitSha =
+      normalizeInputValue(launchRequest?.commitSha ?? "") || DEFAULT_LOAD_REQUEST.commitSha;
+
+    if (launchRepositoryPath.length > 0) {
+      setStartupRepositoryPath(launchRepositoryPath);
+      setStartupCommitSha(launchCommitSha);
+      setStartupMessage(null);
+      recordRecentProject(launchRepositoryPath);
+      launchWorkspace(launchRepositoryPath, launchCommitSha);
+      return;
+    }
+
     if (!shouldAutoStart) {
       return;
     }
 
-    startReviewFromHome(launchRequestFromLocation?.repositoryPath);
+    startReviewFromHome();
   }, [
     hasAttemptedAutoStart,
-    launchRequestFromLocation?.repositoryPath,
+    isLaunchRequestResolved,
+    launchRequest?.commitSha,
+    launchRequest?.repositoryPath,
+    launchWorkspace,
+    recordRecentProject,
     shouldAutoStart,
     startReviewFromHome,
     state.commit,
@@ -963,6 +1082,40 @@ export function ReviewWorkspaceContainer() {
       window.removeEventListener("keydown", handleOpenNewProjectWindowShortcut);
     };
   }, [openProjectInNewWindowWithPicker]);
+
+  useEffect(() => {
+    const handleCloseSequenceExplorerTabShortcut = (event: KeyboardEvent) => {
+      const hasCommandModifier = event.metaKey || event.ctrlKey;
+      if (!hasCommandModifier || event.shiftKey || event.altKey) {
+        return;
+      }
+
+      if (event.key.toLowerCase() !== "w") {
+        return;
+      }
+
+      if (
+        !isSequenceExplorerOpen ||
+        activeTab !== "overview" ||
+        !resolvedSequenceExplorerActiveFileId
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      closeSequenceExplorerTab(resolvedSequenceExplorerActiveFileId);
+    };
+
+    window.addEventListener("keydown", handleCloseSequenceExplorerTabShortcut);
+    return () => {
+      window.removeEventListener("keydown", handleCloseSequenceExplorerTabShortcut);
+    };
+  }, [
+    activeTab,
+    closeSequenceExplorerTab,
+    isSequenceExplorerOpen,
+    resolvedSequenceExplorerActiveFileId,
+  ]);
 
   const handleTabChange = useCallback((tabId: ReviewTabId) => {
     setActiveTab(tabId);
@@ -1165,10 +1318,10 @@ export function ReviewWorkspaceContainer() {
     state.standardsAnalysisStatus,
   ]);
 
-  const windowBarLeftInsetClass = isMacOperatingSystem() ? "pl-[4.75rem]" : "pl-3";
+  const windowControlsInsetClass = isMacOperatingSystem() ? "w-[6.75rem]" : "w-3";
 
   const projectAndBranchControls = (
-    <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+    <div className="flex items-center gap-2 font-mono text-[11px]">
       <div ref={projectSwitcherRef} className="relative">
         <button
           type="button"
@@ -1403,8 +1556,14 @@ export function ReviewWorkspaceContainer() {
 
   const header = (
     <header className="bg-surface/85 backdrop-blur-sm">
-      <div className={`flex h-11 items-center gap-2 bg-transparent pr-3 ${windowBarLeftInsetClass}`}>
-        {projectAndBranchControls}
+      <div className="relative flex h-11 items-center bg-transparent pr-3">
+        <div
+          className={`${windowControlsInsetClass} h-full shrink-0`}
+          data-tauri-drag-region
+        />
+
+        <div className="flex min-w-0 items-center pl-2">{projectAndBranchControls}</div>
+
         <div className="h-full min-w-0 flex-1" data-tauri-drag-region />
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2">
@@ -1788,10 +1947,13 @@ export function ReviewWorkspaceContainer() {
           initialCliAgents={cliAgentsSettings}
           activeRepositoryPath={activeRepositoryPath}
           recentProjects={recentProjects}
+          cmCliStatus={cmCliStatus}
           onOpenProjectInCurrentWindow={openProjectInCurrentWindow}
           onOpenProjectInNewWindow={openProjectInNewWindowWithPicker}
           onOpenRecentProjectInCurrentWindow={openRecentProjectInCurrentWindow}
           onOpenRecentProjectInNewWindow={openRecentProjectInNewWindow}
+          onInstallCmCli={installCmCliCommand}
+          onRefreshCmCliStatus={refreshCmCliStatus}
           onSave={(key) => {
             const trimmed = key.trim();
             if (trimmed.length > 0) {
@@ -1858,10 +2020,13 @@ export function ReviewWorkspaceContainer() {
         initialCliAgents={cliAgentsSettings}
         activeRepositoryPath={activeRepositoryPath}
         recentProjects={recentProjects}
+        cmCliStatus={cmCliStatus}
         onOpenProjectInCurrentWindow={openProjectInCurrentWindow}
         onOpenProjectInNewWindow={openProjectInNewWindowWithPicker}
         onOpenRecentProjectInCurrentWindow={openRecentProjectInCurrentWindow}
         onOpenRecentProjectInNewWindow={openRecentProjectInNewWindow}
+        onInstallCmCli={installCmCliCommand}
+        onRefreshCmCliStatus={refreshCmCliStatus}
         onSave={(key) => {
           const trimmed = key.trim();
           if (trimmed.length > 0) {
