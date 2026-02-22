@@ -672,7 +672,9 @@ export function createReviewListenerMiddleware(
         });
 
         listenerApi.dispatch(reviewUiActions.aiAnalysisSucceeded({ output }));
-        listenerApi.dispatch(regenerateSequenceRequested({ commitId: action.payload.commitId }));
+        if (output.sequenceSteps.length === 0) {
+          listenerApi.dispatch(regenerateSequenceRequested({ commitId: action.payload.commitId }));
+        }
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Failed to analyse commit with AI.";

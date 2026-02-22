@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { CommitReviewAggregate, PublishReviewRequest } from "../../../domain/review/index.ts";
 import { createReviewStore } from "./reviewStore.ts";
-import { publishReviewRequested } from "./reviewActions.ts";
+import { analyseCommitRequested, publishReviewRequested } from "./reviewActions.ts";
 import { reviewEntitiesActions } from "./reviewEntitiesSlice.ts";
 import { reviewUiActions } from "./reviewUiSlice.ts";
 
@@ -179,4 +179,96 @@ test("publish listener captures adapter failures in UI state", async () => {
   assert.equal(uiState.publishError, "Claude adapter unavailable");
   assert.equal(uiState.publishResult, null);
   assert.equal(uiState.lastPublishPackage?.commitId, "commit-1");
+});
+
+test("analyse listener skips sequence regeneration when analysis already has sequence steps", async () => {
+  let sequenceGenerationCalls = 0;
+
+  const store = createReviewStore({
+    dependencies: {
+      commitAnalyser: {
+        analyseCommit: async () => ({
+          commitId: "commit-1",
+          overviewCards: [],
+          flowComparisons: [],
+          sequenceSteps: [
+            {
+              token: "S1",
+              sourceLabel: "UI",
+              targetLabel: "ReviewStore",
+              message: "DISPATCH analyseCommitRequested",
+              filePath: "src/app/store/review/reviewListeners.ts",
+            },
+          ],
+          fileSummaries: [],
+        }),
+      },
+      sequenceDiagramGenerator: {
+        generateSequenceSteps: async () => {
+          sequenceGenerationCalls += 1;
+          return [];
+        },
+      },
+    },
+  });
+
+  hydrateStoreForPublish(store);
+
+  store.dispatch(
+    analyseCommitRequested({
+      commitId: "commit-1",
+    }),
+  );
+
+  await waitForListener();
+  await waitForListener();
+
+  assert.equal(sequenceGenerationCalls, 0);
+  assert.equal(store.getState().reviewUi.aiSequenceStatus, "ready");
+});
+
+test("analyse listener regenerates sequence when analysis response has no sequence steps", async () => {
+  let sequenceGenerationCalls = 0;
+
+  const store = createReviewStore({
+    dependencies: {
+      commitAnalyser: {
+        analyseCommit: async () => ({
+          commitId: "commit-1",
+          overviewCards: [],
+          flowComparisons: [],
+          sequenceSteps: [],
+          fileSummaries: [],
+        }),
+      },
+      sequenceDiagramGenerator: {
+        generateSequenceSteps: async () => {
+          sequenceGenerationCalls += 1;
+          return [
+            {
+              token: "S1",
+              sourceLabel: "UI",
+              targetLabel: "ReviewStore",
+              message: "DISPATCH analyseCommitRequested",
+              filePath: "src/app/store/review/reviewListeners.ts",
+            },
+          ];
+        },
+      },
+    },
+  });
+
+  hydrateStoreForPublish(store);
+
+  store.dispatch(
+    analyseCommitRequested({
+      commitId: "commit-1",
+    }),
+  );
+
+  await waitForListener();
+  await waitForListener();
+
+  assert.equal(sequenceGenerationCalls, 1);
+  assert.equal(store.getState().reviewUi.aiSequenceStatus, "ready");
 });

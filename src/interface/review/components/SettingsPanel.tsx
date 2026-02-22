@@ -8,7 +8,6 @@ import type {
   CliAgentsSettings,
   CmCliInstallResult,
   CmCliStatus,
-  RecentProjectEntry,
 } from "../../../shared/index.ts";
 
 export interface SettingsPanelProps {
@@ -18,12 +17,7 @@ export interface SettingsPanelProps {
   readonly initialProjectStandardsPath: string;
   readonly initialCliAgents: CliAgentsSettings;
   readonly activeRepositoryPath: string;
-  readonly recentProjects: readonly RecentProjectEntry[];
   readonly cmCliStatus: CmCliStatus | null;
-  readonly onOpenProjectInCurrentWindow: () => void | Promise<void>;
-  readonly onOpenProjectInNewWindow: () => void | Promise<void>;
-  readonly onOpenRecentProjectInCurrentWindow: (repositoryPath: string) => void | Promise<void>;
-  readonly onOpenRecentProjectInNewWindow: (repositoryPath: string) => void | Promise<void>;
   readonly onInitializeTracking: (
     repositoryPath: string,
   ) => Promise<AgentTrackingInitializationResult>;
@@ -101,12 +95,7 @@ export function SettingsPanel({
   initialProjectStandardsPath,
   initialCliAgents,
   activeRepositoryPath,
-  recentProjects,
   cmCliStatus,
-  onOpenProjectInCurrentWindow,
-  onOpenProjectInNewWindow,
-  onOpenRecentProjectInCurrentWindow,
-  onOpenRecentProjectInNewWindow,
   onInitializeTracking,
   onInstallCmCli,
   onRefreshCmCliStatus,
@@ -121,8 +110,6 @@ export function SettingsPanel({
   const [isApiKeyEditing, setIsApiKeyEditing] = useState(false);
   const [churnDraft, setChurnDraft] = useState(String(initialMaxChurn));
   const [projectStandardsPathDraft, setProjectStandardsPathDraft] = useState(initialProjectStandardsPath);
-  const [isProjectActionRunning, setIsProjectActionRunning] = useState(false);
-  const [projectActionError, setProjectActionError] = useState<string | null>(null);
   const [cmCliActionError, setCmCliActionError] = useState<string | null>(null);
   const [cmCliActionMessage, setCmCliActionMessage] = useState<string | null>(null);
   const [isCmCliActionRunning, setIsCmCliActionRunning] = useState(false);
@@ -141,8 +128,6 @@ export function SettingsPanel({
     setIsApiKeyEditing(false);
     setChurnDraft(String(initialMaxChurn));
     setProjectStandardsPathDraft(initialProjectStandardsPath);
-    setIsProjectActionRunning(false);
-    setProjectActionError(null);
     setCmCliActionError(null);
     setCmCliActionMessage(null);
     setIsCmCliActionRunning(false);
@@ -165,22 +150,6 @@ export function SettingsPanel({
     }
 
     return String(error);
-  };
-
-  const runProjectAction = async (action: () => void | Promise<void>) => {
-    if (isProjectActionRunning) {
-      return;
-    }
-
-    setProjectActionError(null);
-    setIsProjectActionRunning(true);
-    try {
-      await action();
-    } catch (error) {
-      setProjectActionError(getErrorMessage(error));
-    } finally {
-      setIsProjectActionRunning(false);
-    }
   };
 
   const runCmCliAction = async (action: () => Promise<void>) => {
@@ -316,11 +285,6 @@ export function SettingsPanel({
         </aside>
 
         <div className="min-h-0 space-y-4 pt-2 md:max-h-[36rem] md:overflow-y-auto md:pl-5 md:pt-0">
-          {projectActionError && (
-            <p className="rounded-sm border border-danger/45 bg-danger/10 px-2 py-1.5 text-xs text-danger">
-              {projectActionError}
-            </p>
-          )}
           {cmCliActionError && (
             <p className="rounded-sm border border-danger/45 bg-danger/10 px-2 py-1.5 text-xs text-danger">
               {cmCliActionError}
@@ -340,76 +304,6 @@ export function SettingsPanel({
               </header>
 
               <div className="space-y-2 border-y border-border/60 py-3">
-                <p className="text-[11px] uppercase tracking-[0.1em] text-muted">Current Project</p>
-                <p className="break-all font-mono text-xs text-text">
-                  {activeRepositoryPath.trim().length > 0 ? activeRepositoryPath : "No project loaded"}
-                </p>
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={isProjectActionRunning}
-                    onClick={() => {
-                      void runProjectAction(onOpenProjectInCurrentWindow);
-                    }}
-                  >
-                    Open Project
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={isProjectActionRunning}
-                    onClick={() => {
-                      void runProjectAction(onOpenProjectInNewWindow);
-                    }}
-                  >
-                    Open New Project
-                  </Button>
-                </div>
-              </div>
-
-              <div className="space-y-1.5 border-b border-border/60 pb-3">
-                <p className="text-[11px] uppercase tracking-[0.1em] text-muted">Recent Projects</p>
-                {recentProjects.length === 0 && (
-                  <p className="rounded-sm border border-dashed border-border/70 px-2 py-2 text-sm text-muted">
-                    No recent projects.
-                  </p>
-                )}
-                {recentProjects.slice(0, 10).map((entry, index) => (
-                  <div
-                    key={`${entry.repositoryPath}-${index}`}
-                    className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border/40 py-1.5 last:border-b-0"
-                  >
-                    <button
-                      type="button"
-                      className={cn(
-                        "min-w-0 truncate text-left font-mono text-xs text-text",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
-                      )}
-                      onClick={() => {
-                        void runProjectAction(() => onOpenRecentProjectInCurrentWindow(entry.repositoryPath));
-                      }}
-                      title={entry.repositoryPath}
-                      disabled={isProjectActionRunning}
-                    >
-                      {entry.repositoryPath}
-                    </button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={isProjectActionRunning}
-                      className="h-7 px-2 font-mono text-[11px] uppercase tracking-[0.08em]"
-                      onClick={() => {
-                        void runProjectAction(() => onOpenRecentProjectInNewWindow(entry.repositoryPath));
-                      }}
-                    >
-                      New Window
-                    </Button>
-                  </div>
-                ))}
-              </div>
-
-              <div className="space-y-2">
                 <p className="text-[11px] uppercase tracking-[0.1em] text-muted">Shell Command</p>
                 <p className="text-sm text-muted">
                   Install a global <code className="font-mono text-xs">cm</code> command.

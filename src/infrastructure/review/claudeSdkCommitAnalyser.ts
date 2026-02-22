@@ -695,6 +695,9 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
         if (parsed) {
           return parsed;
         }
+        if (!resolvedApiKey) {
+          throw new Error("CLI response could not be parsed as valid analysis JSON.");
+        }
       } catch (error) {
         // CLI failed — fall through to SDK if key is available, else throw below.
         if (!resolvedApiKey) {

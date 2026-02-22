@@ -2010,12 +2010,7 @@ export function ReviewWorkspaceContainer() {
           initialProjectStandardsPath={projectStandardsPath}
           initialCliAgents={cliAgentsSettings}
           activeRepositoryPath={activeRepositoryPath}
-          recentProjects={recentProjects}
           cmCliStatus={cmCliStatus}
-          onOpenProjectInCurrentWindow={openProjectInCurrentWindow}
-          onOpenProjectInNewWindow={openProjectInNewWindowWithPicker}
-          onOpenRecentProjectInCurrentWindow={openRecentProjectInCurrentWindow}
-          onOpenRecentProjectInNewWindow={openRecentProjectInNewWindow}
           onInitializeTracking={initializeTrackingFromSettings}
           onInstallCmCli={installCmCliCommand}
           onRefreshCmCliStatus={refreshCmCliStatus}
@@ -2084,12 +2079,7 @@ export function ReviewWorkspaceContainer() {
         initialProjectStandardsPath={projectStandardsPath}
         initialCliAgents={cliAgentsSettings}
         activeRepositoryPath={activeRepositoryPath}
-        recentProjects={recentProjects}
         cmCliStatus={cmCliStatus}
-        onOpenProjectInCurrentWindow={openProjectInCurrentWindow}
-        onOpenProjectInNewWindow={openProjectInNewWindowWithPicker}
-        onOpenRecentProjectInCurrentWindow={openRecentProjectInCurrentWindow}
-        onOpenRecentProjectInNewWindow={openRecentProjectInNewWindow}
         onInitializeTracking={initializeTrackingFromSettings}
         onInstallCmCli={installCmCliCommand}
         onRefreshCmCliStatus={refreshCmCliStatus}
