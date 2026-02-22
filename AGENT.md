@@ -55,7 +55,7 @@ Keep handoff concise and actionable:
 <!-- checkmate:tracking:start -->
 ## Checkmate Tracking (added by checkmate.sh)
 - Required schema: `.checkmate/commit_context.schema.json` (`checkmate.commit_context.v1`).
-- For each meaningful commit, store `.checkmate/commit_context/<commit_sha>.json`.
+- For each commit, store `.checkmate/commit_context/<commit_sha>.json`.
 - Required fields:
   - `schema_version`, `commit_sha`, `branch`, `title`
   - `rationale`
