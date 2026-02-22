@@ -136,6 +136,8 @@ function createStateFixture(): ReviewRootState {
       aiAnalysisError: null,
       aiSequenceStatus: "idle",
       aiSequenceError: null,
+      standardsAnalysisStatus: "idle",
+      standardsAnalysisError: null,
     },
   };
 }

@@ -1,3 +1,4 @@
+import { APP_NAME } from "./appConfig.ts";
 import { projectLabelFromPath } from "./projectLabelFromPath.ts";
 
 function normalizePath(value: string): string {
@@ -43,11 +44,14 @@ export async function openProjectInNewWindow(input: OpenProjectInNewWindowInput)
 
   const commitSha = input.commitSha?.trim().length ? input.commitSha.trim() : "HEAD";
   const projectUrl = buildProjectUrl(repositoryPath, commitSha);
-  const windowTitle = projectLabelFromPath(repositoryPath) || "CodeLens";
+  const windowTitle = projectLabelFromPath(repositoryPath) || APP_NAME;
 
   if (isTauriRuntime()) {
     try {
-      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const [{ WebviewWindow }, { LogicalPosition }] = await Promise.all([
+        import("@tauri-apps/api/webviewWindow"),
+        import("@tauri-apps/api/window"),
+      ]);
       const label = `project-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       // Creating a dedicated webview window keeps project workspaces isolated by default.
       new WebviewWindow(label, {
@@ -56,6 +60,10 @@ export async function openProjectInNewWindow(input: OpenProjectInNewWindowInput)
         width: 1280,
         height: 820,
         resizable: true,
+        decorations: true,
+        titleBarStyle: "overlay",
+        hiddenTitle: true,
+        trafficLightPosition: new LogicalPosition(14, 18),
         focus: true,
       });
       return;

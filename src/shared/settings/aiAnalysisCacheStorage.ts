@@ -95,7 +95,10 @@ function normalizeSequenceStep(value: unknown): AiSequenceStep | null {
   }
 
   const step = value as Partial<AiSequenceStep>;
+  const token = normalizeText(step.token);
+  const sourceId = normalizeText(step.sourceId);
   const sourceLabel = normalizeText(step.sourceLabel);
+  const targetId = normalizeText(step.targetId);
   const targetLabel = normalizeText(step.targetLabel);
   const message = normalizeText(step.message);
   const filePath = normalizeText(step.filePath);
@@ -110,7 +113,10 @@ function normalizeSequenceStep(value: unknown): AiSequenceStep | null {
   }
 
   return {
+    ...(token.length > 0 ? { token } : {}),
+    ...(sourceId.length > 0 ? { sourceId } : {}),
     sourceLabel,
+    ...(targetId.length > 0 ? { targetId } : {}),
     targetLabel,
     message,
     filePath,
@@ -236,7 +242,10 @@ function cloneCachedData(data: CachedAiAnalysisData): CachedAiAnalysisData {
       filePaths: [...pair.filePaths],
     })),
     sequenceSteps: data.sequenceSteps.map((step) => ({
+      ...(step.token ? { token: step.token } : {}),
+      ...(step.sourceId ? { sourceId: step.sourceId } : {}),
       sourceLabel: step.sourceLabel,
+      ...(step.targetId ? { targetId: step.targetId } : {}),
       targetLabel: step.targetLabel,
       message: step.message,
       filePath: step.filePath,
