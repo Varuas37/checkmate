@@ -19,6 +19,7 @@ import {
 import type { FileChangeStatus, ThreadStatus } from "../../../domain/review/index.ts";
 import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT } from "../constants.ts";
 import type {
+  CodeSequenceStep,
   CreateThreadInput,
   ReloadReviewWorkspaceInput,
   ReviewWorkspaceActions,
@@ -42,6 +43,11 @@ function deriveLayer(path: string): string {
   }
 
   return segments[0] ?? "root";
+}
+
+function fileNameForPath(path: string): string {
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+  return segments[segments.length - 1] ?? path;
 }
 
 function summarizeRisk(additions: number, deletions: number): string {
@@ -205,6 +211,41 @@ export function useReviewWorkspace(): {
       };
     });
   }, [allFiles, overviewCards]);
+
+  const codeSequenceSteps = useMemo<readonly CodeSequenceStep[]>(() => {
+    const prioritizedFiles = [...allFiles]
+      .sort((left, right) => {
+        const leftChurn = left.additions + left.deletions;
+        const rightChurn = right.additions + right.deletions;
+
+        if (leftChurn !== rightChurn) {
+          return rightChurn - leftChurn;
+        }
+
+        return left.path.localeCompare(right.path);
+      })
+      .slice(0, 12);
+
+    let previousActor = "Reviewer";
+
+    return prioritizedFiles.map((file, index) => {
+      const targetLabel = titleCase(deriveLayer(file.path));
+      const token = `F${index + 1}`;
+      const message = `${file.status.toUpperCase()} ${fileNameForPath(file.path)} (+${file.additions}/-${file.deletions})`;
+
+      const step: CodeSequenceStep = {
+        id: `sequence-step-${file.id}`,
+        token,
+        sourceLabel: previousActor,
+        targetLabel,
+        message,
+        fileIds: [file.id],
+      };
+
+      previousActor = targetLabel;
+      return step;
+    });
+  }, [allFiles]);
 
   const standardsChecks = useMemo(() => {
     const activeCommitId = ui.activeCommitId;
@@ -510,6 +551,7 @@ export function useReviewWorkspace(): {
       overviewCards,
       architectureClusters,
       sequencePairs,
+      codeSequenceSteps,
       standardsChecks,
       threadModels,
       fileSummaries,

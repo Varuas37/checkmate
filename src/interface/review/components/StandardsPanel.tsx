@@ -27,11 +27,11 @@ export function StandardsPanel({ checks, counts }: StandardsPanelProps) {
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader>
+        <CardHeader className="border-b-0 pb-0">
           <CardTitle>Standards Outcome</CardTitle>
-          <CardDescription>Pass/warn/fail check summary from parsed standards rules.</CardDescription>
+          <CardDescription>Pass/warn/fail summary from parsed standards rules.</CardDescription>
         </CardHeader>
-        <CardBody className="flex flex-wrap gap-2">
+        <CardBody className="flex flex-wrap gap-2 pt-2">
           <Badge tone="positive">pass {counts.pass}</Badge>
           <Badge tone="caution">warn {counts.warn}</Badge>
           <Badge tone="danger">fail {counts.fail}</Badge>
@@ -39,16 +39,16 @@ export function StandardsPanel({ checks, counts }: StandardsPanelProps) {
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Rule Cards</CardTitle>
-          <CardDescription>Each card includes a result summary and evidence references.</CardDescription>
+        <CardHeader className="border-b-0 pb-0">
+          <CardTitle>Rule Review</CardTitle>
+          <CardDescription>Result summary and evidence references for each rule.</CardDescription>
         </CardHeader>
-        <CardBody className="space-y-3">
+        <CardBody className="space-y-0">
           {checks.map((check) => {
             const result = check.result;
 
             return (
-              <div key={check.rule.id} className="rounded-md border border-border bg-elevated/40 p-3">
+              <div key={check.rule.id} className="border-b border-border py-3 last:border-b-0">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <h4 className="font-display text-sm font-semibold">{check.rule.title}</h4>
                   {result ? <Badge tone={toneForResult(result.status)}>{result.status}</Badge> : <Badge tone="neutral">pending</Badge>}

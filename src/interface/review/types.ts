@@ -57,6 +57,15 @@ export interface SequencePair {
   readonly after: SequenceBlock;
 }
 
+export interface CodeSequenceStep {
+  readonly id: string;
+  readonly token: string;
+  readonly sourceLabel: string;
+  readonly targetLabel: string;
+  readonly message: string;
+  readonly fileIds: readonly string[];
+}
+
 export interface FileSummary {
   readonly fileId: string;
   readonly path: string;
@@ -98,6 +107,7 @@ export interface ReviewWorkspaceState {
   readonly overviewCards: readonly OverviewCard[];
   readonly architectureClusters: readonly ArchitectureCluster[];
   readonly sequencePairs: readonly SequencePair[];
+  readonly codeSequenceSteps: readonly CodeSequenceStep[];
   readonly standardsChecks: readonly StandardsCheck[];
   readonly threadModels: readonly ThreadViewModel[];
   readonly fileSummaries: readonly FileSummary[];

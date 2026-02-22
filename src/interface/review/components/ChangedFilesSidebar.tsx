@@ -53,14 +53,14 @@ export function ChangedFilesSidebar({
   const highlightedSet = useMemo(() => new Set(highlightedFileIds), [highlightedFileIds]);
 
   return (
-    <Card className="h-full">
+    <Card className="flex h-full min-h-[24rem] flex-col lg:min-h-0">
       <CardHeader>
         <CardTitle>Changed Files</CardTitle>
         <CardDescription>
           {files.length} visible of {allFilesCount} total
         </CardDescription>
       </CardHeader>
-      <CardBody className="flex h-full flex-col gap-3">
+      <CardBody className="flex min-h-0 flex-1 flex-col gap-3">
         <Input
           value={filter.query}
           onChange={(event) => onQueryChange(event.target.value)}

@@ -7,17 +7,82 @@
   --radius-md: 0.625rem;
   --radius-lg: 0.875rem;
 
-  --color-canvas: 210 33% 97%;
-  --color-surface: 0 0% 100%;
-  --color-surface-elevated: 209 48% 94%;
-  --color-border: 212 25% 83%;
-  --color-text: 220 35% 16%;
-  --color-muted: 218 13% 40%;
-  --color-accent: 197 91% 39%;
-  --color-accent-contrast: 0 0% 100%;
-  --color-positive: 153 65% 33%;
-  --color-caution: 37 88% 42%;
-  --color-danger: 7 74% 45%;
+  --color-canvas: var(--surface-canvas);
+  --color-surface: var(--surface-base);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-border: var(--border-default);
+  --color-border-strong: var(--border-strong);
+  --color-border-muted: var(--border-muted);
+  --color-text: var(--text-primary);
+  --color-muted: var(--text-secondary);
+  --color-text-subtle: var(--text-tertiary);
+  --color-accent: var(--accent-base);
+  --color-accent-emphasis: var(--accent-emphasis);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-positive: var(--positive-base);
+  --color-positive-emphasis: var(--positive-emphasis);
+  --color-caution: var(--caution-base);
+  --color-caution-emphasis: var(--caution-emphasis);
+  --color-danger: var(--danger-base);
+  --color-danger-emphasis: var(--danger-emphasis);
+}
 
-  --shadow-soft: 0 10px 30px hsl(var(--color-text) / 0.08);
+:root,
+:root[data-theme="dark"] {
+  --surface-canvas: 222 23% 8%;
+  --surface-base: 221 20% 11%;
+  --surface-elevated: 220 17% 14%;
+  --surface-subtle: 220 15% 18%;
+
+  --border-default: 218 15% 28%;
+  --border-strong: 217 14% 38%;
+  --border-muted: 219 12% 22%;
+
+  --text-primary: 210 23% 92%;
+  --text-secondary: 215 13% 71%;
+  --text-tertiary: 216 12% 57%;
+
+  --accent-base: 209 100% 61%;
+  --accent-emphasis: 209 100% 67%;
+  --accent-contrast: 222 23% 9%;
+
+  --positive-base: 146 61% 53%;
+  --positive-emphasis: 146 63% 47%;
+  --caution-base: 39 96% 63%;
+  --caution-emphasis: 35 94% 57%;
+  --danger-base: 2 86% 67%;
+  --danger-emphasis: 2 83% 60%;
+
+  --shadow-soft: 0 14px 34px hsl(221 44% 3% / 0.45);
+  --shadow-inset: inset 0 1px 0 hsl(0 0% 100% / 0.04);
+}
+
+:root[data-theme="light"] {
+  --surface-canvas: 210 24% 98%;
+  --surface-base: 0 0% 100%;
+  --surface-elevated: 210 20% 96%;
+  --surface-subtle: 210 17% 93%;
+
+  --border-default: 214 20% 84%;
+  --border-strong: 214 17% 72%;
+  --border-muted: 214 20% 90%;
+
+  --text-primary: 221 35% 18%;
+  --text-secondary: 220 17% 40%;
+  --text-tertiary: 219 12% 52%;
+
+  --accent-base: 212 100% 42%;
+  --accent-emphasis: 212 100% 36%;
+  --accent-contrast: 0 0% 100%;
+
+  --positive-base: 148 70% 33%;
+  --positive-emphasis: 148 67% 29%;
+  --caution-base: 35 90% 41%;
+  --caution-emphasis: 34 89% 36%;
+  --danger-base: 3 72% 50%;
+  --danger-emphasis: 3 69% 44%;
+
+  --shadow-soft: 0 12px 30px hsl(219 24% 18% / 0.09);
+  --shadow-inset: inset 0 1px 0 hsl(0 0% 100% / 0.78);
 }

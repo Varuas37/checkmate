@@ -9,18 +9,18 @@ export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
 }
 
 const toneClasses: Record<BadgeTone, string> = {
-  neutral: "bg-elevated text-muted",
-  accent: "bg-accent/15 text-accent",
-  positive: "bg-positive/15 text-positive",
-  caution: "bg-caution/15 text-caution",
-  danger: "bg-danger/15 text-danger",
+  neutral: "border-border bg-surface-subtle text-muted",
+  accent: "border-accent/30 bg-accent/12 text-accent",
+  positive: "border-positive/35 bg-positive/12 text-positive",
+  caution: "border-caution/35 bg-caution/12 text-caution",
+  danger: "border-danger/35 bg-danger/12 text-danger",
 };
 
 export function Badge({ className, tone = "neutral", ...props }: BadgeProps) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full px-2 py-0.5 font-mono text-xs font-medium uppercase tracking-wide",
+        "inline-flex items-center rounded-sm border px-2 py-0.5 font-mono text-[11px] font-medium uppercase tracking-[0.08em]",
         toneClasses[tone],
         className,
       )}

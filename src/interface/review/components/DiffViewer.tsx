@@ -71,26 +71,28 @@ export function DiffViewer({ file, hunks, orientation, onOrientationChange }: Di
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <CardTitle>Diff Viewer</CardTitle>
+            <CardTitle>Files Diff</CardTitle>
             <CardDescription>
               {file ? file.path : "Select a changed file from the sidebar"}
             </CardDescription>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="inline-flex items-center gap-1 rounded-md border border-border bg-elevated/30 p-1">
             <Button
               size="sm"
-              variant={orientation === "split" ? "primary" : "secondary"}
+              variant={orientation === "split" ? "primary" : "ghost"}
+              aria-pressed={orientation === "split"}
               onClick={() => onOrientationChange("split")}
             >
-              Vertical
+              Split
             </Button>
             <Button
               size="sm"
-              variant={orientation === "unified" ? "primary" : "secondary"}
+              variant={orientation === "unified" ? "primary" : "ghost"}
+              aria-pressed={orientation === "unified"}
               onClick={() => onOrientationChange("unified")}
             >
-              Horizontal
+              Unified
             </Button>
           </div>
         </div>

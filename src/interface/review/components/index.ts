@@ -1,4 +1,5 @@
 export { ChangedFilesSidebar, type ChangedFilesSidebarProps } from "./ChangedFilesSidebar.tsx";
+export { CodeSequenceDiagramPanel, type CodeSequenceDiagramPanelProps } from "./CodeSequenceDiagramPanel.tsx";
 export { DiffViewer, type DiffViewerProps } from "./DiffViewer.tsx";
 export { FileThreadsPanel, type FileThreadsPanelProps } from "./FileThreadsPanel.tsx";
 export { OverviewPanel, type OverviewPanelProps } from "./OverviewPanel.tsx";

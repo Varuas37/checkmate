@@ -65,105 +65,113 @@ export function ReviewWorkspaceContainer() {
   );
 
   const header = (
-    <Card>
-      <CardBody className="flex flex-col gap-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1">
-            <CardTitle className="text-xl">CodeLens Review Workspace</CardTitle>
-            <CardDescription>
-              {state.commit
-                ? `${state.commit.title} · ${state.commit.shortSha} · ${state.commit.authorName}`
-                : "Loading review context..."}
-            </CardDescription>
+    <div className="space-y-3">
+      <Card>
+        <CardBody className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <p className="text-xs uppercase tracking-[0.18em] text-muted">Review Workspace</p>
+              <CardTitle className="text-xl">
+                {state.commit ? state.commit.title : "CodeLens Review Workspace"}
+              </CardTitle>
+              <CardDescription>
+                {state.commit
+                  ? `${state.commit.repositoryPath} · ${state.commit.shortSha} · ${state.commit.authorName}`
+                  : "Loading review context..."}
+              </CardDescription>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={statusToneForLoad(state.loadStatus)}>{state.loadStatus}</Badge>
+              {state.commit && <Badge tone="neutral">{state.commit.shortSha}</Badge>}
+              <Button size="sm" onClick={actions.publishReview} disabled={!state.isPublishingReady}>
+                Publish Review
+              </Button>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={statusToneForLoad(state.loadStatus)}>{state.loadStatus}</Badge>
-            {state.commit && <Badge tone="accent">{state.commit.repositoryPath}</Badge>}
-          </div>
-        </div>
+          <form
+            className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
+            onSubmit={(event) => {
+              event.preventDefault();
+              triggerCommitReload({
+                repositoryPath: repositoryPathInput,
+                commitSha: commitShaInput,
+              });
+            }}
+          >
+            <label className="space-y-1 text-xs text-muted">
+              Repository Path
+              <Input
+                value={repositoryPathInput}
+                onChange={(event) => {
+                  setRepositoryPathInput(event.target.value);
+                  setSelectedPresetId(CUSTOM_PRESET_ID);
+                }}
+                placeholder="."
+                aria-label="Repository path"
+              />
+            </label>
 
-        <form
-          className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
-          onSubmit={(event) => {
-            event.preventDefault();
-            triggerCommitReload({
-              repositoryPath: repositoryPathInput,
-              commitSha: commitShaInput,
-            });
-          }}
-        >
-          <label className="space-y-1 text-xs text-muted">
-            Repository Path
-            <Input
-              value={repositoryPathInput}
-              onChange={(event) => {
-                setRepositoryPathInput(event.target.value);
-                setSelectedPresetId(CUSTOM_PRESET_ID);
-              }}
-              placeholder="."
-              aria-label="Repository path"
-            />
-          </label>
+            <label className="space-y-1 text-xs text-muted">
+              Commit SHA
+              <Input
+                value={commitShaInput}
+                onChange={(event) => {
+                  setCommitShaInput(event.target.value);
+                  setSelectedPresetId(CUSTOM_PRESET_ID);
+                }}
+                placeholder="HEAD"
+                aria-label="Commit SHA"
+              />
+            </label>
 
-          <label className="space-y-1 text-xs text-muted">
-            Commit SHA
-            <Input
-              value={commitShaInput}
-              onChange={(event) => {
-                setCommitShaInput(event.target.value);
-                setSelectedPresetId(CUSTOM_PRESET_ID);
-              }}
-              placeholder="HEAD"
-              aria-label="Commit SHA"
-            />
-          </label>
+            <label className="space-y-1 text-xs text-muted">
+              Sample Commits
+              <select
+                className="h-10 w-full rounded-md border border-border bg-surface px-2 text-sm text-text"
+                value={selectedPresetId}
+                onChange={(event) => {
+                  const nextPresetId = event.target.value;
+                  setSelectedPresetId(nextPresetId);
 
-          <label className="space-y-1 text-xs text-muted">
-            Sample Commits
-            <select
-              className="h-10 w-full rounded-md border border-border bg-surface px-2 text-sm text-text"
-              value={selectedPresetId}
-              onChange={(event) => {
-                const nextPresetId = event.target.value;
-                setSelectedPresetId(nextPresetId);
+                  if (nextPresetId === CUSTOM_PRESET_ID) {
+                    return;
+                  }
 
-                if (nextPresetId === CUSTOM_PRESET_ID) {
-                  return;
-                }
+                  const preset = SAMPLE_COMMIT_PRESETS.find((item) => item.id === nextPresetId);
 
-                const preset = SAMPLE_COMMIT_PRESETS.find((item) => item.id === nextPresetId);
+                  if (!preset) {
+                    return;
+                  }
 
-                if (!preset) {
-                  return;
-                }
+                  setRepositoryPathInput(preset.repositoryPath);
+                  setCommitShaInput(preset.commitSha);
+                  triggerCommitReload({
+                    repositoryPath: preset.repositoryPath,
+                    commitSha: preset.commitSha,
+                  });
+                }}
+                aria-label="Sample commit quick pick"
+              >
+                <option value={CUSTOM_PRESET_ID}>Custom input</option>
+                {SAMPLE_COMMIT_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-                setRepositoryPathInput(preset.repositoryPath);
-                setCommitShaInput(preset.commitSha);
-                triggerCommitReload({
-                  repositoryPath: preset.repositoryPath,
-                  commitSha: preset.commitSha,
-                });
-              }}
-              aria-label="Sample commit quick pick"
-            >
-              <option value={CUSTOM_PRESET_ID}>Custom input</option>
-              {SAMPLE_COMMIT_PRESETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.label}
-                </option>
-              ))}
-            </select>
-          </label>
+            <Button type="submit" variant="secondary" className="self-end" disabled={state.loadStatus === "loading"}>
+              Load Commit
+            </Button>
+          </form>
+        </CardBody>
+      </Card>
 
-          <Button type="submit" variant="secondary" className="self-end" disabled={state.loadStatus === "loading"}>
-            Load Commit
-          </Button>
-        </form>
-
-        <TopTabs tabs={REVIEW_TABS} activeTab={activeTab} onChange={setActiveTab} />
-      </CardBody>
-    </Card>
+      <TopTabs tabs={REVIEW_TABS} activeTab={activeTab} onChange={setActiveTab} />
+    </div>
   );
 
   const mainContent = useMemo(() => {
@@ -189,6 +197,7 @@ export function ReviewWorkspaceContainer() {
           overviewCards={state.overviewCards}
           architectureClusters={state.architectureClusters}
           sequencePairs={state.sequencePairs}
+          codeSequenceSteps={state.codeSequenceSteps}
           highlightedFileIds={highlightedFileIds}
           onSelectFiles={(fileIds) => {
             setHighlightedFileIds(fileIds);
@@ -202,7 +211,7 @@ export function ReviewWorkspaceContainer() {
 
     if (activeTab === "files") {
       return (
-        <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="space-y-4">
           <DiffViewer
             file={state.activeFile}
             hunks={state.activeFileHunks}
@@ -252,6 +261,7 @@ export function ReviewWorkspaceContainer() {
     state.overviewCards,
     state.publishPackage,
     state.sequencePairs,
+    state.codeSequenceSteps,
     state.standardsChecks,
     state.standardsCounts,
     state.threadModels,
