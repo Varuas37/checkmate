@@ -78,7 +78,7 @@ export interface StandardsAnalyser {
   analyseStandards(input: AnalyseStandardsInput): Promise<StandardsEvaluationOutput>;
 }
 
-export type ReviewPublishProvider = "claude-sdk";
+export type ReviewPublishProvider = "ai-sdk";
 
 export interface PublishReviewRequest {
   readonly requestId: string;

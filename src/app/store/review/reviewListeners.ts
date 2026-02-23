@@ -36,6 +36,7 @@ import {
   readAiAnalysisFromStorage,
   readProjectStandardsPathFromStorage,
   readTextFile,
+  startLatencyTrace,
   stripCheckmateMentions,
   writeAiAnalysisToStorage,
   type CachedAiAnalysisData,
@@ -85,6 +86,19 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
       },
     );
   });
+}
+
+function nowForTrace(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function durationMsSince(startedAt: number): number {
+  const elapsed = nowForTrace() - startedAt;
+  return Math.round(elapsed * 100) / 100;
 }
 
 export interface ReviewListenerDependencies {
@@ -610,6 +624,18 @@ export function createReviewListenerMiddleware(
         return;
       }
 
+      const trace = startLatencyTrace({
+        scope: "thread-agent-reply",
+        traceId: `thread-agent-reply-${thread.id}-${Date.now()}`,
+        fields: {
+          threadId: thread.id,
+          commitId: thread.commitId,
+          filePath: file.path,
+          hunkId: hunk.id,
+        },
+      });
+      let traceSummaryFields: Readonly<Record<string, unknown>> | undefined;
+
       const commit = state.reviewEntities.commitsById[thread.commitId];
       const comments = selectThreadComments(state, thread.id);
       const prompt = action.payload.reviewerPrompt?.trim();
@@ -627,6 +653,8 @@ export function createReviewListenerMiddleware(
       });
 
       if (listenerApi.signal.aborted) {
+        trace.mark("thread-agent-reply-aborted");
+        trace.end(traceSummaryFields);
         return;
       }
 
@@ -684,8 +712,14 @@ export function createReviewListenerMiddleware(
             });
 
       try {
+        trace.mark("thread-agent-reply-prompt-ready", {
+          promptLength: askPrompt.length,
+          commentCount: comments.length,
+          relatedHunkCount: relatedHunkHeaders.length,
+        });
         const requestId = deps.createId();
         const requestedAtIso = deps.nowIso();
+        const publishStartedAt = nowForTrace();
         const response = await deps.reviewPublisher.publishReview({
           requestId,
           requestedBy: "checkmate-agent",
@@ -723,6 +757,10 @@ export function createReviewListenerMiddleware(
             2,
           ),
         });
+        trace.mark("thread-agent-reply-publish-complete", {
+          elapsedMs: durationMsSince(publishStartedAt),
+          publicationId: response.publicationId,
+        });
 
         const body = response.summary.trim();
         listenerApi.dispatch(
@@ -738,6 +776,10 @@ export function createReviewListenerMiddleware(
             },
           }),
         );
+        traceSummaryFields = {
+          success: true,
+          responseLength: body.length,
+        };
       } catch (error) {
         const message = error instanceof Error ? error.message : "Checkmate could not generate a response.";
         listenerApi.dispatch(
@@ -753,12 +795,14 @@ export function createReviewListenerMiddleware(
             },
           }),
         );
+        trace.fail(error);
       } finally {
         listenerApi.dispatch(
           reviewUiActions.clearAskAgentDraft({
             threadId: thread.id,
           }),
         );
+        trace.end(traceSummaryFields);
       }
     },
   });
@@ -807,11 +851,30 @@ export function createReviewListenerMiddleware(
         return;
       }
 
+      const trace = startLatencyTrace({
+        scope: "ai-analysis-pipeline",
+        traceId: `ai-analysis-${action.payload.commitId}-${Date.now()}`,
+        fields: {
+          commitId: action.payload.commitId,
+          fileCount: context.files.length,
+          hunkCount: context.hunks.length,
+          commitSha: context.commit.commitSha,
+        },
+      });
+      let traceSummaryFields: Readonly<Record<string, unknown>> | undefined;
+
       listenerApi.dispatch(reviewUiActions.aiAnalysisStarted());
       listenerApi.dispatch(reviewUiActions.standardsAnalysisStarted());
 
       try {
+        const standardsSourceStartedAt = nowForTrace();
         const standardsSource = await resolveStandardsSource(context.commit.repositoryPath);
+        trace.mark("ai-analysis-standards-source-resolved", {
+          elapsedMs: durationMsSince(standardsSourceStartedAt),
+          standardsSourcePath: standardsSource.sourcePath,
+        });
+
+        const commitAnalysisStartedAt = nowForTrace();
         const output = await deps.commitAnalyser.analyseCommit({
           commitId: action.payload.commitId,
           commit: context.commit,
@@ -821,16 +884,27 @@ export function createReviewListenerMiddleware(
           standardsSourcePath: standardsSource.sourcePath,
           abortSignal: listenerApi.signal,
         });
+        trace.mark("ai-analysis-commit-analyser-complete", {
+          elapsedMs: durationMsSince(commitAnalysisStartedAt),
+          overviewCardCount: output.overviewCards.length,
+          flowComparisonCount: output.flowComparisons.length,
+          sequenceStepCount: output.sequenceSteps.length,
+          fileSummaryCount: output.fileSummaries.length,
+        });
 
         if (listenerApi.signal.aborted) {
+          trace.mark("ai-analysis-aborted");
           return;
         }
 
         let standardsRules = output.standardsRules;
         let standardsResults = output.standardsResults;
+        let standardsProvider: "commit-analyser" | "standards-analyser" | "standards-evaluator" =
+          "commit-analyser";
 
         if (standardsRules.length === 0 || standardsResults.length === 0) {
           try {
+            const standardsAnalyserStartedAt = nowForTrace();
             const standardsEvaluation = await deps.standardsAnalyser.analyseStandards({
               commitId: action.payload.commitId,
               commit: context.commit,
@@ -841,7 +915,14 @@ export function createReviewListenerMiddleware(
             });
             standardsRules = standardsEvaluation.rules;
             standardsResults = standardsEvaluation.results;
+            standardsProvider = "standards-analyser";
+            trace.mark("ai-analysis-standards-analyser-complete", {
+              elapsedMs: durationMsSince(standardsAnalyserStartedAt),
+              ruleCount: standardsRules.length,
+              resultCount: standardsResults.length,
+            });
           } catch {
+            const standardsEvaluatorStartedAt = nowForTrace();
             const standardsEvaluation = deps.standardsEvaluator.evaluate({
               commitId: action.payload.commitId,
               ruleText: standardsSource.ruleText,
@@ -850,7 +931,18 @@ export function createReviewListenerMiddleware(
             });
             standardsRules = standardsEvaluation.rules;
             standardsResults = standardsEvaluation.results;
+            standardsProvider = "standards-evaluator";
+            trace.mark("ai-analysis-standards-evaluator-complete", {
+              elapsedMs: durationMsSince(standardsEvaluatorStartedAt),
+              ruleCount: standardsRules.length,
+              resultCount: standardsResults.length,
+            });
           }
+        } else {
+          trace.mark("ai-analysis-standards-from-commit-analysis", {
+            ruleCount: standardsRules.length,
+            resultCount: standardsResults.length,
+          });
         }
 
         const enrichedOutput = {
@@ -876,10 +968,23 @@ export function createReviewListenerMiddleware(
         listenerApi.dispatch(reviewUiActions.standardsAnalysisSucceeded());
 
         if (enrichedOutput.sequenceSteps.length === 0) {
+          trace.mark("ai-analysis-sequence-regeneration-requested");
           listenerApi.dispatch(regenerateSequenceRequested({ commitId: action.payload.commitId }));
         }
+
+        traceSummaryFields = {
+          success: true,
+          standardsProvider,
+          overviewCardCount: enrichedOutput.overviewCards.length,
+          flowComparisonCount: enrichedOutput.flowComparisons.length,
+          sequenceStepCount: enrichedOutput.sequenceSteps.length,
+          fileSummaryCount: enrichedOutput.fileSummaries.length,
+          standardsRuleCount: standardsRules.length,
+          standardsResultCount: standardsResults.length,
+        };
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
+          trace.mark("ai-analysis-aborted");
           return;
         }
         const message =
@@ -890,6 +995,9 @@ export function createReviewListenerMiddleware(
             errorMessage: message,
           }),
         );
+        trace.fail(error);
+      } finally {
+        trace.end(traceSummaryFields);
       }
     },
   });
@@ -913,6 +1021,17 @@ export function createReviewListenerMiddleware(
         return;
       }
 
+      const trace = startLatencyTrace({
+        scope: "sequence-generation",
+        traceId: `sequence-generation-${action.payload.commitId}-${Date.now()}`,
+        fields: {
+          commitId: action.payload.commitId,
+          fileCount: context.files.length,
+          hunkCount: context.hunks.length,
+        },
+      });
+      let traceSummaryFields: Readonly<Record<string, unknown>> | undefined;
+
       listenerApi.dispatch(
         reviewUiActions.sequenceGenerationStarted({
           commitId: action.payload.commitId,
@@ -920,11 +1039,16 @@ export function createReviewListenerMiddleware(
       );
 
       try {
+        const generationStartedAt = nowForTrace();
         const sequenceSteps = await deps.sequenceDiagramGenerator.generateSequenceSteps({
           commitId: action.payload.commitId,
           commit: context.commit,
           files: context.files,
           hunks: context.hunks,
+        });
+        trace.mark("sequence-generation-complete", {
+          elapsedMs: durationMsSince(generationStartedAt),
+          stepCount: sequenceSteps.length,
         });
 
         listenerApi.dispatch(
@@ -942,6 +1066,10 @@ export function createReviewListenerMiddleware(
             analysis: toCachedAnalysisData(nextAiAnalysis),
           });
         }
+        traceSummaryFields = {
+          success: true,
+          stepCount: sequenceSteps.length,
+        };
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Failed to generate sequence diagram.";
@@ -951,6 +1079,9 @@ export function createReviewListenerMiddleware(
             errorMessage: message,
           }),
         );
+        trace.fail(error);
+      } finally {
+        trace.end(traceSummaryFields);
       }
     },
   });

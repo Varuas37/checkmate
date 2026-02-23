@@ -2,9 +2,9 @@ import { combineReducers, configureStore } from "@reduxjs/toolkit";
 
 import type { ReviewRootState } from "../../../application/review/index.ts";
 import {
-  createClaudeSdkCommitAnalyser,
-  createClaudeSdkReviewPublisher,
-  createClaudeSdkSequenceDiagramGenerator,
+  createAgentCommitAnalyser,
+  createAgentReviewPublisher,
+  createAgentSequenceDiagramGenerator,
   createClaudeSdkStandardsAnalyser,
   createTauriGitCommitReviewDataSource,
   createMockCommitReviewDataSource,
@@ -44,9 +44,9 @@ export function createReviewStore(options: CreateReviewStoreOptions = {}) {
     }),
     standardsEvaluator: createRuleTextStandardsEvaluator(),
     standardsAnalyser: createClaudeSdkStandardsAnalyser(),
-    reviewPublisher: createClaudeSdkReviewPublisher(),
-    commitAnalyser: createClaudeSdkCommitAnalyser(),
-    sequenceDiagramGenerator: createClaudeSdkSequenceDiagramGenerator(),
+    reviewPublisher: createAgentReviewPublisher(),
+    commitAnalyser: createAgentCommitAnalyser(),
+    sequenceDiagramGenerator: createAgentSequenceDiagramGenerator(),
     nowIso: () => new Date().toISOString(),
     createId: createIncrementingIdFactory("review"),
   };

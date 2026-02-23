@@ -56,6 +56,243 @@ function encodeArrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(output);
 }
 
+const SUPPORTED_STORED_IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/gif",
+  "image/tiff",
+  "image/tif",
+]);
+
+function normalizeImageMimeType(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "image/tif") {
+    return "image/tiff";
+  }
+  if (normalized === "image/jpg") {
+    return "image/jpeg";
+  }
+  return normalized;
+}
+
+function inferImageMimeTypeFromName(fileName: string): string | null {
+  const lowered = fileName.trim().toLowerCase();
+  if (lowered.endsWith(".png")) return "image/png";
+  if (lowered.endsWith(".jpg") || lowered.endsWith(".jpeg")) return "image/jpeg";
+  if (lowered.endsWith(".webp")) return "image/webp";
+  if (lowered.endsWith(".gif")) return "image/gif";
+  if (lowered.endsWith(".tif") || lowered.endsWith(".tiff")) return "image/tiff";
+  return null;
+}
+
+async function transcodeImageFileToPng(file: File): Promise<File | null> {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const bitmap = await createImageBitmap(file);
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        return null;
+      }
+
+      context.drawImage(bitmap, 0, 0);
+      const pngBlob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((blob) => resolve(blob), "image/png");
+      });
+      if (!pngBlob) {
+        return null;
+      }
+
+      return new File([pngBlob], "pasted-image.png", {
+        type: "image/png",
+        lastModified: Date.now(),
+      });
+    } finally {
+      bitmap.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function normalizeImageFileForStorage(
+  file: File,
+): Promise<{ readonly file: File; readonly mimeType: string } | null> {
+  let mimeType = normalizeImageMimeType(file.type);
+  if (mimeType.length === 0) {
+    mimeType = inferImageMimeTypeFromName(file.name) ?? "";
+  }
+
+  if (SUPPORTED_STORED_IMAGE_MIME_TYPES.has(mimeType)) {
+    return {
+      file,
+      mimeType,
+    };
+  }
+
+  const pngFile = await transcodeImageFileToPng(file);
+  if (!pngFile) {
+    return null;
+  }
+
+  return {
+    file: pngFile,
+    mimeType: "image/png",
+  };
+}
+
+function lineFeatureTooltip(featureTitle: string | undefined): string {
+  const normalized = featureTitle?.trim() ?? "";
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  return "No feature found";
+}
+
+function uniqueImageFiles(files: readonly File[]): readonly File[] {
+  const deduped = new Map<string, File>();
+  files.forEach((file) => {
+    const key = `${file.name}|${file.type}|${file.size}|${file.lastModified}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, file);
+    }
+  });
+  return [...deduped.values()];
+}
+
+function isLikelyImageFile(file: File, explicitMimeType?: string): boolean {
+  const normalizedExplicitType = normalizeImageMimeType(explicitMimeType ?? "");
+  if (normalizedExplicitType.startsWith("image/")) {
+    return true;
+  }
+
+  const normalizedFileType = normalizeImageMimeType(file.type);
+  if (normalizedFileType.startsWith("image/")) {
+    return true;
+  }
+
+  if (inferImageMimeTypeFromName(file.name) !== null) {
+    return true;
+  }
+
+  return normalizedExplicitType.length === 0 && normalizedFileType.length === 0 && file.size > 0;
+}
+
+function collectClipboardImageFiles(clipboardData: DataTransfer | null): readonly File[] {
+  if (!clipboardData) {
+    return [];
+  }
+
+  const files: File[] = [];
+
+  const itemList = clipboardData.items;
+  if (itemList && itemList.length > 0) {
+    [...itemList].forEach((item) => {
+      if (item.kind !== "file") {
+        return;
+      }
+
+      const file = item.getAsFile();
+      if (file && isLikelyImageFile(file, item.type)) {
+        files.push(file);
+      }
+    });
+  }
+
+  const fileList = clipboardData.files;
+  if (fileList && fileList.length > 0) {
+    [...fileList].forEach((file) => {
+      if (isLikelyImageFile(file)) {
+        files.push(file);
+      }
+    });
+  }
+
+  return uniqueImageFiles(files);
+}
+
+async function readClipboardImageFilesFallback(): Promise<readonly File[]> {
+  if (typeof navigator === "undefined" || !navigator.clipboard?.read) {
+    return [];
+  }
+
+  try {
+    const clipboardItems = await navigator.clipboard.read();
+    const files: File[] = [];
+    let index = 0;
+
+    for (const item of clipboardItems) {
+      for (const type of item.types) {
+        const normalizedType = type.toLowerCase();
+        if (!normalizedType.startsWith("image/")) {
+          continue;
+        }
+
+        const blob = await item.getType(type);
+        const extension = normalizedType.slice("image/".length) || "png";
+        const now = Date.now();
+        files.push(new File([blob], `clipboard-image-${now}-${index}.${extension}`, {
+          type: normalizedType,
+          lastModified: now,
+        }));
+        index += 1;
+      }
+    }
+
+    return uniqueImageFiles(files);
+  } catch {
+    return [];
+  }
+}
+
+async function buildMarkdownSnippetsFromImageFiles(
+  imageFiles: readonly File[],
+): Promise<{ readonly snippets: readonly string[]; readonly attempted: number }> {
+  if (imageFiles.length === 0) {
+    return {
+      snippets: [],
+      attempted: 0,
+    };
+  }
+
+  const snippets: string[] = [];
+  for (const imageFile of imageFiles) {
+    const normalized = await normalizeImageFileForStorage(imageFile);
+    if (!normalized) {
+      continue;
+    }
+
+    try {
+      const bytes = await normalized.file.arrayBuffer();
+      const encodedData = encodeArrayBufferToBase64(bytes);
+      const stored = await storeCommentImage({
+        base64Data: encodedData,
+        mimeType: normalized.mimeType,
+      });
+      const markdown = buildManagedCommentImageMarkdown(stored.imageRef, "pasted image");
+      if (markdown.length > 0) {
+        snippets.push(markdown);
+      }
+    } catch {
+      // Keep editing flow stable if one image fails to persist.
+    }
+  }
+
+  return {
+    snippets,
+    attempted: imageFiles.length,
+  };
+}
+
 function readCommentDraftFromStorage(storageKey: string | null): DiffCommentDraft | null {
   if (!storageKey || typeof window === "undefined") {
     return null;
@@ -1200,8 +1437,10 @@ function renderSplitLine(
   const oldSelectable = selection.isLineSelectable("old", line.oldLineNumber);
   const newSelectable = selection.isLineSelectable("new", line.newLineNumber);
 
+  const tooltip = lineFeatureTooltip(featureTitle);
+
   return (
-    <div key={rowKey} className="grid grid-cols-2 font-mono text-[11px] leading-6" title={featureTitle}>
+    <div key={rowKey} className="grid grid-cols-2 font-mono text-[11px] leading-6">
       <div
         className={cn(
           "grid min-w-0 grid-cols-[3.25rem_1.25rem_minmax(0,1fr)] overflow-x-auto border-r border-border/30 pr-2",
@@ -1220,11 +1459,14 @@ function renderSplitLine(
                   selection.onSelectLine(event, "old", line.oldLineNumber);
                 }}
                 aria-label={`Select old line ${line.oldLineNumber}`}
+                title={tooltip}
               >
                 {line.oldLineNumber}
               </button>
             ) : (
-              <span className="select-none px-1.5 text-right text-muted/75">{line.oldLineNumber}</span>
+              <span className="select-none px-1.5 text-right text-muted/75" title={tooltip}>
+                {line.oldLineNumber}
+              </span>
             )}
           </div>
         ) : (
@@ -1267,11 +1509,14 @@ function renderSplitLine(
                   selection.onSelectLine(event, "new", line.newLineNumber);
                 }}
                 aria-label={`Select new line ${line.newLineNumber}`}
+                title={tooltip}
               >
                 {line.newLineNumber}
               </button>
             ) : (
-              <span className="select-none px-1.5 text-right text-muted/75">{line.newLineNumber}</span>
+              <span className="select-none px-1.5 text-right text-muted/75" title={tooltip}>
+                {line.newLineNumber}
+              </span>
             )}
           </div>
         ) : (
@@ -1312,6 +1557,8 @@ function renderUnifiedLine(
   const oldSelectable = selection.isLineSelectable("old", line.oldLineNumber);
   const newSelectable = selection.isLineSelectable("new", line.newLineNumber);
 
+  const tooltip = lineFeatureTooltip(featureTitle);
+
   return (
     <div
       key={rowKey}
@@ -1320,7 +1567,6 @@ function renderUnifiedLine(
         unifiedRowClass(line.kind),
         (oldSelected || newSelected) && "ring-inset ring-1 ring-accent/40",
       )}
-      title={featureTitle}
     >
       {line.oldLineNumber !== undefined ? (
         <div className="flex items-center justify-end gap-1 pr-1">
@@ -1333,11 +1579,14 @@ function renderUnifiedLine(
                 selection.onSelectLine(event, "old", line.oldLineNumber);
               }}
               aria-label={`Select old line ${line.oldLineNumber}`}
+              title={tooltip}
             >
               {line.oldLineNumber}
             </button>
           ) : (
-            <div className="select-none px-1.5 text-right text-muted/75">{line.oldLineNumber}</div>
+            <div className="select-none px-1.5 text-right text-muted/75" title={tooltip}>
+              {line.oldLineNumber}
+            </div>
           )}
         </div>
       ) : (
@@ -1354,11 +1603,14 @@ function renderUnifiedLine(
                 selection.onSelectLine(event, "new", line.newLineNumber);
               }}
               aria-label={`Select new line ${line.newLineNumber}`}
+              title={tooltip}
             >
               {line.newLineNumber}
             </button>
           ) : (
-            <div className="select-none px-1.5 text-right text-muted/75">{line.newLineNumber}</div>
+            <div className="select-none px-1.5 text-right text-muted/75" title={tooltip}>
+              {line.newLineNumber}
+            </div>
           )}
         </div>
       ) : (
@@ -1388,6 +1640,8 @@ function renderFullFileLine(
   const selected = selection.isLineSelected(side, lineNumber);
   const selectable = selection.isLineSelectable(side, lineNumber);
 
+  const tooltip = lineFeatureTooltip(featureTitle);
+
   return (
     <div
       key={rowKey}
@@ -1397,7 +1651,6 @@ function renderFullFileLine(
         changed && mode === "new" && "bg-positive/10",
         selected && "ring-inset ring-1 ring-accent/40",
       )}
-      title={featureTitle}
     >
       {selectable ? (
         <div className="flex items-center justify-end gap-1 pr-1">
@@ -1409,12 +1662,15 @@ function renderFullFileLine(
               selection.onSelectLine(event, side, lineNumber);
             }}
             aria-label={`Select ${mode} line ${lineNumber}`}
+            title={tooltip}
           >
             {lineNumber}
           </button>
         </div>
       ) : (
-        <div className="select-none px-2 text-right text-muted/75">{lineNumber}</div>
+        <div className="select-none px-2 text-right text-muted/75" title={tooltip}>
+          {lineNumber}
+        </div>
       )}
       <div
         className={cn(
@@ -1966,53 +2222,30 @@ export function DiffViewer({
   };
 
   const handleReviewBodyPaste = async (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
-    const clipboardItems = event.clipboardData?.items;
-    if (!clipboardItems || clipboardItems.length === 0) {
-      return;
+    setSelectionMessage(null);
+
+    let imageFiles = collectClipboardImageFiles(event.clipboardData);
+    if (imageFiles.length === 0) {
+      imageFiles = await readClipboardImageFilesFallback();
     }
 
-    const imageItems = [...clipboardItems].filter(
-      (item) => item.kind === "file" && item.type.toLowerCase().startsWith("image/"),
-    );
-    if (imageItems.length === 0) {
+    if (imageFiles.length === 0) {
       return;
     }
 
     event.preventDefault();
 
-    const markdownSnippets: string[] = [];
-    for (const item of imageItems) {
-      const fileItem = item.getAsFile();
-      if (!fileItem) {
-        continue;
-      }
-
-      const normalizedMimeType = fileItem.type.trim().toLowerCase();
-      if (!normalizedMimeType.startsWith("image/")) {
-        continue;
-      }
-
-      try {
-        const bytes = await fileItem.arrayBuffer();
-        const encodedData = encodeArrayBufferToBase64(bytes);
-        const stored = await storeCommentImage({
-          base64Data: encodedData,
-          mimeType: normalizedMimeType,
-        });
-        const markdown = buildManagedCommentImageMarkdown(stored.imageRef, "pasted image");
-        if (markdown.length > 0) {
-          markdownSnippets.push(markdown);
-        }
-      } catch {
-        // Keep editing flow stable if one image fails to persist.
-      }
+    const { snippets, attempted } = await buildMarkdownSnippetsFromImageFiles(imageFiles);
+    if (attempted > 0 && snippets.length < attempted) {
+      setSelectionMessage("Some pasted images could not be attached.");
     }
 
-    if (markdownSnippets.length === 0) {
+    if (snippets.length === 0) {
+      setSelectionMessage("Unable to attach pasted image from clipboard.");
       return;
     }
 
-    const snippet = markdownSnippets.join("\n");
+    const snippet = snippets.join("\n");
     insertReviewBodyAtCursor(
       reviewBody.length > 0 && !reviewBody.endsWith("\n") ? `\n${snippet}\n` : `${snippet}\n`,
     );
@@ -2027,15 +2260,11 @@ export function DiffViewer({
       return;
     }
 
-    const clipboardItems = event.clipboardData?.items;
-    if (!clipboardItems || clipboardItems.length === 0) {
-      return;
+    let imageFiles = collectClipboardImageFiles(event.clipboardData);
+    if (imageFiles.length === 0) {
+      imageFiles = await readClipboardImageFilesFallback();
     }
-
-    const imageItems = [...clipboardItems].filter(
-      (item) => item.kind === "file" && item.type.toLowerCase().startsWith("image/"),
-    );
-    if (imageItems.length === 0) {
+    if (imageFiles.length === 0) {
       return;
     }
 
@@ -2045,39 +2274,12 @@ export function DiffViewer({
     const selectionStart = target.selectionStart ?? 0;
     const selectionEnd = target.selectionEnd ?? selectionStart;
 
-    const markdownSnippets: string[] = [];
-    for (const item of imageItems) {
-      const fileItem = item.getAsFile();
-      if (!fileItem) {
-        continue;
-      }
-
-      const normalizedMimeType = fileItem.type.trim().toLowerCase();
-      if (!normalizedMimeType.startsWith("image/")) {
-        continue;
-      }
-
-      try {
-        const bytes = await fileItem.arrayBuffer();
-        const encodedData = encodeArrayBufferToBase64(bytes);
-        const stored = await storeCommentImage({
-          base64Data: encodedData,
-          mimeType: normalizedMimeType,
-        });
-        const markdown = buildManagedCommentImageMarkdown(stored.imageRef, "pasted image");
-        if (markdown.length > 0) {
-          markdownSnippets.push(markdown);
-        }
-      } catch {
-        // Keep editing flow stable if one image fails to persist.
-      }
-    }
-
-    if (markdownSnippets.length === 0) {
+    const { snippets } = await buildMarkdownSnippetsFromImageFiles(imageFiles);
+    if (snippets.length === 0) {
       return;
     }
 
-    const snippet = markdownSnippets.join("\n");
+    const snippet = snippets.join("\n");
     let nextCursor = selectionStart + snippet.length;
     setPromptByThreadId((current) => {
       const currentPrompt = current[normalizedThreadId] ?? "";

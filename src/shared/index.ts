@@ -100,3 +100,8 @@ export {
   testAnthropicApiConnection,
   testCliAgentConnection,
 } from "./integrationConnection.ts";
+export {
+  startLatencyTrace,
+  type LatencyTrace,
+  type StartLatencyTraceOptions,
+} from "./latencyTrace.ts";

@@ -1119,6 +1119,7 @@ fn extension_for_mime_type(mime_type: &str) -> Option<&'static str> {
         "image/jpeg" | "image/jpg" => Some("jpg"),
         "image/webp" => Some("webp"),
         "image/gif" => Some("gif"),
+        "image/tiff" | "image/tif" => Some("tiff"),
         _ => None,
     }
 }
@@ -1129,6 +1130,7 @@ fn mime_type_for_extension(extension: &str) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
+        "tiff" | "tif" => "image/tiff",
         _ => "application/octet-stream",
     }
 }

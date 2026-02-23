@@ -123,9 +123,9 @@ function installMockLocalStorage(): void {
   });
 }
 
-test("publish listener transitions through publishing then stores Claude result", async () => {
+test("publish listener transitions through publishing then stores adapter result", async () => {
   const deferred = createDeferred<{
-    readonly provider: "claude-sdk";
+    readonly provider: "ai-sdk";
     readonly requestId: string;
     readonly publicationId: string;
     readonly publishedAtIso: string;
@@ -166,7 +166,7 @@ test("publish listener transitions through publishing then stores Claude result"
   assert.equal(requests[0]?.commitSha, "abc123def456");
 
   deferred.resolve({
-    provider: "claude-sdk",
+    provider: "ai-sdk",
     requestId: "publish-request-1",
     publicationId: "claude-msg-1",
     publishedAtIso: "2026-02-22T20:01:00.000Z",
@@ -190,7 +190,7 @@ test("publish listener captures adapter failures in UI state", async () => {
     dependencies: {
       reviewPublisher: {
         publishReview: async () => {
-          throw new Error("Claude adapter unavailable");
+          throw new Error("AI adapter unavailable");
         },
       },
       nowIso: () => "2026-02-22T20:00:00.000Z",
@@ -210,7 +210,7 @@ test("publish listener captures adapter failures in UI state", async () => {
 
   const uiState = store.getState().reviewUi;
   assert.equal(uiState.publishStatus, "error");
-  assert.equal(uiState.publishError, "Claude adapter unavailable");
+  assert.equal(uiState.publishError, "AI adapter unavailable");
   assert.equal(uiState.publishResult, null);
   assert.equal(uiState.lastPublishPackage?.commitId, "commit-1");
 });

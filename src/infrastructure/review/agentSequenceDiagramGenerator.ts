@@ -9,7 +9,7 @@ import {
   readCliPreferenceFromStorage,
 } from "../../shared/index.ts";
 
-interface ClaudeSdkClient {
+interface SdkClient {
   readonly messages: {
     create(input: {
       readonly model: string;
@@ -23,9 +23,9 @@ interface ClaudeSdkClient {
   };
 }
 
-type ClaudeSdkClientFactory = (apiKey: string) => Promise<ClaudeSdkClient>;
+type SdkClientFactory = (apiKey: string) => Promise<SdkClient>;
 
-const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
+const DEFAULT_PROVIDER_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_MAX_OUTPUT_TOKENS = 1200;
 const DEFAULT_MAX_AUTO_ATTEMPTS = 2;
 const MAX_FILES_IN_PROMPT = 20;
@@ -174,7 +174,7 @@ function buildBasePrompt(input: AnalyseCommitInput): string {
           targetId: "commit_analyser",
           targetLabel: "CommitAnalyser",
           message: "ANALYSE commit diff context",
-          filePath: "src/infrastructure/review/claudeSdkCommitAnalyser.ts",
+          filePath: "src/infrastructure/review/agentCommitAnalyser.ts",
         },
         {
           token: "S3",
@@ -360,7 +360,7 @@ function parseSequenceResponse(
   }
 }
 
-function isMissingClaudeSdkError(error: unknown): boolean {
+function isMissingSdkClientError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
@@ -369,13 +369,13 @@ function isMissingClaudeSdkError(error: unknown): boolean {
   return message.includes("@anthropic-ai/sdk") || message.includes("anthropic constructor");
 }
 
-async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
+async function createSdkClient(apiKey: string): Promise<SdkClient> {
   let sdkModule: unknown;
 
   try {
     sdkModule = await import("@anthropic-ai/sdk");
   } catch {
-    throw new Error('Claude SDK package "@anthropic-ai/sdk" is not installed.');
+    throw new Error('AI SDK package "@anthropic-ai/sdk" is not installed.');
   }
 
   const candidate =
@@ -389,7 +389,7 @@ async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
   const ClientConstructor = candidate as new (options: {
     readonly apiKey: string;
     readonly dangerouslyAllowBrowser?: boolean;
-  }) => ClaudeSdkClient;
+  }) => SdkClient;
 
   const client = new ClientConstructor({
     apiKey,
@@ -397,15 +397,15 @@ async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
   });
 
   if (!client.messages || typeof client.messages.create !== "function") {
-    throw new Error("Claude SDK client is missing messages.create().");
+    throw new Error("AI SDK client is missing messages.create().");
   }
 
   return client;
 }
 
-async function runClaudePromptViaTauri(prompt: string): Promise<string> {
+async function runFallbackPromptViaTauri(prompt: string): Promise<string> {
   if (!isTauriRuntime()) {
-    throw new Error("Claude CLI fallback is available only in Tauri runtime.");
+    throw new Error("Fallback CLI is available only in Tauri runtime.");
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
@@ -425,27 +425,27 @@ async function runCliAgentPromptViaTauri(
   return invoke<string>("run_cli_agent_prompt", { command, args: [...args], prompt });
 }
 
-export interface ClaudeSdkSequenceDiagramGeneratorOptions {
+export interface AgentSequenceDiagramGeneratorOptions {
   readonly apiKey?: string;
   readonly model?: string;
   readonly maxOutputTokens?: number;
   readonly maxAutoAttempts?: number;
-  readonly createClient?: ClaudeSdkClientFactory;
+  readonly createClient?: SdkClientFactory;
 }
 
-export class ClaudeSdkSequenceDiagramGenerator implements SequenceDiagramGenerator {
+export class AgentSequenceDiagramGenerator implements SequenceDiagramGenerator {
   readonly #apiKeyOverride: string | null;
   readonly #model: string;
   readonly #maxOutputTokens: number;
   readonly #maxAutoAttempts: number;
-  readonly #createClient: ClaudeSdkClientFactory;
+  readonly #createClient: SdkClientFactory;
 
-  constructor(options: ClaudeSdkSequenceDiagramGeneratorOptions = {}) {
+  constructor(options: AgentSequenceDiagramGeneratorOptions = {}) {
     this.#apiKeyOverride = trimToNull(options.apiKey);
-    this.#model = trimToNull(options.model) ?? DEFAULT_CLAUDE_MODEL;
+    this.#model = trimToNull(options.model) ?? DEFAULT_PROVIDER_MODEL;
     this.#maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
     this.#maxAutoAttempts = Math.max(1, options.maxAutoAttempts ?? DEFAULT_MAX_AUTO_ATTEMPTS);
-    this.#createClient = options.createClient ?? createClaudeSdkClient;
+    this.#createClient = options.createClient ?? createSdkClient;
   }
 
   #resolveApiKey(): string | null {
@@ -471,22 +471,22 @@ export class ClaudeSdkSequenceDiagramGenerator implements SequenceDiagramGenerat
           }
 
           try {
-            return await runClaudePromptViaTauri(prompt);
-          } catch (claudeFallbackError) {
+            return await runFallbackPromptViaTauri(prompt);
+          } catch (fallbackCliError) {
             const activeMessage =
               activeCliError instanceof Error ? activeCliError.message : "CLI execution failed.";
-            const claudeMessage =
-              claudeFallbackError instanceof Error
-                ? claudeFallbackError.message
-                : "Claude fallback failed.";
+            const fallbackMessage =
+              fallbackCliError instanceof Error
+                ? fallbackCliError.message
+                : "Fallback CLI failed.";
             throw new Error(
-              `Primary CLI agent "${activeCliAgent.name}" failed (${activeMessage}) and Claude CLI fallback failed (${claudeMessage}).`,
+              `Primary CLI agent "${activeCliAgent.name}" failed (${activeMessage}) and fallback CLI failed (${fallbackMessage}).`,
             );
           }
         }
       }
 
-      return runClaudePromptViaTauri(prompt);
+      return runFallbackPromptViaTauri(prompt);
     };
 
     // Prefer CLI over API: try configured CLI first, fall back to SDK.
@@ -519,7 +519,7 @@ export class ClaudeSdkSequenceDiagramGenerator implements SequenceDiagramGenerat
 
       return extractTextFromResponse(response);
     } catch (error) {
-      if (!isTauriRuntime() || !isMissingClaudeSdkError(error)) {
+      if (!isTauriRuntime() || !isMissingSdkClientError(error)) {
         throw error;
       }
 
@@ -566,8 +566,8 @@ export class ClaudeSdkSequenceDiagramGenerator implements SequenceDiagramGenerat
   }
 }
 
-export function createClaudeSdkSequenceDiagramGenerator(
-  options: ClaudeSdkSequenceDiagramGeneratorOptions = {},
+export function createAgentSequenceDiagramGenerator(
+  options: AgentSequenceDiagramGeneratorOptions = {},
 ): SequenceDiagramGenerator {
-  return new ClaudeSdkSequenceDiagramGenerator(options);
+  return new AgentSequenceDiagramGenerator(options);
 }

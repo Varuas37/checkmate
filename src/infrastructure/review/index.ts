@@ -8,20 +8,20 @@ export {
   type TauriGitCommitReviewDataSourceOptions,
 } from "./tauriGitCommitReviewDataSource.ts";
 export {
-  ClaudeSdkReviewPublisher,
-  createClaudeSdkReviewPublisher,
-  type ClaudeSdkReviewPublisherOptions,
-} from "./claudeSdkReviewPublisher.ts";
+  AgentReviewPublisher,
+  createAgentReviewPublisher,
+  type AgentReviewPublisherOptions,
+} from "./agentReviewPublisher.ts";
 export {
-  ClaudeSdkCommitAnalyser,
-  createClaudeSdkCommitAnalyser,
-  type ClaudeSdkCommitAnalyserOptions,
-} from "./claudeSdkCommitAnalyser.ts";
+  AgentCommitAnalyser,
+  createAgentCommitAnalyser,
+  type AgentCommitAnalyserOptions,
+} from "./agentCommitAnalyser.ts";
 export {
-  ClaudeSdkSequenceDiagramGenerator,
-  createClaudeSdkSequenceDiagramGenerator,
-  type ClaudeSdkSequenceDiagramGeneratorOptions,
-} from "./claudeSdkSequenceDiagramGenerator.ts";
+  AgentSequenceDiagramGenerator,
+  createAgentSequenceDiagramGenerator,
+  type AgentSequenceDiagramGeneratorOptions,
+} from "./agentSequenceDiagramGenerator.ts";
 export {
   ClaudeSdkStandardsAnalyser,
   createClaudeSdkStandardsAnalyser,

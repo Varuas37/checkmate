@@ -13,13 +13,14 @@ import {
   readAiAnalysisConfigFromStorage,
   readApiKeyFromStorage,
   readCliPreferenceFromStorage,
+  startLatencyTrace,
 } from "../../shared/index.ts";
 
 // ---------------------------------------------------------------------------
 // SDK client interface + factory
 // ---------------------------------------------------------------------------
 
-interface ClaudeSdkClient {
+interface SdkClient {
   readonly messages: {
     create(input: {
       readonly model: string;
@@ -33,7 +34,7 @@ interface ClaudeSdkClient {
   };
 }
 
-type ClaudeSdkClientFactory = (apiKey: string) => Promise<ClaudeSdkClient>;
+type SdkClientFactory = (apiKey: string) => Promise<SdkClient>;
 
 // ---------------------------------------------------------------------------
 // Domain-adjacent local types (derived from the port, avoids extra imports)
@@ -47,7 +48,7 @@ type DiffHunk = AnalyseCommitInput["hunks"][number];
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
+const DEFAULT_PROVIDER_MODEL = "claude-haiku-4-5-20251001";
 
 /** Max tokens for a single per-file summary call. One JSON object fits easily. */
 const PER_FILE_MAX_OUTPUT_TOKENS = 512;
@@ -72,6 +73,8 @@ const MAX_HUNKS_IN_PROMPT = 10;
 const MAX_LINES_PER_HUNK = 25;
 /** Max files in the legacy single-call prompt. */
 const MAX_FILES_IN_PROMPT = 20;
+/** Max parallel file summary calls for SDK path. */
+const FILE_SUMMARY_CONCURRENCY = 4;
 
 // ---------------------------------------------------------------------------
 // File exclusion — pattern-based + churn threshold
@@ -158,6 +161,117 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   }
 }
 
+function nowForTrace(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function durationMsSince(startedAt: number): number {
+  const elapsed = nowForTrace() - startedAt;
+  return Math.round(elapsed * 100) / 100;
+}
+
+async function mapWithConcurrency<TInput, TOutput>(
+  input: readonly TInput[],
+  options: {
+    readonly concurrency: number;
+    readonly signal?: AbortSignal;
+    readonly mapper: (item: TInput, index: number) => Promise<TOutput>;
+  },
+): Promise<readonly TOutput[]> {
+  const concurrency = Math.max(1, Math.floor(options.concurrency));
+  const results = new Array<TOutput>(input.length);
+  let nextIndex = 0;
+  let activeCount = 0;
+  let settled = false;
+
+  return new Promise<readonly TOutput[]>((resolve, reject) => {
+    const finish = (resolver: () => void): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (options.signal && abortHandler) {
+        options.signal.removeEventListener("abort", abortHandler);
+      }
+      resolver();
+    };
+
+    const fail = (error: unknown): void => {
+      finish(() => {
+        reject(error);
+      });
+    };
+
+    const onItemDone = (): void => {
+      if (settled) {
+        return;
+      }
+
+      if (nextIndex >= input.length && activeCount === 0) {
+        finish(() => {
+          resolve(results);
+        });
+        return;
+      }
+
+      launch();
+    };
+
+    const launch = (): void => {
+      if (settled) {
+        return;
+      }
+
+      if (options.signal?.aborted) {
+        const abortError = new Error("Commit analysis cancelled.");
+        abortError.name = "AbortError";
+        fail(abortError);
+        return;
+      }
+
+      while (activeCount < concurrency && nextIndex < input.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        activeCount += 1;
+
+        void options.mapper(input[index] as TInput, index)
+          .then((value) => {
+            results[index] = value;
+            activeCount -= 1;
+            onItemDone();
+          })
+          .catch((error) => {
+            fail(error);
+          });
+      }
+    };
+
+    const abortHandler = (): void => {
+      const abortError = new Error("Commit analysis cancelled.");
+      abortError.name = "AbortError";
+      fail(abortError);
+    };
+
+    if (options.signal) {
+      options.signal.addEventListener("abort", abortHandler, { once: true });
+    }
+
+    if (input.length === 0) {
+      finish(() => {
+        resolve([]);
+      });
+      return;
+    }
+
+    launch();
+  });
+}
+
 async function yieldToUiThread(): Promise<void> {
   if (typeof globalThis.requestAnimationFrame === "function") {
     await new Promise<void>((resolve) => {
@@ -189,13 +303,13 @@ function resolveDefaultApiKey(): string | null {
   );
 }
 
-async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
+async function createSdkClient(apiKey: string): Promise<SdkClient> {
   let sdkModule: unknown;
 
   try {
     sdkModule = await import("@anthropic-ai/sdk");
   } catch {
-    throw new Error('Claude SDK package "@anthropic-ai/sdk" is not installed.');
+    throw new Error('AI SDK package "@anthropic-ai/sdk" is not installed.');
   }
 
   const candidate =
@@ -211,20 +325,20 @@ async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
   const ClientConstructor = candidate as new (options: {
     readonly apiKey: string;
     readonly dangerouslyAllowBrowser?: boolean;
-  }) => ClaudeSdkClient;
+  }) => SdkClient;
   const client = new ClientConstructor({
     apiKey,
     dangerouslyAllowBrowser: true,
   });
 
   if (!client.messages || typeof client.messages.create !== "function") {
-    throw new Error("Claude SDK client is missing messages.create().");
+    throw new Error("AI SDK client is missing messages.create().");
   }
 
   return client;
 }
 
-function isMissingClaudeSdkError(error: unknown): boolean {
+function isMissingSdkClientError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
@@ -235,9 +349,9 @@ function isMissingClaudeSdkError(error: unknown): boolean {
   );
 }
 
-async function runClaudePromptViaTauri(prompt: string): Promise<string> {
+async function runFallbackPromptViaTauri(prompt: string): Promise<string> {
   if (!isTauriRuntime()) {
-    throw new Error("Claude CLI fallback is available only in Tauri runtime.");
+    throw new Error("Fallback CLI is available only in Tauri runtime.");
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
@@ -830,20 +944,20 @@ function parseLegacyResponse(
 // Exported adapter
 // ---------------------------------------------------------------------------
 
-export interface ClaudeSdkCommitAnalyserOptions {
+export interface AgentCommitAnalyserOptions {
   readonly apiKey?: string;
   readonly model?: string;
 }
 
-export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
+export class AgentCommitAnalyser implements CommitAnalyser {
   readonly #apiKeyOverride: string | null;
   readonly #model: string;
-  readonly #createClient: ClaudeSdkClientFactory;
+  readonly #createClient: SdkClientFactory;
 
-  constructor(options: ClaudeSdkCommitAnalyserOptions = {}) {
+  constructor(options: AgentCommitAnalyserOptions = {}) {
     this.#apiKeyOverride = trimToNull(options.apiKey);
-    this.#model = trimToNull(options.model) ?? DEFAULT_CLAUDE_MODEL;
-    this.#createClient = createClaudeSdkClient;
+    this.#model = trimToNull(options.model) ?? DEFAULT_PROVIDER_MODEL;
+    this.#createClient = createSdkClient;
   }
 
   #resolveApiKey(): string | null {
@@ -854,7 +968,7 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
 
   /** Phase 1: summarise a single file. Never throws — returns a placeholder on failure. */
   async #analyseFileSdk(
-    client: ClaudeSdkClient,
+    client: SdkClient,
     commit: CommitEntity,
     file: ChangedFile,
     fileHunks: readonly DiffHunk[],
@@ -879,7 +993,7 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
 
   /** Phase 2: generate overviewCards + flowComparisons from collected file summaries. */
   async #generateOverviewSdk(
-    client: ClaudeSdkClient,
+    client: SdkClient,
     commit: CommitEntity,
     fileSummaries: readonly AiFileSummary[],
     hunkHeadersByFilePath: readonly {
@@ -903,11 +1017,31 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
   }
 
   async analyseCommit(input: AnalyseCommitInput): Promise<AnalyseCommitOutput> {
+    const trace = startLatencyTrace({
+      scope: "commit-analysis",
+      traceId: `commit-analysis-${input.commitId}-${Date.now()}`,
+      fields: {
+        commitId: input.commitId,
+        fileCount: input.files.length,
+        hunkCount: input.hunks.length,
+      },
+    });
+    let traceSummaryFields: Readonly<Record<string, unknown>> | undefined;
+    let traceEnded = false;
+    const finishTrace = (fields?: Readonly<Record<string, unknown>>) => {
+      if (traceEnded) {
+        return;
+      }
+
+      traceEnded = true;
+      trace.end(fields);
+    };
+
     const resolvedApiKey = this.#resolveApiKey();
     const preferCli = readCliPreferenceFromStorage();
     const activeCliAgent = readActiveCliAgentFromStorage();
 
-    /** Runs the configured CLI agent, with a Claude CLI fallback if the active agent fails. */
+    /** Runs the configured CLI agent, with a default CLI fallback if the active agent fails. */
     const runViaCli = async (prompt: string): Promise<string> => {
       if (activeCliAgent && isTauriRuntime()) {
         try {
@@ -923,35 +1057,49 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
           }
 
           try {
-            return await runClaudePromptViaTauri(prompt);
-          } catch (claudeFallbackError) {
+            return await runFallbackPromptViaTauri(prompt);
+          } catch (fallbackCliError) {
             const activeMessage =
               activeCliError instanceof Error
                 ? activeCliError.message
                 : "CLI execution failed.";
-            const claudeMessage =
-              claudeFallbackError instanceof Error
-                ? claudeFallbackError.message
-                : "Claude fallback failed.";
+            const fallbackMessage =
+              fallbackCliError instanceof Error
+                ? fallbackCliError.message
+                : "Fallback CLI failed.";
             throw new Error(
-              `Primary CLI agent "${activeCliAgent.name}" failed (${activeMessage}) and Claude CLI fallback failed (${claudeMessage}).`,
+              `Primary CLI agent "${activeCliAgent.name}" failed (${activeMessage}) and fallback CLI failed (${fallbackMessage}).`,
             );
           }
         }
       }
 
-      return runClaudePromptViaTauri(prompt);
+      return runFallbackPromptViaTauri(prompt);
     };
 
     // -----------------------------------------------------------------------
     // Prefer CLI over API: try configured CLI first, fall back to SDK
     // -----------------------------------------------------------------------
     if (preferCli && activeCliAgent && isTauriRuntime()) {
+      trace.mark("commit-analysis-cli-preferred", {
+        cliAgent: activeCliAgent.id,
+      });
       const legacyPrompt = buildLegacyPrompt(input);
       try {
+        const startedAt = nowForTrace();
         const cliResponse = await runViaCli(legacyPrompt);
+        trace.mark("commit-analysis-cli-response", {
+          elapsedMs: durationMsSince(startedAt),
+        });
         const parsed = parseLegacyResponse(cliResponse, input.commitId);
         if (parsed) {
+          traceSummaryFields = {
+            provider: "cli",
+            path: "preferred",
+            flowComparisonCount: parsed.flowComparisons.length,
+            fileSummaryCount: parsed.fileSummaries.length,
+          };
+          finishTrace(traceSummaryFields);
           return parsed;
         }
         if (!resolvedApiKey) {
@@ -962,6 +1110,8 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
       } catch (error) {
         // CLI failed — fall through to SDK if key is available, else throw below.
         if (!resolvedApiKey) {
+          trace.fail(error);
+          finishTrace(traceSummaryFields);
           const message =
             error instanceof Error ? error.message : "CLI execution failed.";
           throw new Error(
@@ -975,17 +1125,31 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
     // No API key → Tauri CLI fallback (single-call, legacy prompt)
     // -----------------------------------------------------------------------
     if (!resolvedApiKey) {
+      trace.mark("commit-analysis-cli-required");
       const legacyPrompt = buildLegacyPrompt(input);
       try {
+        const startedAt = nowForTrace();
         const cliResponse = await runViaCli(legacyPrompt);
+        trace.mark("commit-analysis-cli-response", {
+          elapsedMs: durationMsSince(startedAt),
+        });
         const parsed = parseLegacyResponse(cliResponse, input.commitId);
         if (!parsed) {
           throw new Error(
             "CLI response could not be parsed as valid analysis JSON.",
           );
         }
+        traceSummaryFields = {
+          provider: "cli",
+          path: "required",
+          flowComparisonCount: parsed.flowComparisons.length,
+          fileSummaryCount: parsed.fileSummaries.length,
+        };
+        finishTrace(traceSummaryFields);
         return parsed;
       } catch (error) {
+        trace.fail(error);
+        finishTrace(traceSummaryFields);
         const message =
           error instanceof Error ? error.message : "CLI fallback failed.";
         throw new Error(
@@ -995,11 +1159,18 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
     }
 
     // -----------------------------------------------------------------------
-    // SDK path — one file at a time (keeps UI responsive) then overview call
+    // SDK path — bounded parallel per-file summaries, then overview call
     // -----------------------------------------------------------------------
     try {
       throwIfAborted(input.abortSignal);
+      const clientCreateStartedAt = nowForTrace();
+      trace.mark("commit-analysis-sdk-client-create-start", {
+        model: this.#model,
+      });
       const client = await this.#createClient(resolvedApiKey);
+      trace.mark("commit-analysis-sdk-client-create-complete", {
+        elapsedMs: durationMsSince(clientCreateStartedAt),
+      });
       const { maxChurnThreshold } = readAiAnalysisConfigFromStorage();
 
       // Partition files: some are skipped (lock files, huge churn) and get
@@ -1017,6 +1188,19 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
         )
           return { kind: "skip-churn", file };
         return { kind: "analyse", file };
+      });
+      const analyseCount = partitioned.filter((entry) => entry.kind === "analyse").length;
+      const skippedPatternCount = partitioned.filter(
+        (entry) => entry.kind === "skip-pattern",
+      ).length;
+      const skippedChurnCount = partitioned.filter(
+        (entry) => entry.kind === "skip-churn",
+      ).length;
+      trace.mark("commit-analysis-files-partitioned", {
+        analyseCount,
+        skippedPatternCount,
+        skippedChurnCount,
+        maxChurnThreshold,
       });
 
       // Group hunks by fileId for targeted per-file prompts.
@@ -1053,51 +1237,77 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
         })
         .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
-      // Phase 1: analyse files lazily, one by one, yielding between files so
-      // rendering and interactions stay responsive in the webview.
-      const fileSummaries: AiFileSummary[] = [];
-      for (const p of partitioned) {
-        throwIfAborted(input.abortSignal);
+      // Phase 1: analyse files with bounded parallelism while preserving output order.
+      trace.mark("commit-analysis-file-summaries-start", {
+        concurrency: FILE_SUMMARY_CONCURRENCY,
+      });
+      const fileSummaries = await mapWithConcurrency<FilePartition, AiFileSummary>(partitioned, {
+        concurrency: FILE_SUMMARY_CONCURRENCY,
+        ...(input.abortSignal
+          ? {
+              signal: input.abortSignal,
+            }
+          : {}),
+        mapper: async (partition, index): Promise<AiFileSummary> => {
+          throwIfAborted(input.abortSignal);
 
-        if (p.kind === "skip-pattern") {
-          fileSummaries.push(
-            skippedFileSummary(p.file, "pattern", maxChurnThreshold),
-          );
-          continue;
-        }
-
-        if (p.kind === "skip-churn") {
-          fileSummaries.push(
-            skippedFileSummary(p.file, "churn", maxChurnThreshold),
-          );
-          continue;
-        }
-
-        try {
-          const summary = await this.#analyseFileSdk(
-            client,
-            input.commit,
-            p.file,
-            hunksByFileId.get(p.file.id) ?? [],
-          );
-          fileSummaries.push(summary);
-        } catch (error) {
-          if (isAbortError(error)) {
-            throw error;
+          if (partition.kind === "skip-pattern") {
+            return skippedFileSummary(partition.file, "pattern", maxChurnThreshold);
           }
 
-          fileSummaries.push({
-            filePath: p.file.path,
-            summary: "Summary unavailable.",
-            riskNote: "Summary unavailable.",
-          });
-        }
+          if (partition.kind === "skip-churn") {
+            return skippedFileSummary(partition.file, "churn", maxChurnThreshold);
+          }
 
-        await yieldToUiThread();
-      }
+          const startedAt = nowForTrace();
+          trace.mark("commit-analysis-file-summary-start", {
+            index,
+            filePath: partition.file.path,
+          });
+
+          try {
+            const summary = await this.#analyseFileSdk(
+              client,
+              input.commit,
+              partition.file,
+              hunksByFileId.get(partition.file.id) ?? [],
+            );
+            trace.mark("commit-analysis-file-summary-complete", {
+              index,
+              filePath: partition.file.path,
+              elapsedMs: durationMsSince(startedAt),
+            });
+            return summary;
+          } catch (error) {
+            if (isAbortError(error)) {
+              throw error;
+            }
+
+            trace.mark("commit-analysis-file-summary-failed", {
+              index,
+              filePath: partition.file.path,
+              elapsedMs: durationMsSince(startedAt),
+              message: error instanceof Error ? error.message : String(error),
+            });
+
+            return {
+              filePath: partition.file.path,
+              summary: "Summary unavailable.",
+              riskNote: "Summary unavailable.",
+            };
+          } finally {
+            await yieldToUiThread();
+          }
+        },
+      });
+      trace.mark("commit-analysis-file-summaries-complete", {
+        fileSummaryCount: fileSummaries.length,
+      });
 
       // Phase 2: generate overview from the collected summaries.
       throwIfAborted(input.abortSignal);
+      const overviewStartedAt = nowForTrace();
+      trace.mark("commit-analysis-overview-start");
       const { overviewCards, flowComparisons } =
         await this.#generateOverviewSdk(
           client,
@@ -1105,8 +1315,20 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
           fileSummaries,
           hunkHeadersByFilePath,
         );
+      trace.mark("commit-analysis-overview-complete", {
+        elapsedMs: durationMsSince(overviewStartedAt),
+        overviewCardCount: overviewCards.length,
+        flowComparisonCount: flowComparisons.length,
+      });
 
       throwIfAborted(input.abortSignal);
+
+      traceSummaryFields = {
+        provider: "sdk",
+        flowComparisonCount: flowComparisons.length,
+        fileSummaryCount: fileSummaries.length,
+        overviewCardCount: overviewCards.length,
+      };
 
       return {
         commitId: input.commitId,
@@ -1118,26 +1340,51 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
         standardsResults: [],
       };
     } catch (error) {
-      // In Tauri, fall back to CLI if the SDK module itself isn't available.
-      if (!isTauriRuntime() || !isMissingClaudeSdkError(error)) {
+      if (isAbortError(error)) {
+        trace.mark("commit-analysis-aborted");
         throw error;
       }
 
-      const legacyPrompt = buildLegacyPrompt(input);
-      const cliResponse = await runViaCli(legacyPrompt);
-      const parsed = parseLegacyResponse(cliResponse, input.commitId);
-      if (!parsed) {
-        throw new Error(
-          "CLI response could not be parsed as valid analysis JSON.",
-        );
+      // In Tauri, fall back to CLI if the SDK module itself isn't available.
+      if (isTauriRuntime() && isMissingSdkClientError(error)) {
+        try {
+          trace.mark("commit-analysis-sdk-missing-cli-fallback");
+          const legacyPrompt = buildLegacyPrompt(input);
+          const fallbackStartedAt = nowForTrace();
+          const cliResponse = await runViaCli(legacyPrompt);
+          trace.mark("commit-analysis-cli-fallback-response", {
+            elapsedMs: durationMsSince(fallbackStartedAt),
+          });
+          const parsed = parseLegacyResponse(cliResponse, input.commitId);
+          if (!parsed) {
+            throw new Error(
+              "CLI response could not be parsed as valid analysis JSON.",
+            );
+          }
+          traceSummaryFields = {
+            provider: "cli-fallback",
+            flowComparisonCount: parsed.flowComparisons.length,
+            fileSummaryCount: parsed.fileSummaries.length,
+          };
+          return parsed;
+        } catch (fallbackError) {
+          trace.fail(fallbackError, {
+            phase: "cli-fallback",
+          });
+          throw fallbackError;
+        }
       }
-      return parsed;
+
+      trace.fail(error);
+      throw error;
+    } finally {
+      finishTrace(traceSummaryFields);
     }
   }
 }
 
-export function createClaudeSdkCommitAnalyser(
-  options: ClaudeSdkCommitAnalyserOptions = {},
+export function createAgentCommitAnalyser(
+  options: AgentCommitAnalyserOptions = {},
 ): CommitAnalyser {
-  return new ClaudeSdkCommitAnalyser(options);
+  return new AgentCommitAnalyser(options);
 }
