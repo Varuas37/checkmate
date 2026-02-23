@@ -1,11 +1,11 @@
 import type { ReviewLoadRequest, ReviewTabOption, SampleCommitPreset } from "./types.ts";
 
 export const REVIEW_TABS: readonly ReviewTabOption[] = [
-  { id: "overview", label: "Overview" },
-  { id: "files", label: "Files" },
-  { id: "commit", label: "Commit" },
   { id: "summary", label: "Summary" },
+  { id: "sequence", label: "Sequence" },
+  { id: "files", label: "Files" },
   { id: "standards", label: "Standards" },
+  { id: "commit", label: "Commit" },
 ];
 
 export const DEFAULT_LOAD_REQUEST: ReviewLoadRequest = {

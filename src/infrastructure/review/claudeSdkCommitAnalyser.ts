@@ -315,7 +315,12 @@ function buildFilePrompt(
     .join("\n\n");
 
   const schema = JSON.stringify(
-    { filePath: "...", summary: "...", riskNote: "..." },
+    {
+      filePath: "...",
+      summary: "...",
+      riskNote: "...",
+      technicalDetails: "...",
+    },
     null,
     2,
   );
@@ -333,8 +338,10 @@ function buildFilePrompt(
     "",
     "Rules:",
     "- filePath must be exactly the file path listed above.",
-    "- summary: 1-2 sentences describing what changed and why.",
-    '- riskNote: 1 sentence on the main risk, or "Low risk." if none.',
+    "- summary: 1-2 short sentences in plain product language about what happens now.",
+    '- riskNote: 1 short sentence on overall behavior risk/watch-outs, or "Low risk." if none.',
+    "- technicalDetails: 2-4 concise bullets or sentences covering concrete implementation changes (modules, functions, and state/flow updates).",
+    "- Avoid code symbols, function names, and implementation jargon.",
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
@@ -353,11 +360,21 @@ function parseFileSummaryResponse(
       typeof obj["riskNote"] !== "string"
     )
       return null;
+    const technicalDetails =
+      typeof obj["technicalDetails"] === "string"
+        ? obj["technicalDetails"].trim()
+        : "";
+
     return {
       filePath:
         typeof obj["filePath"] === "string" ? obj["filePath"] : expectedPath,
       summary: obj["summary"],
       riskNote: obj["riskNote"],
+      ...(technicalDetails.length > 0
+        ? {
+            technicalDetails,
+          }
+        : {}),
     };
   } catch {
     return null;
@@ -393,6 +410,7 @@ function buildOverviewPrompt(
           beforeBody: "...",
           afterTitle: "...",
           afterBody: "...",
+          technicalDetails: "...",
           filePaths: ["..."],
         },
       ],
@@ -415,8 +433,10 @@ function buildOverviewPrompt(
     schema,
     "",
     "Rules:",
-    "- overviewCards: 2-4 cards covering summary, impact, risk, and open questions.",
-    "- flowComparisons: 2-6 before/after pairs describing architectural/logical flow changes for this commit.",
+    "- overviewCards: 2-4 cards in plain language covering summary, impact, risk, and open questions.",
+    "- flowComparisons: 2-6 before/after pairs describing what used to happen vs what happens now for users/workflows.",
+    "- Each flowComparisons entry must include technicalDetails with concrete implementation notes (functions/modules/logic flow touched).",
+    "- Keep titles and bodies simple and non-technical; avoid code symbols, file names, and implementation jargon.",
     "- filePaths values in flowComparisons must exactly match the listed file paths.",
   ]
     .filter((line): line is string => line !== null)
@@ -475,6 +495,7 @@ function parseOverviewResponse(raw: string): {
               beforeBody: string;
               afterTitle: string;
               afterBody: string;
+              technicalDetails?: string;
               filePaths: string[];
             } =>
               !!item &&
@@ -498,6 +519,12 @@ function parseOverviewResponse(raw: string): {
               beforeBody: item.beforeBody,
               afterTitle: item.afterTitle,
               afterBody: item.afterBody,
+              ...(typeof item.technicalDetails === "string" &&
+              item.technicalDetails.trim().length > 0
+                ? {
+                    technicalDetails: item.technicalDetails.trim(),
+                  }
+                : {}),
               filePaths: item.filePaths,
             }),
           )
@@ -559,10 +586,18 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
           beforeBody: "...",
           afterTitle: "...",
           afterBody: "...",
+          technicalDetails: "...",
           filePaths: ["..."],
         },
       ],
-      fileSummaries: [{ filePath: "...", summary: "...", riskNote: "..." }],
+      fileSummaries: [
+        {
+          filePath: "...",
+          summary: "...",
+          riskNote: "...",
+          technicalDetails: "...",
+        },
+      ],
     },
     null,
     2,
@@ -585,9 +620,11 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
     schema,
     "",
     "Rules:",
-    "- overviewCards: 2-4 cards covering summary, impact, risk, and open questions.",
-    "- flowComparisons: 2-6 before/after pairs describing architectural/logical flow changes.",
-    "- fileSummaries: one entry per changed file with a concise summary and risk note.",
+    "- overviewCards: 2-4 cards in plain language covering summary, impact, risk, and open questions.",
+    "- flowComparisons: 2-6 before/after pairs describing what used to happen vs what happens now for users/workflows.",
+    "- flowComparisons entries should include technicalDetails with concrete implementation notes.",
+    "- fileSummaries: one entry per changed file with plain-language summary, risk note, and technicalDetails.",
+    "- Avoid code symbols, function names, and implementation jargon.",
     "- All filePath values must exactly match one of the listed changed file paths.",
   ]
     .filter((line): line is string => line !== null)
@@ -666,6 +703,7 @@ function parseLegacyResponse(
               filePath: string;
               summary: string;
               riskNote: string;
+              technicalDetails?: string;
             } =>
               !!item &&
               typeof item === "object" &&
@@ -680,6 +718,12 @@ function parseLegacyResponse(
               filePath: item.filePath,
               summary: item.summary,
               riskNote: item.riskNote,
+              ...(typeof item.technicalDetails === "string" &&
+              item.technicalDetails.trim().length > 0
+                ? {
+                    technicalDetails: item.technicalDetails.trim(),
+                  }
+                : {}),
             }),
           )
       : [];

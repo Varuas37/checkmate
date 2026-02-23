@@ -13,13 +13,12 @@ import {
 import { cn } from "../../../shared/index.ts";
 import type { OverviewCard } from "../../../domain/review/index.ts";
 
-import type { ArchitectureCluster, CodeSequenceStep, SequencePair } from "../types.ts";
+import type { ArchitectureCluster, CodeSequenceStep } from "../types.ts";
 import { CodeSequenceDiagramPanel } from "./CodeSequenceDiagramPanel.tsx";
 
 export interface OverviewPanelProps {
   readonly overviewCards: readonly OverviewCard[];
   readonly architectureClusters: readonly ArchitectureCluster[];
-  readonly sequencePairs: readonly SequencePair[];
   readonly codeSequenceSteps: readonly CodeSequenceStep[];
   readonly aiAnalysisStatus: "idle" | "analysing" | "analysed" | "error";
   readonly sequenceGenerationStatus: "idle" | "generating" | "ready" | "error";
@@ -59,7 +58,6 @@ const sectionEyebrowClass = "text-[11px] uppercase tracking-[0.14em] text-muted"
 export function OverviewPanel({
   overviewCards,
   architectureClusters,
-  sequencePairs,
   codeSequenceSteps,
   aiAnalysisStatus,
   sequenceGenerationStatus,
@@ -81,8 +79,6 @@ export function OverviewPanel({
   } | null>(null);
   const primaryCard = overviewCards[0] ?? null;
   const summaryCards = overviewCards.slice(1, 4);
-  const previewPairs = sequencePairs.slice(0, 3);
-  const fallbackFlowSteps = codeSequenceSteps.slice(0, 4);
 
   const totalAdditions = architectureClusters.reduce((count, cluster) => count + cluster.additions, 0);
   const totalDeletions = architectureClusters.reduce((count, cluster) => count + cluster.deletions, 0);
@@ -250,143 +246,7 @@ export function OverviewPanel({
           </CardBody>
         </Card>
 
-        <Card className="xl:col-span-6 border-border/40 bg-transparent shadow-none">
-          <CardHeader className="border-border/40 bg-transparent px-3 py-2">
-            <p className={sectionEyebrowClass}>Flow</p>
-            <CardTitle>Flow Comparison</CardTitle>
-            <CardDescription>Before and after snapshots linked to changed files.</CardDescription>
-          </CardHeader>
-          <CardBody className="space-y-0 px-3 pb-2 pt-2">
-            {previewPairs.length > 0 &&
-              previewPairs.map((pair, index) => {
-                const isHighlighted =
-                  pair.before.fileIds.some((fileId) => highlightedSet.has(fileId)) ||
-                  pair.after.fileIds.some((fileId) => highlightedSet.has(fileId));
-
-                return (
-                  <div
-                    key={pair.id}
-                    className={cn(
-                      "grid gap-1.5 border-border/60 py-2 md:grid-cols-2",
-                      index > 0 && "border-t",
-                      isHighlighted && "bg-accent/5",
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onSelectFiles({
-                          fileIds: pair.before.fileIds,
-                          label: pair.before.title,
-                        })
-                      }
-                      className="min-w-0 rounded-sm px-2 py-1 text-left transition-colors hover:bg-danger/10"
-                    >
-                      <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-danger">Before</p>
-                      <p
-                        className="truncate text-xs font-semibold text-text"
-                        title={pair.before.title}
-                      >
-                        {pair.before.title}
-                      </p>
-                      <p
-                        className="line-clamp-2 cursor-pointer text-xs text-muted transition-colors hover:text-text"
-                        title={pair.before.body}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setExpandedText({
-                            title: pair.before.title,
-                            body: pair.before.body,
-                          });
-                        }}
-                      >
-                        {pair.before.body}
-                      </p>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onSelectFiles({
-                          fileIds: pair.after.fileIds,
-                          label: pair.after.title,
-                        })
-                      }
-                      className="min-w-0 rounded-sm px-2 py-1 text-left transition-colors hover:bg-positive/10"
-                    >
-                      <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-positive">After</p>
-                      <p
-                        className="truncate text-xs font-semibold text-text"
-                        title={pair.after.title}
-                      >
-                        {pair.after.title}
-                      </p>
-                      <p
-                        className="line-clamp-2 cursor-pointer text-xs text-muted transition-colors hover:text-text"
-                        title={pair.after.body}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setExpandedText({
-                            title: pair.after.title,
-                            body: pair.after.body,
-                          });
-                        }}
-                      >
-                        {pair.after.body}
-                      </p>
-                    </button>
-                  </div>
-                );
-              })}
-
-            {previewPairs.length === 0 && fallbackFlowSteps.length > 0 && (
-              <div className="space-y-1.5">
-                {fallbackFlowSteps.map((step) => {
-                  const isHighlighted = step.fileIds.some((fileId) => highlightedSet.has(fileId));
-
-                  return (
-                    <button
-                      key={step.id}
-                      type="button"
-                      onClick={() =>
-                        onSelectFiles({
-                          fileIds: step.fileIds,
-                          label: `${step.targetLabel} flow`,
-                        })
-                      }
-                      className={cn(
-                        "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left transition-colors",
-                        "hover:bg-elevated",
-                        isHighlighted && "bg-accent/10",
-                      )}
-                    >
-                      <p
-                        className="truncate text-xs text-text"
-                        title={step.message}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setExpandedText({
-                            title: `${step.token} ${step.sourceLabel} -> ${step.targetLabel}`,
-                            body: step.message,
-                          });
-                        }}
-                      >
-                        {step.message}
-                      </p>
-                      <Badge tone="accent">{step.token}</Badge>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {previewPairs.length === 0 && fallbackFlowSteps.length === 0 && (
-              <p className="text-sm text-muted">Flow comparisons render after commit data has loaded.</p>
-            )}
-          </CardBody>
-        </Card>
-
-        <div className="xl:col-span-6">
+        <div className="xl:col-span-12">
           <CodeSequenceDiagramPanel
             steps={codeSequenceSteps}
             sequenceGenerationStatus={sequenceGenerationStatus}

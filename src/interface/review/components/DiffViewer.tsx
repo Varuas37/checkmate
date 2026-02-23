@@ -97,6 +97,7 @@ export interface DiffViewerProps {
   readonly onCreateThread?: (input: CreateThreadInput) => { readonly ok: boolean; readonly message: string };
   readonly defaultAuthorId?: string;
   readonly toolbarActions?: ReactNode;
+  readonly bodyOverride?: ReactNode;
 }
 
 function unifiedRowClass(kind: DiffLineKind): string {
@@ -1396,6 +1397,7 @@ export function DiffViewer({
   onCreateThread,
   defaultAuthorId,
   toolbarActions,
+  bodyOverride,
 }: DiffViewerProps) {
   const [expandedById, setExpandedById] = useState<Record<string, number>>({});
   const [promptByThreadId, setPromptByThreadId] = useState<Record<string, string>>({});
@@ -1403,6 +1405,7 @@ export function DiffViewer({
   const [selectionPivot, setSelectionPivot] = useState<SelectableLineAnchor | null>(null);
   const [composerAnchor, setComposerAnchor] = useState<SelectableLineAnchor | null>(null);
   const [reviewBody, setReviewBody] = useState("");
+  const isSummaryOverlay = bodyOverride !== undefined && bodyOverride !== null;
   const [selectionMessage, setSelectionMessage] = useState<string | null>(null);
   const [revealedThreadId, setRevealedThreadId] = useState<string | null>(null);
   const [activeReplyThreadId, setActiveReplyThreadId] = useState<string | null>(null);
@@ -2291,8 +2294,8 @@ export function DiffViewer({
           <div className="inline-flex items-center gap-0.5 rounded-md border border-border bg-canvas/70 p-0.5">
             <Button
               size="sm"
-              variant={viewMode === "changes" ? "primary" : "ghost"}
-              aria-pressed={viewMode === "changes"}
+              variant={isSummaryOverlay ? "ghost" : viewMode === "changes" ? "primary" : "ghost"}
+              aria-pressed={isSummaryOverlay ? false : viewMode === "changes"}
               onClick={() => onViewModeChange("changes")}
               className="h-7 px-2"
             >
@@ -2300,8 +2303,8 @@ export function DiffViewer({
             </Button>
             <Button
               size="sm"
-              variant={viewMode === "old" ? "primary" : "ghost"}
-              aria-pressed={viewMode === "old"}
+              variant={isSummaryOverlay ? "ghost" : viewMode === "old" ? "primary" : "ghost"}
+              aria-pressed={isSummaryOverlay ? false : viewMode === "old"}
               onClick={() => onViewModeChange("old")}
               className="h-7 px-2"
             >
@@ -2309,8 +2312,8 @@ export function DiffViewer({
             </Button>
             <Button
               size="sm"
-              variant={viewMode === "new" ? "primary" : "ghost"}
-              aria-pressed={viewMode === "new"}
+              variant={isSummaryOverlay ? "ghost" : viewMode === "new" ? "primary" : "ghost"}
+              aria-pressed={isSummaryOverlay ? false : viewMode === "new"}
               onClick={() => onViewModeChange("new")}
               className="h-7 px-2"
             >
@@ -2321,8 +2324,8 @@ export function DiffViewer({
             <div className="inline-flex items-center gap-1">
               <Button
                 size="sm"
-                variant={orientation === "split" ? "primary" : "ghost"}
-                aria-pressed={orientation === "split"}
+                variant={isSummaryOverlay ? "ghost" : orientation === "split" ? "primary" : "ghost"}
+                aria-pressed={isSummaryOverlay ? false : orientation === "split"}
                 onClick={() => onOrientationChange("split")}
                 className="h-9 w-9 px-0"
                 aria-label="Split diff view"
@@ -2332,8 +2335,8 @@ export function DiffViewer({
               </Button>
               <Button
                 size="sm"
-                variant={orientation === "unified" ? "primary" : "ghost"}
-                aria-pressed={orientation === "unified"}
+                variant={isSummaryOverlay ? "ghost" : orientation === "unified" ? "primary" : "ghost"}
+                aria-pressed={isSummaryOverlay ? false : orientation === "unified"}
                 onClick={() => onOrientationChange("unified")}
                 className="h-9 w-9 px-0"
                 aria-label="Unified diff view"
@@ -2347,15 +2350,15 @@ export function DiffViewer({
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {!file && (
+        {bodyOverride}
+        {!bodyOverride && !file && (
           <div className="flex h-full items-center justify-center px-6 text-sm text-muted">
             Choose a file to inspect the diff.
           </div>
         )}
-
-        {file && viewMode === "changes" && renderChangesBody()}
-        {file && viewMode === "old" && renderFullModeBody("old")}
-        {file && viewMode === "new" && renderFullModeBody("new")}
+        {!bodyOverride && file && viewMode === "changes" && renderChangesBody()}
+        {!bodyOverride && file && viewMode === "old" && renderFullModeBody("old")}
+        {!bodyOverride && file && viewMode === "new" && renderFullModeBody("new")}
       </div>
     </section>
   );

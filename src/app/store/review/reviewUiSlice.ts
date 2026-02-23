@@ -280,6 +280,11 @@ export const reviewUiSlice = createSlice({
           beforeBody: pair.beforeBody,
           afterTitle: pair.afterTitle,
           afterBody: pair.afterBody,
+          ...(pair.technicalDetails
+            ? {
+                technicalDetails: pair.technicalDetails,
+              }
+            : {}),
           filePaths: [...pair.filePaths],
         })),
         sequenceSteps: output.sequenceSteps.map((s) => ({
@@ -295,6 +300,11 @@ export const reviewUiSlice = createSlice({
           filePath: f.filePath,
           summary: f.summary,
           riskNote: f.riskNote,
+          ...(f.technicalDetails
+            ? {
+                technicalDetails: f.technicalDetails,
+              }
+            : {}),
         })),
         standardsRules: output.standardsRules.map((rule) => ({
           id: rule.id,

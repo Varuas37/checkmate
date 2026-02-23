@@ -267,6 +267,11 @@ export function useReviewWorkspace(): {
             body: pair.afterBody,
             fileIds: uniqueFileIds,
           },
+          ...(pair.technicalDetails
+            ? {
+                technicalDetails: pair.technicalDetails,
+              }
+            : {}),
         };
       });
     }
@@ -274,22 +279,23 @@ export function useReviewWorkspace(): {
     return allFiles.map((file, index) => {
       const linkedCard = overviewCards.length > 0 ? overviewCards[index % overviewCards.length] : null;
       const layer = titleCase(deriveLayer(file.path));
+      const layerLabel = layer.toLowerCase();
       const beforeBody =
         linkedCard?.body ??
-        `Manual review had to infer ${layer} behavior from raw diffs without structured context.`;
+        `People had to infer how ${layerLabel} behavior worked from scattered diffs.`;
 
       return {
         id: `sequence-${file.id}`,
         before: {
           id: `before-${file.id}`,
-          title: `Before: ${layer} flow`,
+          title: `${layer} before`,
           body: beforeBody,
           fileIds: [file.id],
         },
         after: {
           id: `after-${file.id}`,
-          title: `After: ${file.status.toUpperCase()} ${file.path}`,
-          body: `Changes are now linked to ${file.additions} additions and ${file.deletions} deletions for direct follow-up.`,
+          title: `${layer} now`,
+          body: `This update makes ${layerLabel} behavior clearer in ${fileNameForPath(file.path)}.`,
           fileIds: [file.id],
         },
       };
@@ -567,6 +573,11 @@ export function useReviewWorkspace(): {
           status: file.status,
           summary: aiSummary.summary,
           riskNote: aiSummary.riskNote,
+          ...(aiSummary.technicalDetails
+            ? {
+                technicalDetails: aiSummary.technicalDetails,
+              }
+            : {}),
         };
       }
 

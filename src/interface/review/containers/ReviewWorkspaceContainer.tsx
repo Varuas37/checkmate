@@ -46,13 +46,13 @@ import {
 import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT, REVIEW_TABS } from "../constants.ts";
 import {
   ChangedFilesSidebar,
+  CodeSequenceDiagramPanel,
   CommitPanel,
   CommandPalette,
   type CommandPaletteItem,
   DiffViewer,
   FileSummaryInspector,
   HomeScreen,
-  OverviewPanel,
   SettingsPanel,
   StandardsPanel,
   SummaryPanel,
@@ -115,6 +115,13 @@ function fileNameFromPath(path: string): string {
   return segments[segments.length - 1] ?? normalized;
 }
 
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function toLowerIncludes(value: string, query: string): boolean {
   return value.toLowerCase().includes(query.toLowerCase());
 }
@@ -125,6 +132,51 @@ function isMacOperatingSystem(): boolean {
   }
 
   return /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
+
+function CommentsIcon({ muted }: { readonly muted: boolean }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="19"
+      height="19"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="2" y="2" width="16" height="12.5" rx="2.5" />
+      <path d="M6.25 14.5v3.5l3.25-3.5" />
+      <path d="M5.5 6.5h8.75" />
+      <path d="M5.5 9.5h5.75" />
+      {muted && <path d="M3.25 3.25l13.5 13.5" />}
+    </svg>
+  );
+}
+
+function SummaryIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="19"
+      height="19"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="2" y="2" width="16" height="16" rx="2.5" />
+      <path d="M5.5 6.5h9" />
+      <path d="M5.5 10h9" />
+      <path d="M5.5 13.5h6.5" />
+    </svg>
+  );
 }
 
 export function ReviewWorkspaceContainer() {
@@ -140,7 +192,7 @@ export function ReviewWorkspaceContainer() {
   const savedReviewerProfile = useMemo(() => readReviewerProfileFromStorage(), []);
   const [cmCliStatus, setCmCliStatus] = useState<CmCliStatus | null>(null);
 
-  const [activeTab, setActiveTab] = useState<ReviewTabId>("files");
+  const [activeTab, setActiveTab] = useState<ReviewTabId>("summary");
   const [highlightedFileIds, setHighlightedFileIds] = useState<readonly string[]>([]);
   const [commitShaInput, setCommitShaInput] = useState(DEFAULT_LOAD_REQUEST.commitSha);
   const [startupRepositoryPath, setStartupRepositoryPath] = useState(() => {
@@ -182,7 +234,8 @@ export function ReviewWorkspaceContainer() {
     readonly label: string;
     readonly fileIds: readonly string[];
   } | null>(null);
-  const [isSequenceExplorerOpen, setIsSequenceExplorerOpen] = useState(false);
+  const [selectedFeatureFocusId, setSelectedFeatureFocusId] = useState<string | null>(null);
+  const [isSequenceExplorerOpen, setIsSequenceExplorerOpen] = useState(true);
   const [sequenceExplorerTabFileIds, setSequenceExplorerTabFileIds] = useState<readonly string[]>([]);
   const [sequenceExplorerActiveFileId, setSequenceExplorerActiveFileId] = useState<string | null>(null);
   const [showProjectSwitcher, setShowProjectSwitcher] = useState(false);
@@ -389,6 +442,73 @@ export function ReviewWorkspaceContainer() {
     return state.allFiles.reduce((count, file) => count + file.deletions, 0);
   }, [state.allFiles]);
 
+  const featureFocusOptions = useMemo(() => {
+    const validFileIds = new Set(state.allFiles.map((file) => file.id));
+    const optionsByLabel = new Map<
+      string,
+      {
+        readonly id: string;
+        readonly label: string;
+        readonly fileIds: Set<string>;
+      }
+    >();
+
+    state.sequencePairs.forEach((pair, index) => {
+      const resolvedLabel =
+        normalizeInputValue(pair.after.title)
+        || normalizeInputValue(pair.before.title)
+        || `Feature ${index + 1}`;
+      const normalizedLabel = resolvedLabel.toLowerCase();
+      const optionId = slugify(resolvedLabel) || `feature-${index + 1}`;
+      const fileIds = [...pair.before.fileIds, ...pair.after.fileIds].filter((fileId) =>
+        validFileIds.has(fileId),
+      );
+
+      if (fileIds.length === 0) {
+        return;
+      }
+
+      const existing = optionsByLabel.get(normalizedLabel);
+      if (!existing) {
+        optionsByLabel.set(normalizedLabel, {
+          id: optionId,
+          label: resolvedLabel,
+          fileIds: new Set(fileIds),
+        });
+        return;
+      }
+
+      fileIds.forEach((fileId) => existing.fileIds.add(fileId));
+    });
+
+    return [...optionsByLabel.values()].map((option) => {
+      return {
+        id: option.id,
+        label: option.label,
+        fileIds: [...option.fileIds],
+      };
+    });
+  }, [state.allFiles, state.sequencePairs]);
+
+  useEffect(() => {
+    if (!selectedFeatureFocusId) {
+      return;
+    }
+
+    const hasSelectedFeature = featureFocusOptions.some(
+      (option) => option.id === selectedFeatureFocusId,
+    );
+    if (hasSelectedFeature) {
+      return;
+    }
+
+    setSelectedFeatureFocusId(null);
+
+    if (sidebarFocus?.label === "Feature Focus") {
+      setSidebarFocus(null);
+    }
+  }, [featureFocusOptions, selectedFeatureFocusId, sidebarFocus]);
+
   const sidebarFiles = useMemo(() => {
     if (!sidebarFocus) {
       return state.filteredFiles;
@@ -397,6 +517,35 @@ export function ReviewWorkspaceContainer() {
     const focusedFileIds = new Set(sidebarFocus.fileIds);
     return state.filteredFiles.filter((file) => focusedFileIds.has(file.id));
   }, [sidebarFocus, state.filteredFiles]);
+
+  const handleFeatureFilterChange = useCallback(
+    (featureId: string | null) => {
+      if (!featureId) {
+        setSelectedFeatureFocusId(null);
+        setSidebarFocus(null);
+        return;
+      }
+
+      const selectedFeature = featureFocusOptions.find((option) => option.id === featureId);
+      if (!selectedFeature || selectedFeature.fileIds.length === 0) {
+        setSelectedFeatureFocusId(null);
+        setSidebarFocus(null);
+        return;
+      }
+
+      setSelectedFeatureFocusId(selectedFeature.id);
+      setHighlightedFileIds(selectedFeature.fileIds);
+      setSidebarFocus({
+        label: "Feature Focus",
+        fileIds: selectedFeature.fileIds,
+      });
+
+      if (!state.activeFileId || !selectedFeature.fileIds.includes(state.activeFileId)) {
+        actions.selectFile(selectedFeature.fileIds[0] ?? null);
+      }
+    },
+    [actions, featureFocusOptions, state.activeFileId],
+  );
 
   const filesById = useMemo(() => {
     return new Map(state.allFiles.map((file) => [file.id, file] as const));
@@ -437,6 +586,30 @@ export function ReviewWorkspaceContainer() {
   }, [filesById, sequenceExplorerActiveFileId, sequenceExplorerTabs]);
 
   useEffect(() => {
+    if (!isSequenceExplorerOpen || activeTab !== "sequence" || sequenceExplorerTabFileIds.length > 0) {
+      return;
+    }
+
+    const initialFileId = state.activeFileId ?? state.allFiles[0]?.id ?? null;
+    if (!initialFileId) {
+      return;
+    }
+
+    setSequenceExplorerTabFileIds([initialFileId]);
+    setSequenceExplorerActiveFileId(initialFileId);
+    if (state.activeFileId !== initialFileId) {
+      actions.selectFile(initialFileId);
+    }
+  }, [
+    actions,
+    activeTab,
+    isSequenceExplorerOpen,
+    sequenceExplorerTabFileIds.length,
+    state.activeFileId,
+    state.allFiles,
+  ]);
+
+  useEffect(() => {
     const validIds = new Set(state.allFiles.map((file) => file.id));
 
     setSequenceExplorerTabFileIds((currentTabs) => {
@@ -456,7 +629,7 @@ export function ReviewWorkspaceContainer() {
   useEffect(() => {
     if (
       !isSequenceExplorerOpen ||
-      activeTab !== "overview" ||
+      activeTab !== "sequence" ||
       !resolvedSequenceExplorerActiveFileId ||
       state.activeFileId === resolvedSequenceExplorerActiveFileId
     ) {
@@ -472,30 +645,6 @@ export function ReviewWorkspaceContainer() {
     state.activeFileId,
   ]);
 
-  const openSequenceExplorer = useCallback(() => {
-    setIsSequenceExplorerOpen(true);
-    setActiveTab("overview");
-
-    setSequenceExplorerTabFileIds((currentTabs) => {
-      if (currentTabs.length > 0) {
-        return currentTabs;
-      }
-
-      const initialFileId = state.activeFileId ?? state.allFiles[0]?.id ?? null;
-      if (!initialFileId) {
-        return currentTabs;
-      }
-
-      setSequenceExplorerActiveFileId(initialFileId);
-      actions.selectFile(initialFileId);
-      return [initialFileId];
-    });
-  }, [actions, state.activeFileId, state.allFiles]);
-
-  const closeSequenceExplorer = useCallback(() => {
-    setIsSequenceExplorerOpen(false);
-  }, []);
-
   const openSequenceFilesInExplorer = useCallback(
     (fileIds: readonly string[]) => {
       const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
@@ -504,7 +653,7 @@ export function ReviewWorkspaceContainer() {
       }
 
       setIsSequenceExplorerOpen(true);
-      setActiveTab("overview");
+      setActiveTab("sequence");
 
       setSequenceExplorerTabFileIds((currentTabs) => {
         const nextTabs = [...currentTabs];
@@ -871,11 +1020,12 @@ export function ReviewWorkspaceContainer() {
       }
 
       setHighlightedFileIds([]);
+      setSelectedFeatureFocusId(null);
       setSidebarFocus(null);
       setActiveTab("files");
       setShowProjectSwitcher(false);
       setShowBranchSwitcher(false);
-      setIsSequenceExplorerOpen(false);
+      setIsSequenceExplorerOpen(true);
       setSequenceExplorerTabFileIds([]);
       setSequenceExplorerActiveFileId(null);
       actions.reloadReviewWorkspace({
@@ -1226,7 +1376,7 @@ export function ReviewWorkspaceContainer() {
 
       if (
         !isSequenceExplorerOpen ||
-        activeTab !== "overview" ||
+        activeTab !== "sequence" ||
         !resolvedSequenceExplorerActiveFileId
       ) {
         return;
@@ -1250,10 +1400,14 @@ export function ReviewWorkspaceContainer() {
   const handleTabChange = useCallback((tabId: ReviewTabId) => {
     setActiveTab(tabId);
 
-    if (tabId !== "overview") {
-      setSidebarFocus(null);
-      setIsSequenceExplorerOpen(false);
+    if (tabId === "sequence") {
+      setIsSequenceExplorerOpen(true);
+      return;
     }
+
+    setSelectedFeatureFocusId(null);
+    setSidebarFocus(null);
+    setIsSequenceExplorerOpen(false);
   }, []);
 
   const runCommand = useCallback(
@@ -1390,11 +1544,13 @@ export function ReviewWorkspaceContainer() {
               toolbarActions={(
                 <Button
                   size="sm"
-                  variant="secondary"
+                  variant={showInlineComments ? "secondary" : "ghost"}
                   onClick={() => setShowInlineComments((current) => !current)}
-                  className="h-7 px-2"
+                  className="h-9 w-9 px-0 text-text hover:text-text"
+                  aria-label={showInlineComments ? "Hide comments" : "Show comments"}
+                  title={showInlineComments ? "Hide comments" : "Show comments"}
                 >
-                  {showInlineComments ? "Hide Comments" : "Show Comments"}
+                  <CommentsIcon muted={!showInlineComments} />
                 </Button>
               )}
             />
@@ -1423,7 +1579,7 @@ export function ReviewWorkspaceContainer() {
   ]);
 
   useEffect(() => {
-    if (activeTab === "overview") {
+    if (activeTab === "sequence") {
       setIsSidebarCollapsed(true);
       return;
     }
@@ -1851,63 +2007,122 @@ export function ReviewWorkspaceContainer() {
       );
     }
 
-    if (activeTab === "overview") {
+    if (activeTab === "sequence") {
       return (
-        <OverviewPanel
-          overviewCards={state.overviewCards}
-          architectureClusters={state.architectureClusters}
-          sequencePairs={state.sequencePairs}
-          codeSequenceSteps={state.codeSequenceSteps}
-          aiAnalysisStatus={state.aiAnalysisStatus}
-          sequenceGenerationStatus={state.aiSequenceStatus}
-          sequenceGenerationError={state.aiSequenceError}
-          sequenceViewMode={isSequenceExplorerOpen ? "expanded" : "compact"}
-          onRefreshAiAnalysis={actions.refreshAiAnalysis}
-          onRetrySequenceGeneration={actions.retrySequenceGeneration}
-          onOpenSequenceExplorer={openSequenceExplorer}
-          onCloseSequenceExplorer={closeSequenceExplorer}
-          onOpenSequenceFilesInExplorer={openSequenceFilesInExplorer}
-          sequenceExpandedSidePanel={sequenceExpandedSidePanel}
-          highlightedFileIds={highlightedFileIds}
-          onSelectFiles={(selection) => {
-            setHighlightedFileIds(selection.fileIds);
-            setSidebarFocus({
-              label: selection.label ?? "Focused",
-              fileIds: selection.fileIds,
-            });
-            actions.selectFile(selection.fileIds[0] ?? null);
-          }}
-        />
+        <div className="h-full min-h-0 overflow-hidden p-2 xl:p-3">
+          <div className="h-full min-h-0 overflow-hidden rounded-md border border-border/50 bg-transparent">
+            <CodeSequenceDiagramPanel
+              steps={state.codeSequenceSteps}
+              sequenceGenerationStatus={state.aiSequenceStatus}
+              sequenceGenerationError={state.aiSequenceError}
+              onRetrySequenceGeneration={actions.retrySequenceGeneration}
+              highlightedFileIds={highlightedFileIds}
+              onSelectFiles={(fileIds) => {
+                setHighlightedFileIds(fileIds);
+                setSelectedFeatureFocusId(null);
+                setSidebarFocus({
+                  label: "Sequence focus",
+                  fileIds,
+                });
+                actions.selectFile(fileIds[0] ?? null);
+              }}
+              mode="expanded"
+              onOpenExpandedFiles={openSequenceFilesInExplorer}
+              expandedSidePanel={sequenceExpandedSidePanel}
+            />
+          </div>
+        </div>
       );
     }
 
     if (activeTab === "files") {
+      const fileToolbarActions = (
+        <>
+          <Button
+            size="sm"
+            variant={
+              state.fileInspectionMode === "summary"
+                ? "ghost"
+                : showInlineComments
+                ? "secondary"
+                : "ghost"
+            }
+            onClick={() => setShowInlineComments((current) => !current)}
+            className="h-9 w-9 px-0 text-text hover:text-text"
+            aria-label={showInlineComments ? "Hide comments" : "Show comments"}
+            title={showInlineComments ? "Hide comments" : "Show comments"}
+          >
+            <CommentsIcon muted={!showInlineComments} />
+          </Button>
+          <Button
+            size="sm"
+            variant={state.fileInspectionMode === "summary" ? "primary" : "ghost"}
+            onClick={() => {
+              actions.setFileInspectionMode(
+                state.fileInspectionMode === "summary" ? "diff" : "summary",
+              );
+            }}
+            className="h-9 w-9 px-0 text-text hover:text-text"
+            aria-label={state.fileInspectionMode === "summary" ? "Show code diff" : "Show file summary"}
+            title={state.fileInspectionMode === "summary" ? "Show code diff" : "Show file summary"}
+            disabled={!state.activeFile}
+          >
+            <SummaryIcon />
+          </Button>
+        </>
+      );
+
       return (
         <div className="flex h-full min-h-0 flex-col">
           <div className="min-h-0 flex-1">
             {state.fileInspectionMode === "summary" ? (
-              <FileSummaryInspector
+              <DiffViewer
                 file={state.activeFile}
-                fileSummary={activeFileSummary}
-                relatedFeatures={activeFileFeatureSummaries}
-                aiAnalysisStatus={state.aiAnalysisStatus}
-                onSeeDiff={() => {
+                hunks={state.activeFileHunks}
+                threads={state.threadModels}
+                showInlineThreads={showInlineComments}
+                orientation={state.diffOrientation}
+                viewMode={state.diffViewMode}
+                fileVersions={state.activeFileVersions}
+                fileVersionsStatus={state.activeFileVersionsStatus}
+                fileVersionsError={state.activeFileVersionsError}
+                onOrientationChange={(orientation) => {
+                  actions.setDiffOrientation(orientation);
                   actions.setFileInspectionMode("diff");
                 }}
-                onOpenFeatureFiles={(fileIds) => {
-                  const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
-                  if (uniqueFileIds.length === 0) {
-                    return;
-                  }
+                onViewModeChange={(mode) => {
+                  actions.setDiffViewMode(mode);
+                  actions.setFileInspectionMode("diff");
+                }}
+                onAskAgent={actions.askAgent}
+                onDeleteComment={actions.deleteComment}
+                onSetThreadStatus={actions.setThreadStatus}
+                onCreateThread={actions.createThread}
+                defaultAuthorId={reviewerAuthorId}
+                toolbarActions={fileToolbarActions}
+                bodyOverride={(
+                  <FileSummaryInspector
+                    file={state.activeFile}
+                    fileSummary={activeFileSummary}
+                    relatedFeatures={activeFileFeatureSummaries}
+                    aiAnalysisStatus={state.aiAnalysisStatus}
+                    onOpenFeatureFiles={(fileIds) => {
+                      const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
+                      if (uniqueFileIds.length === 0) {
+                        return;
+                      }
 
-                  setHighlightedFileIds(uniqueFileIds);
-                  setSidebarFocus({
-                    label: "Feature Focus",
-                    fileIds: uniqueFileIds,
-                  });
-                  actions.selectFile(uniqueFileIds[0] ?? null);
-                  actions.setFileInspectionMode("diff");
-                }}
+                      setHighlightedFileIds(uniqueFileIds);
+                      setSelectedFeatureFocusId(null);
+                      setSidebarFocus({
+                        label: "Feature Focus",
+                        fileIds: uniqueFileIds,
+                      });
+                      actions.selectFile(uniqueFileIds[0] ?? null);
+                      actions.setFileInspectionMode("diff");
+                    }}
+                  />
+                )}
               />
             ) : (
               <DiffViewer
@@ -1927,16 +2142,7 @@ export function ReviewWorkspaceContainer() {
                 onSetThreadStatus={actions.setThreadStatus}
                 onCreateThread={actions.createThread}
                 defaultAuthorId={reviewerAuthorId}
-                toolbarActions={(
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => setShowInlineComments((current) => !current)}
-                    className="h-7 px-2"
-                  >
-                    {showInlineComments ? "Hide Comments" : "Show Comments"}
-                  </Button>
-                )}
+                toolbarActions={fileToolbarActions}
               />
             )}
           </div>
@@ -1950,11 +2156,28 @@ export function ReviewWorkspaceContainer() {
           <SummaryPanel
             commit={state.commit}
             overviewCards={state.overviewCards}
+            impactClusters={state.architectureClusters}
             featureSummaries={state.sequencePairs}
             publishPackage={state.publishPackage}
             publishStatus={state.publishStatus}
             canPublish={state.isPublishingReady}
             aiAnalysisStatus={state.aiAnalysisStatus}
+            onOpenImpactFiles={(fileIds) => {
+              const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
+              if (uniqueFileIds.length === 0) {
+                return;
+              }
+
+              setHighlightedFileIds(uniqueFileIds);
+              setSelectedFeatureFocusId(null);
+              setSidebarFocus({
+                label: "Impact Focus",
+                fileIds: uniqueFileIds,
+              });
+              actions.selectFile(uniqueFileIds[0] ?? null);
+              actions.setFileInspectionMode("diff");
+              setActiveTab("files");
+            }}
             onOpenFeatureFiles={(fileIds) => {
               const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
               if (uniqueFileIds.length === 0) {
@@ -1962,6 +2185,7 @@ export function ReviewWorkspaceContainer() {
               }
 
               setHighlightedFileIds(uniqueFileIds);
+              setSelectedFeatureFocusId(null);
               setSidebarFocus({
                 label: "Feature Focus",
                 fileIds: uniqueFileIds,
@@ -1983,6 +2207,7 @@ export function ReviewWorkspaceContainer() {
           files={state.allFiles}
           onOpenFileDiff={(fileId) => {
             setHighlightedFileIds([fileId]);
+            setSelectedFeatureFocusId(null);
             setSidebarFocus(null);
             actions.selectFile(fileId);
             actions.setFileInspectionMode("diff");
@@ -2069,8 +2294,6 @@ export function ReviewWorkspaceContainer() {
     showInlineComments,
     reviewerAuthorId,
     isSequenceExplorerOpen,
-    openSequenceExplorer,
-    closeSequenceExplorer,
     openSequenceFilesInExplorer,
     sequenceExpandedSidePanel,
     commitShaInput,
@@ -2176,6 +2399,8 @@ export function ReviewWorkspaceContainer() {
         header={header}
         sidebar={
           <ChangedFilesSidebar
+            featureOptions={featureFocusOptions}
+            selectedFeatureId={selectedFeatureFocusId}
             files={sidebarFiles}
             allFiles={state.allFiles}
             allFilesCount={state.allFiles.length}
@@ -2184,7 +2409,11 @@ export function ReviewWorkspaceContainer() {
             filter={state.fileFilter}
             threadCounts={state.threadCounts}
             filterLabel={sidebarFocus?.label ?? null}
-            onClearFilter={() => setSidebarFocus(null)}
+            onClearFilter={() => {
+              setSelectedFeatureFocusId(null);
+              setSidebarFocus(null);
+            }}
+            onFeatureFilterChange={handleFeatureFilterChange}
             onQueryChange={actions.setFilterQuery}
             onThreadStatusFilterChange={actions.setThreadStatusFilter}
             onSelectFile={(fileId) => {

@@ -27,7 +27,7 @@ import type {
   StandardsAnalysisStatus,
 } from "../../application/review/index.ts";
 
-export type ReviewTabId = "overview" | "files" | "commit" | "summary" | "standards";
+export type ReviewTabId = "summary" | "sequence" | "files" | "standards" | "commit";
 
 export interface ReviewTabOption {
   readonly id: ReviewTabId;
@@ -68,6 +68,7 @@ export interface SequencePair {
   readonly id: string;
   readonly before: SequenceBlock;
   readonly after: SequenceBlock;
+  readonly technicalDetails?: string;
 }
 
 export interface CodeSequenceStep {
@@ -87,6 +88,7 @@ export interface FileSummary {
   readonly status: FileChangeStatus;
   readonly summary: string;
   readonly riskNote: string;
+  readonly technicalDetails?: string;
 }
 
 export interface StandardsCheck {

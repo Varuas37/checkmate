@@ -674,9 +674,11 @@ export function CodeSequenceDiagramPanel({
           <p className="rounded-md border border-border bg-elevated/45 px-2 py-1 font-mono text-[11px] text-muted">
             {zoomPercent}%
           </p>
-          <Button variant="secondary" size="sm" onClick={onCloseExpanded}>
-            Close
-          </Button>
+          {onCloseExpanded && (
+            <Button variant="secondary" size="sm" onClick={onCloseExpanded}>
+              Close
+            </Button>
+          )}
         </div>
       </div>
 

@@ -162,6 +162,11 @@ export function createReviewListenerMiddleware(
         beforeBody: pair.beforeBody,
         afterTitle: pair.afterTitle,
         afterBody: pair.afterBody,
+        ...(pair.technicalDetails
+          ? {
+              technicalDetails: pair.technicalDetails,
+            }
+          : {}),
         filePaths: [...pair.filePaths],
       })),
       sequenceSteps: input.sequenceSteps.map((step) => ({
@@ -177,6 +182,11 @@ export function createReviewListenerMiddleware(
         filePath: summary.filePath,
         summary: summary.summary,
         riskNote: summary.riskNote,
+        ...(summary.technicalDetails
+          ? {
+              technicalDetails: summary.technicalDetails,
+            }
+          : {}),
       })),
       standardsRules: input.standardsRules.map((rule) => ({
         id: rule.id,

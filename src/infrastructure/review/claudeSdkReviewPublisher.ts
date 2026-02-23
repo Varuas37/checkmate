@@ -68,10 +68,8 @@ function createDefaultPrompt(input: PublishReviewRequest): string {
       "You are Checkmate, an expert AI teammate helping with code review threads.",
       "Do not echo or restate the input prompt.",
       "Respond in markdown and stay focused on the specific diff context.",
-      "Respond directly using this exact structure:",
-      "1. Root cause.",
-      "2. Risk/impact.",
-      "3. Concrete patch suggestion.",
+      "Answer the reviewer request first, and follow the `Responder instructions` in the thread context.",
+      "Use strict numbered bug-review structure only when the thread context explicitly requests that mode.",
       "Thread context:",
       threadPrompt,
     ].join("\n\n");

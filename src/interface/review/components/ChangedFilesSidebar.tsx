@@ -6,6 +6,12 @@ import type { FileFilter } from "../../../application/review/index.ts";
 import type { ChangedFile, FileChangeStatus, ThreadStatus } from "../../../domain/review/index.ts";
 
 export interface ChangedFilesSidebarProps {
+  readonly featureOptions: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly fileIds: readonly string[];
+  }[];
+  readonly selectedFeatureId: string | null;
   readonly files: readonly ChangedFile[];
   readonly allFiles: readonly ChangedFile[];
   readonly allFilesCount: number;
@@ -19,6 +25,7 @@ export interface ChangedFilesSidebarProps {
   };
   readonly filterLabel: string | null;
   readonly onClearFilter: () => void;
+  readonly onFeatureFilterChange: (featureId: string | null) => void;
   readonly onQueryChange: (query: string) => void;
   readonly onThreadStatusFilterChange: (status: ThreadStatus | "all") => void;
   readonly onSelectFile: (fileId: string) => void;
@@ -107,6 +114,8 @@ function statusTextClass(status: FileChangeStatus): string {
 }
 
 export function ChangedFilesSidebar({
+  featureOptions,
+  selectedFeatureId,
   files,
   allFiles,
   allFilesCount,
@@ -116,6 +125,7 @@ export function ChangedFilesSidebar({
   threadCounts,
   filterLabel,
   onClearFilter,
+  onFeatureFilterChange,
   onQueryChange,
   onThreadStatusFilterChange,
   onSelectFile,
@@ -149,6 +159,28 @@ export function ChangedFilesSidebar({
             >
               Clear
             </button>
+          </div>
+        )}
+
+        {featureOptions.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-[10px] uppercase tracking-[0.08em] text-muted">Feature</p>
+            <select
+              className="h-8 w-full rounded-md border border-border/60 bg-canvas px-2 text-xs text-text outline-none transition-colors focus:border-accent/60"
+              value={selectedFeatureId ?? ""}
+              onChange={(event) => {
+                const nextFeatureId = event.target.value.trim();
+                onFeatureFilterChange(nextFeatureId.length > 0 ? nextFeatureId : null);
+              }}
+              aria-label="Filter files by feature"
+            >
+              <option value="">All features</option>
+              {featureOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label} ({option.fileIds.length})
+                </option>
+              ))}
+            </select>
           </div>
         )}
 

@@ -69,6 +69,7 @@ function normalizeFlowComparison(value: unknown): AiFlowComparison | null {
   const beforeBody = normalizeText(pair.beforeBody);
   const afterTitle = normalizeText(pair.afterTitle);
   const afterBody = normalizeText(pair.afterBody);
+  const technicalDetails = normalizeText(pair.technicalDetails);
   const filePaths = Array.isArray(pair.filePaths)
     ? pair.filePaths
         .map((path) => normalizeText(path))
@@ -89,6 +90,11 @@ function normalizeFlowComparison(value: unknown): AiFlowComparison | null {
     beforeBody,
     afterTitle,
     afterBody,
+    ...(technicalDetails.length > 0
+      ? {
+          technicalDetails,
+        }
+      : {}),
     filePaths,
   };
 }
@@ -136,6 +142,7 @@ function normalizeFileSummary(value: unknown): AiFileSummary | null {
   const filePath = normalizeText(summary.filePath);
   const text = normalizeText(summary.summary);
   const riskNote = normalizeText(summary.riskNote);
+  const technicalDetails = normalizeText(summary.technicalDetails);
 
   if (filePath.length === 0 || text.length === 0 || riskNote.length === 0) {
     return null;
@@ -145,6 +152,11 @@ function normalizeFileSummary(value: unknown): AiFileSummary | null {
     filePath,
     summary: text,
     riskNote,
+    ...(technicalDetails.length > 0
+      ? {
+          technicalDetails,
+        }
+      : {}),
   };
 }
 
@@ -354,6 +366,11 @@ function cloneCachedData(data: CachedAiAnalysisData): CachedAiAnalysisData {
       beforeBody: pair.beforeBody,
       afterTitle: pair.afterTitle,
       afterBody: pair.afterBody,
+      ...(pair.technicalDetails
+        ? {
+            technicalDetails: pair.technicalDetails,
+          }
+        : {}),
       filePaths: [...pair.filePaths],
     })),
     sequenceSteps: data.sequenceSteps.map((step) => ({
@@ -369,6 +386,11 @@ function cloneCachedData(data: CachedAiAnalysisData): CachedAiAnalysisData {
       filePath: summary.filePath,
       summary: summary.summary,
       riskNote: summary.riskNote,
+      ...(summary.technicalDetails
+        ? {
+            technicalDetails: summary.technicalDetails,
+          }
+        : {}),
     })),
     standardsRules: data.standardsRules.map((rule) => ({
       id: rule.id,

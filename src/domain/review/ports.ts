@@ -132,6 +132,7 @@ export interface AiFlowComparison {
   readonly beforeBody: string;
   readonly afterTitle: string;
   readonly afterBody: string;
+  readonly technicalDetails?: string;
   readonly filePaths: readonly string[];
 }
 
@@ -139,6 +140,7 @@ export interface AiFileSummary {
   readonly filePath: string;
   readonly summary: string;
   readonly riskNote: string;
+  readonly technicalDetails?: string;
 }
 
 export interface AnalyseCommitOutput {
