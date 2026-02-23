@@ -1,13 +1,42 @@
 #!/usr/bin/env bash
+# checkmate-managed: commit-msg-hook-v1
 set -euo pipefail
 
 MESSAGE_FILE="${1:-}"
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$HOOK_DIR/.." && pwd)"
+ENFORCEMENT_CONFIG_FILE="$REPO_ROOT/.checkmate/enforcement.json"
+
+read_enforcement_level() {
+  local level="off"
+
+  if [[ -f "$ENFORCEMENT_CONFIG_FILE" ]]; then
+    local raw_line
+    raw_line="$(grep -Eo '"level"[[:space:]]*:[[:space:]]*"(off|basic|strict)"' "$ENFORCEMENT_CONFIG_FILE" | head -n 1 || true)"
+    if [[ -n "$raw_line" ]]; then
+      level="$(printf '%s' "$raw_line" | sed -E 's/.*"(off|basic|strict)".*/\1/')"
+    fi
+  fi
+
+  if [[ -n "${CM_ENFORCEMENT_LEVEL:-}" ]]; then
+    case "${CM_ENFORCEMENT_LEVEL}" in
+      off|basic|strict) level="${CM_ENFORCEMENT_LEVEL}" ;;
+    esac
+  fi
+
+  printf '%s\n' "$level"
+}
 
 if [[ -z "$MESSAGE_FILE" || ! -f "$MESSAGE_FILE" ]]; then
   exit 0
 fi
 
 if [[ "${CM_BYPASS_COMMIT_MSG_HOOK:-0}" == "1" ]]; then
+  exit 0
+fi
+
+ENFORCEMENT_LEVEL="$(read_enforcement_level)"
+if [[ "$ENFORCEMENT_LEVEL" == "off" ]]; then
   exit 0
 fi
 
@@ -40,6 +69,10 @@ COMMIT_TYPE="${BASH_REMATCH[1]}"
 if (( ${#FIRST_LINE} > 72 )); then
   echo "commit-msg: subject should be <= 72 characters." >&2
   exit 1
+fi
+
+if [[ "$ENFORCEMENT_LEVEL" == "basic" ]]; then
+  exit 0
 fi
 
 has_trailer() {
@@ -108,7 +141,7 @@ if [[ "$HAS_SCOPE_TRAILER" -ne "$HAS_RUN_TRAILER" ]]; then
   exit 1
 fi
 
-REQUIRE_AGENTIC_TRAILERS="${CM_REQUIRE_SCOPE_TRAILERS:-0}"
+REQUIRE_AGENTIC_TRAILERS="${CM_REQUIRE_SCOPE_TRAILERS:-1}"
 if [[ "$COMMIT_TYPE" =~ ^(feat|fix|refactor|perf)$ ]]; then
   REQUIRE_AGENTIC_TRAILERS=1
 fi

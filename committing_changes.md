@@ -216,11 +216,17 @@ Use layered controls:
 2. Local `pre-commit` hook: fast lint/type checks [R9].
 3. CI: enforce tests and policy checks.
 4. Merge controls: branch protection + merge queue [R12][R13].
+5. Enforcement is opt-in and level-based (`off`, `basic`, `strict`) so teams can tune strictness per repo/project.
 
 Repository setup:
-1. Run `yarn hooks:install` after cloning.
-2. Verify with `yarn hooks:path` (expected output: `.githooks`).
-3. Emergency local bypass only: `CM_BYPASS_COMMIT_MSG_HOOK=1 git commit ...` or `git commit --no-verify`.
+1. Opt in to enforcement level:
+   - `yarn hooks:enable:basic`
+   - `yarn hooks:enable:strict`
+2. Disable without removing files: `yarn hooks:disable`.
+3. Remove checkmate-managed enforcement artifacts: `yarn hooks:remove`.
+4. Verify with `yarn hooks:path` (expected output: `.githooks` only when enabled).
+5. Emergency local bypass only: `CM_BYPASS_COMMIT_MSG_HOOK=1 git commit ...` or `git commit --no-verify`.
+6. `cm init` also supports opt-in enforcement configuration: `cm init . --enforcement <off|basic|strict>`.
 
 ## 15) Future-Ready Direction
 1. Keep git as canonical DAG/history.

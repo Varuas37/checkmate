@@ -13,8 +13,11 @@
     "tauri:build": "tauri build",
     "typecheck": "tsc -b",
     "test": "node --test --import tsx \"src/**/*.test.ts\"",
-    "hooks:install": "bash scripts/install-git-hooks.sh",
-    "hooks:path": "git config --get core.hooksPath"
+    "hooks:enable:basic": "bash scripts/install-git-hooks.sh --level basic",
+    "hooks:enable:strict": "bash scripts/install-git-hooks.sh --level strict",
+    "hooks:disable": "bash scripts/install-git-hooks.sh --level off",
+    "hooks:remove": "bash scripts/install-git-hooks.sh --remove",
+    "hooks:path": "git config --get core.hooksPath || true"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

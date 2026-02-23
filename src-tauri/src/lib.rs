@@ -864,27 +864,54 @@ fn cm_script_contents() -> String {
 set -euo pipefail
 
 MODE="open"
-if [[ $# -gt 0 && "$1" == "init" ]]; then
-  MODE="init"
-  shift
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    init)
+      MODE="init"
+      shift
+      ;;
+    remove)
+      MODE="remove"
+      shift
+      ;;
+  esac
 fi
+
+print_usage() {{
+  cat <<'USAGE'
+Usage:
+  cm [path]
+  cm [path] --commit <ref>
+  cm [path] --draft
+  cm init [path] [--enforcement <off|basic|strict>]
+  cm remove [path]
+
+Examples:
+  cm .
+  cm . --draft
+  cm init . --enforcement strict
+  cm remove .
+USAGE
+}}
 
 TARGET_PATH="."
 COMMIT_REF="HEAD"
+ENFORCEMENT_LEVEL="off"
 
 if [[ "$MODE" == "init" ]]; then
   INIT_PATH_SET=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --enforcement)
+        if [[ $# -lt 2 ]]; then
+          echo "cm: missing value for --enforcement" >&2
+          exit 1
+        fi
+        ENFORCEMENT_LEVEL="$2"
+        shift 2
+        ;;
       -h|--help)
-        cat <<'USAGE'
-Usage:
-  cm init [path]
-
-Examples:
-  cm init
-  cm init .
-USAGE
+        print_usage
         exit 0
         ;;
       *)
@@ -894,6 +921,25 @@ USAGE
         fi
         TARGET_PATH="$1"
         INIT_PATH_SET=1
+        shift
+        ;;
+    esac
+  done
+elif [[ "$MODE" == "remove" ]]; then
+  REMOVE_PATH_SET=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        print_usage
+        exit 0
+        ;;
+      *)
+        if [[ $REMOVE_PATH_SET -eq 1 ]]; then
+          echo "cm: too many arguments for remove" >&2
+          exit 1
+        fi
+        TARGET_PATH="$1"
+        REMOVE_PATH_SET=1
         shift
         ;;
     esac
@@ -914,18 +960,7 @@ else
         shift 2
         ;;
       -h|--help)
-        cat <<'USAGE'
-Usage:
-  cm [path]
-  cm [path] --commit <ref>
-  cm [path] --draft
-  cm init [path]
-
-Examples:
-  cm .
-  cm . --draft
-  cm init .
-USAGE
+        print_usage
         exit 0
         ;;
       *)
@@ -950,6 +985,16 @@ REPO_PATH="$(cd "$TARGET_PATH" && pwd)"
 if ! git -C "$REPO_PATH" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "cm: not a git repository: $REPO_PATH" >&2
   exit 1
+fi
+
+if [[ "$MODE" == "init" ]]; then
+  case "$ENFORCEMENT_LEVEL" in
+    off|basic|strict) ;;
+    *)
+      echo "cm: unsupported enforcement level '$ENFORCEMENT_LEVEL' (expected off|basic|strict)" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 if [[ "$MODE" == "init" ]]; then
@@ -1010,7 +1055,109 @@ SCHEMA
   ensure_agent_file
   ensure_claude_file
   ensure_schema_file
-  echo "cm: tracking initialized for $REPO_PATH"
+  hooks_script="$REPO_PATH/scripts/install-git-hooks.sh"
+  if [[ -f "$hooks_script" ]]; then
+    if [[ -x "$hooks_script" ]]; then
+      "$hooks_script" --level "$ENFORCEMENT_LEVEL"
+    else
+      bash "$hooks_script" --level "$ENFORCEMENT_LEVEL"
+    fi
+  elif [[ "$ENFORCEMENT_LEVEL" != "off" ]]; then
+    echo "cm: warning: scripts/install-git-hooks.sh not found; enforcement setup skipped." >&2
+  fi
+
+  echo "cm: tracking initialized for $REPO_PATH (enforcement: $ENFORCEMENT_LEVEL)"
+  exit 0
+fi
+
+if [[ "$MODE" == "remove" ]]; then
+  remove_agent_block() {{
+    local agent_file="$REPO_PATH/AGENT.md"
+    if [[ ! -f "$agent_file" ]] || ! grep -Fq '{agent_block_start}' "$agent_file"; then
+      return
+    fi
+
+    local tmp_file
+    tmp_file="$(mktemp)"
+    local skip=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == '{agent_block_start}' ]]; then
+        skip=1
+        continue
+      fi
+      if [[ "$line" == '{agent_block_end}' ]]; then
+        skip=0
+        continue
+      fi
+      if [[ $skip -eq 0 ]]; then
+        printf '%s\n' "$line" >> "$tmp_file"
+      fi
+    done < "$agent_file"
+    mv "$tmp_file" "$agent_file"
+  }}
+
+  remove_claude_agent_reference() {{
+    local claude_file="$REPO_PATH/CLAUDE.md"
+    if [[ ! -f "$claude_file" ]]; then
+      return
+    fi
+
+    local tmp_file
+    tmp_file="$(mktemp)"
+    grep -Eiv '^[[:space:]]*@[[:space:]]*AGENT\.md[[:space:]]*$' "$claude_file" > "$tmp_file" || true
+    mv "$tmp_file" "$claude_file"
+  }}
+
+  remove_managed_schema() {{
+    local schema_file="$REPO_PATH/.checkmate/commit_context.schema.json"
+    if [[ -f "$schema_file" ]] && grep -Fq '{schema_managed_marker}' "$schema_file"; then
+      rm -f "$schema_file"
+    fi
+  }}
+
+  remove_managed_enforcement() {{
+    local enforcement_file="$REPO_PATH/.checkmate/enforcement.json"
+    if [[ -f "$enforcement_file" ]] && grep -Fq '"x-checkmate-managed": true' "$enforcement_file"; then
+      rm -f "$enforcement_file"
+    fi
+  }}
+
+  remove_managed_hooks_fallback() {{
+    local hooks_path
+    hooks_path="$(git -C "$REPO_PATH" config --local --get core.hooksPath || true)"
+    if [[ "$hooks_path" == ".githooks" ]]; then
+      git -C "$REPO_PATH" config --local --unset core.hooksPath || true
+    fi
+
+    if git -C "$REPO_PATH" ls-files --error-unmatch ".githooks/commit-msg" >/dev/null 2>&1; then
+      return
+    fi
+
+    local hook_file="$REPO_PATH/.githooks/commit-msg"
+    if [[ -f "$hook_file" ]] && grep -Fq '# checkmate-managed: commit-msg-hook-v1' "$hook_file"; then
+      rm -f "$hook_file"
+    fi
+  }}
+
+  hooks_script="$REPO_PATH/scripts/install-git-hooks.sh"
+  if [[ -f "$hooks_script" ]]; then
+    if [[ -x "$hooks_script" ]]; then
+      "$hooks_script" --remove || true
+    else
+      bash "$hooks_script" --remove || true
+    fi
+  else
+    remove_managed_hooks_fallback
+  fi
+
+  remove_agent_block
+  remove_claude_agent_reference
+  remove_managed_schema
+  remove_managed_enforcement
+  rmdir "$REPO_PATH/.githooks" >/dev/null 2>&1 || true
+  rmdir "$REPO_PATH/.checkmate" >/dev/null 2>&1 || true
+
+  echo "cm: tracking removed for $REPO_PATH"
   exit 0
 fi
 
