@@ -74,6 +74,32 @@ function normalizeSequenceId(value: string, fallback: string): string {
   return normalized.length > 0 ? normalized.slice(0, 48) : fallback;
 }
 
+function stripFlowStagePrefix(value: string): string {
+  return value
+    .replaceAll(/\s+/g, " ")
+    .trim()
+    .replace(/^(before|after)\b\s*[:\-]?\s*/i, "")
+    .trim();
+}
+
+function resolveFlowTitle(primary: string, secondary: string, fallback: string): string {
+  const normalizedPrimary = stripFlowStagePrefix(primary);
+  if (normalizedPrimary.length > 0) {
+    return normalizedPrimary;
+  }
+
+  const normalizedSecondary = stripFlowStagePrefix(secondary);
+  if (normalizedSecondary.length > 0) {
+    return normalizedSecondary;
+  }
+
+  return fallback;
+}
+
+function normalizeHunkHeader(value: string): string {
+  return value.replaceAll(/\s+/g, " ").trim();
+}
+
 function summarizeRisk(additions: number, deletions: number): string {
   const churn = additions + deletions;
 
@@ -253,23 +279,52 @@ export function useReviewWorkspace(): {
           .filter((fileId): fileId is string => fileId !== null);
 
         const uniqueFileIds = [...new Set(fileIds)];
+        const fallbackTitle = `Feature ${index + 1}`;
+        const beforeTitle = resolveFlowTitle(pair.beforeTitle, pair.afterTitle, fallbackTitle);
+        const afterTitle = resolveFlowTitle(pair.afterTitle, pair.beforeTitle, beforeTitle);
+        const hunkHeadersByFilePath = (pair.hunkHeadersByFile ?? [])
+          .map((entry) => {
+            const filePath = entry.filePath.trim();
+            const hunkHeaders = [
+              ...new Set(
+                entry.hunkHeaders
+                  .map((header: string) => normalizeHunkHeader(header))
+                  .filter((header: string) => header.length > 0),
+              ),
+            ];
+
+            if (filePath.length === 0 || hunkHeaders.length === 0) {
+              return null;
+            }
+
+            return {
+              filePath,
+              hunkHeaders,
+            };
+          })
+          .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
         return {
           id: `ai-flow-${index + 1}`,
           before: {
             id: `ai-flow-before-${index + 1}`,
-            title: pair.beforeTitle,
+            title: beforeTitle,
             body: pair.beforeBody,
             fileIds: uniqueFileIds,
           },
           after: {
             id: `ai-flow-after-${index + 1}`,
-            title: pair.afterTitle,
+            title: afterTitle,
             body: pair.afterBody,
             fileIds: uniqueFileIds,
           },
           ...(pair.technicalDetails
             ? {
                 technicalDetails: pair.technicalDetails,
+              }
+            : {}),
+          ...(hunkHeadersByFilePath.length > 0
+            ? {
+                hunkHeadersByFilePath,
               }
             : {}),
         };

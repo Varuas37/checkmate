@@ -122,6 +122,10 @@ function slugify(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+function normalizeHunkHeaderText(value: string): string {
+  return value.replaceAll(/\s+/g, " ").trim();
+}
+
 function toLowerIncludes(value: string, query: string): boolean {
   return value.toLowerCase().includes(query.toLowerCase());
 }
@@ -450,6 +454,7 @@ export function ReviewWorkspaceContainer() {
         readonly id: string;
         readonly label: string;
         readonly fileIds: Set<string>;
+        readonly hunkHeadersByFilePath: Map<string, Set<string>>;
       }
     >();
 
@@ -474,11 +479,34 @@ export function ReviewWorkspaceContainer() {
           id: optionId,
           label: resolvedLabel,
           fileIds: new Set(fileIds),
+          hunkHeadersByFilePath: new Map(),
         });
+      } else {
+        fileIds.forEach((fileId) => existing.fileIds.add(fileId));
+      }
+
+      const target = optionsByLabel.get(normalizedLabel);
+      if (!target) {
         return;
       }
 
-      fileIds.forEach((fileId) => existing.fileIds.add(fileId));
+      pair.hunkHeadersByFilePath?.forEach((entry) => {
+        const filePath = normalizeInputValue(entry.filePath);
+        if (filePath.length === 0) {
+          return;
+        }
+
+        const headers = entry.hunkHeaders
+          .map((header) => normalizeHunkHeaderText(header))
+          .filter((header) => header.length > 0);
+        if (headers.length === 0) {
+          return;
+        }
+
+        const current = target.hunkHeadersByFilePath.get(filePath) ?? new Set<string>();
+        headers.forEach((header) => current.add(header));
+        target.hunkHeadersByFilePath.set(filePath, current);
+      });
     });
 
     return [...optionsByLabel.values()].map((option) => {
@@ -486,6 +514,12 @@ export function ReviewWorkspaceContainer() {
         id: option.id,
         label: option.label,
         fileIds: [...option.fileIds],
+        hunkHeadersByFilePath: [...option.hunkHeadersByFilePath.entries()].map(
+          ([filePath, hunkHeaders]) => ({
+            filePath,
+            hunkHeaders: [...hunkHeaders],
+          }),
+        ),
       };
     });
   }, [state.allFiles, state.sequencePairs]);
@@ -570,6 +604,56 @@ export function ReviewWorkspaceContainer() {
         || pair.after.fileIds.includes(activeFileId);
     });
   }, [state.activeFileId, state.sequencePairs]);
+
+  const activeFeatureFilteredHunks = useMemo(() => {
+    const activeFile = state.activeFile;
+    if (!selectedFeatureFocusId || !activeFile || state.activeFileHunks.length === 0) {
+      return {
+        hunks: state.activeFileHunks,
+        notice: null as string | null,
+      };
+    }
+
+    const selectedFeature = featureFocusOptions.find((option) => option.id === selectedFeatureFocusId);
+    if (!selectedFeature) {
+      return {
+        hunks: state.activeFileHunks,
+        notice: null as string | null,
+      };
+    }
+
+    const hunkEntry = selectedFeature.hunkHeadersByFilePath.find(
+      (entry) => entry.filePath === activeFile.path,
+    );
+    if (!hunkEntry || hunkEntry.hunkHeaders.length === 0) {
+      return {
+        hunks: state.activeFileHunks,
+        notice: null as string | null,
+      };
+    }
+
+    const hintedHeaders = hunkEntry.hunkHeaders.map((header) => normalizeHunkHeaderText(header));
+    const matchedHunks = state.activeFileHunks.filter((hunk) => {
+      const header = normalizeHunkHeaderText(hunk.header);
+      if (header.length === 0) {
+        return false;
+      }
+
+      return hintedHeaders.some((hint) => header === hint || header.includes(hint) || hint.includes(header));
+    });
+
+    if (matchedHunks.length === 0 || matchedHunks.length === state.activeFileHunks.length) {
+      return {
+        hunks: state.activeFileHunks,
+        notice: null as string | null,
+      };
+    }
+
+    return {
+      hunks: matchedHunks,
+      notice: "Showing feature-specific hunks",
+    };
+  }, [featureFocusOptions, selectedFeatureFocusId, state.activeFile, state.activeFileHunks]);
 
   const sequenceExplorerTabs = useMemo(() => {
     return sequenceExplorerTabFileIds
@@ -2078,7 +2162,8 @@ export function ReviewWorkspaceContainer() {
             {state.fileInspectionMode === "summary" ? (
               <DiffViewer
                 file={state.activeFile}
-                hunks={state.activeFileHunks}
+                hunks={activeFeatureFilteredHunks.hunks}
+                featureHunkNotice={activeFeatureFilteredHunks.notice}
                 threads={state.threadModels}
                 showInlineThreads={showInlineComments}
                 orientation={state.diffOrientation}
@@ -2127,7 +2212,8 @@ export function ReviewWorkspaceContainer() {
             ) : (
               <DiffViewer
                 file={state.activeFile}
-                hunks={state.activeFileHunks}
+                hunks={activeFeatureFilteredHunks.hunks}
+                featureHunkNotice={activeFeatureFilteredHunks.notice}
                 threads={state.threadModels}
                 showInlineThreads={showInlineComments}
                 orientation={state.diffOrientation}
@@ -2290,6 +2376,7 @@ export function ReviewWorkspaceContainer() {
     state.repositoryCommits,
     activeFileSummary,
     activeFileFeatureSummaries,
+    activeFeatureFilteredHunks,
     filesById,
     showInlineComments,
     reviewerAuthorId,

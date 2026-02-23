@@ -167,6 +167,14 @@ export function createReviewListenerMiddleware(
               technicalDetails: pair.technicalDetails,
             }
           : {}),
+        ...(pair.hunkHeadersByFile && pair.hunkHeadersByFile.length > 0
+          ? {
+              hunkHeadersByFile: pair.hunkHeadersByFile.map((entry) => ({
+                filePath: entry.filePath,
+                hunkHeaders: [...entry.hunkHeaders],
+              })),
+            }
+          : {}),
         filePaths: [...pair.filePaths],
       })),
       sequenceSteps: input.sequenceSteps.map((step) => ({

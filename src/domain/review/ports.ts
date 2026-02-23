@@ -127,6 +127,11 @@ export interface AiSequenceStep {
   readonly filePath: string;
 }
 
+export interface AiFlowHunkReference {
+  readonly filePath: string;
+  readonly hunkHeaders: readonly string[];
+}
+
 export interface AiFlowComparison {
   readonly beforeTitle: string;
   readonly beforeBody: string;
@@ -134,6 +139,7 @@ export interface AiFlowComparison {
   readonly afterBody: string;
   readonly technicalDetails?: string;
   readonly filePaths: readonly string[];
+  readonly hunkHeadersByFile?: readonly AiFlowHunkReference[];
 }
 
 export interface AiFileSummary {

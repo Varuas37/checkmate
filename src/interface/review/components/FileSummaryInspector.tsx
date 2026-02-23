@@ -142,7 +142,7 @@ export function FileSummaryInspector({
               {relatedFeatures.map((feature) => {
                 const featureFileIds = uniqueFileIds([...feature.before.fileIds, ...feature.after.fileIds]);
                 const beforeFeatureMarkdown = [
-                  `### ${feature.after.title}`,
+                  `### ${feature.before.title}`,
                   feature.before.body,
                 ].join("\n\n");
                 const updatedFeatureMarkdown = [

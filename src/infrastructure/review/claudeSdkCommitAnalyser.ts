@@ -290,6 +290,19 @@ function stripJsonFences(raw: string): string {
     .trim();
 }
 
+function normalizeFlowTitle(value: string, fallback: string): string {
+  const normalized = value.replaceAll(/\s+/g, " ").trim();
+  if (normalized.length === 0) {
+    return fallback;
+  }
+
+  const withoutStagePrefix = normalized
+    .replace(/^(before|after)\b\s*[:\-]?\s*/i, "")
+    .trim();
+
+  return withoutStagePrefix.length > 0 ? withoutStagePrefix : normalized;
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1 — per-file prompt + parser
 // ---------------------------------------------------------------------------
@@ -388,6 +401,10 @@ function parseFileSummaryResponse(
 function buildOverviewPrompt(
   commit: CommitEntity,
   fileSummaries: readonly AiFileSummary[],
+  hunkHeadersByFilePath: readonly {
+    readonly filePath: string;
+    readonly hunkHeaders: readonly string[];
+  }[],
 ): string {
   const summaryLines = fileSummaries
     .map((s) => {
@@ -396,6 +413,12 @@ function buildOverviewPrompt(
           ? `  Risk: ${s.riskNote}`
           : "";
       return `  ${s.filePath}: ${s.summary}${riskSuffix}`;
+    })
+    .join("\n");
+  const hunkHintLines = hunkHeadersByFilePath
+    .map(({ filePath, hunkHeaders }) => {
+      const headers = hunkHeaders.map((header) => `    - ${header}`).join("\n");
+      return `  ${filePath}:\n${headers}`;
     })
     .join("\n");
 
@@ -412,6 +435,12 @@ function buildOverviewPrompt(
           afterBody: "...",
           technicalDetails: "...",
           filePaths: ["..."],
+          hunkHeadersByFile: [
+            {
+              filePath: "...",
+              hunkHeaders: ["@@ ... @@", "@@ ... @@"],
+            },
+          ],
         },
       ],
     },
@@ -428,6 +457,9 @@ function buildOverviewPrompt(
     "",
     `Changed files (${fileSummaries.length} total):`,
     summaryLines,
+    hunkHintLines.length > 0 ? "" : null,
+    hunkHintLines.length > 0 ? "Available hunk headers by file (for precise flow linking):" : null,
+    hunkHintLines.length > 0 ? hunkHintLines : null,
     "",
     "Return ONLY valid JSON matching this schema (no markdown, no extra text):",
     schema,
@@ -436,8 +468,10 @@ function buildOverviewPrompt(
     "- overviewCards: 2-4 cards in plain language covering summary, impact, risk, and open questions.",
     "- flowComparisons: 2-6 before/after pairs describing what used to happen vs what happens now for users/workflows.",
     "- Each flowComparisons entry must include technicalDetails with concrete implementation notes (functions/modules/logic flow touched).",
+    "- beforeTitle and afterTitle must be plain feature names only (no `Before:`/`After:` prefixes).",
     "- Keep titles and bodies simple and non-technical; avoid code symbols, file names, and implementation jargon.",
     "- filePaths values in flowComparisons must exactly match the listed file paths.",
+    "- hunkHeadersByFile is optional but preferred; when present, each filePath must be from filePaths and hunkHeaders must match provided headers exactly.",
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
@@ -497,6 +531,10 @@ function parseOverviewResponse(raw: string): {
               afterBody: string;
               technicalDetails?: string;
               filePaths: string[];
+              hunkHeadersByFile?: {
+                filePath: string;
+                hunkHeaders: string[];
+              }[];
             } =>
               !!item &&
               typeof item === "object" &&
@@ -514,10 +552,33 @@ function parseOverviewResponse(raw: string): {
               ).every((p) => typeof p === "string"),
           )
           .map(
-            (item): AiFlowComparison => ({
-              beforeTitle: item.beforeTitle,
+            (item): AiFlowComparison => {
+              const beforeTitle = normalizeFlowTitle(item.beforeTitle, "Feature");
+              const afterTitle = normalizeFlowTitle(item.afterTitle, beforeTitle);
+              const hunkHeadersByFile = Array.isArray(item.hunkHeadersByFile)
+                ? item.hunkHeadersByFile
+                    .filter(
+                      (entry): entry is { filePath: string; hunkHeaders: string[] } =>
+                        !!entry &&
+                        typeof entry === "object" &&
+                        typeof (entry as Record<string, unknown>)["filePath"] === "string" &&
+                        Array.isArray((entry as Record<string, unknown>)["hunkHeaders"]) &&
+                        (
+                          (entry as Record<string, unknown>)["hunkHeaders"] as unknown[]
+                        ).every((header) => typeof header === "string"),
+                    )
+                    .map((entry) => ({
+                      filePath: entry.filePath,
+                      hunkHeaders: entry.hunkHeaders
+                        .map((header) => header.replaceAll(/\s+/g, " ").trim())
+                        .filter((header) => header.length > 0),
+                    }))
+                    .filter((entry) => entry.filePath.trim().length > 0 && entry.hunkHeaders.length > 0)
+                : [];
+              return {
+              beforeTitle,
               beforeBody: item.beforeBody,
-              afterTitle: item.afterTitle,
+              afterTitle,
               afterBody: item.afterBody,
               ...(typeof item.technicalDetails === "string" &&
               item.technicalDetails.trim().length > 0
@@ -525,8 +586,14 @@ function parseOverviewResponse(raw: string): {
                     technicalDetails: item.technicalDetails.trim(),
                   }
                 : {}),
+              ...(hunkHeadersByFile.length > 0
+                ? {
+                    hunkHeadersByFile,
+                  }
+                : {}),
               filePaths: item.filePaths,
-            }),
+              };
+            },
           )
       : [];
 
@@ -588,6 +655,12 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
           afterBody: "...",
           technicalDetails: "...",
           filePaths: ["..."],
+          hunkHeadersByFile: [
+            {
+              filePath: "...",
+              hunkHeaders: ["@@ ... @@", "@@ ... @@"],
+            },
+          ],
         },
       ],
       fileSummaries: [
@@ -623,6 +696,8 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
     "- overviewCards: 2-4 cards in plain language covering summary, impact, risk, and open questions.",
     "- flowComparisons: 2-6 before/after pairs describing what used to happen vs what happens now for users/workflows.",
     "- flowComparisons entries should include technicalDetails with concrete implementation notes.",
+    "- beforeTitle and afterTitle must be plain feature names only (no `Before:`/`After:` prefixes).",
+    "- hunkHeadersByFile is optional but preferred; when present, use exact hunk headers from the diff.",
     "- fileSummaries: one entry per changed file with plain-language summary, risk note, and technicalDetails.",
     "- Avoid code symbols, function names, and implementation jargon.",
     "- All filePath values must exactly match one of the listed changed file paths.",
@@ -807,11 +882,15 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
     client: ClaudeSdkClient,
     commit: CommitEntity,
     fileSummaries: readonly AiFileSummary[],
+    hunkHeadersByFilePath: readonly {
+      readonly filePath: string;
+      readonly hunkHeaders: readonly string[];
+    }[],
   ): Promise<{
     overviewCards: readonly AiOverviewCard[];
     flowComparisons: readonly AiFlowComparison[];
   }> {
-    const prompt = buildOverviewPrompt(commit, fileSummaries);
+    const prompt = buildOverviewPrompt(commit, fileSummaries, hunkHeadersByFilePath);
     const response = await client.messages.create({
       model: this.#model,
       max_tokens: OVERVIEW_MAX_OUTPUT_TOKENS,
@@ -950,6 +1029,29 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
           hunksByFileId.set(hunk.fileId, [hunk]);
         }
       }
+      const filePathById = new Map(input.files.map((file) => [file.id, file.path] as const));
+      const hunkHeadersByFilePath = [...hunksByFileId.entries()]
+        .map(([fileId, hunks]) => {
+          const filePath = filePathById.get(fileId) ?? "";
+          if (filePath.length === 0) {
+            return null;
+          }
+
+          const hunkHeaders = hunks
+            .map((hunk) => hunk.header.replaceAll(/\s+/g, " ").trim())
+            .filter((header) => header.length > 0)
+            .slice(0, 8);
+
+          if (hunkHeaders.length === 0) {
+            return null;
+          }
+
+          return {
+            filePath,
+            hunkHeaders,
+          };
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
       // Phase 1: analyse files lazily, one by one, yielding between files so
       // rendering and interactions stay responsive in the webview.
@@ -997,7 +1099,12 @@ export class ClaudeSdkCommitAnalyser implements CommitAnalyser {
       // Phase 2: generate overview from the collected summaries.
       throwIfAborted(input.abortSignal);
       const { overviewCards, flowComparisons } =
-        await this.#generateOverviewSdk(client, input.commit, fileSummaries);
+        await this.#generateOverviewSdk(
+          client,
+          input.commit,
+          fileSummaries,
+          hunkHeadersByFilePath,
+        );
 
       throwIfAborted(input.abortSignal);
 

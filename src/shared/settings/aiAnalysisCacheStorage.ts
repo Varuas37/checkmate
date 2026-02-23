@@ -75,6 +75,32 @@ function normalizeFlowComparison(value: unknown): AiFlowComparison | null {
         .map((path) => normalizeText(path))
         .filter((path) => path.length > 0)
     : [];
+  const hunkHeadersByFile = Array.isArray(pair.hunkHeadersByFile)
+    ? pair.hunkHeadersByFile
+        .map((entry) => {
+          if (!entry || typeof entry !== "object") {
+            return null;
+          }
+
+          const input = entry as Record<string, unknown>;
+          const filePath = normalizeText(input.filePath);
+          const hunkHeaders = Array.isArray(input.hunkHeaders)
+            ? input.hunkHeaders
+                .map((header) => normalizeText(header))
+                .filter((header) => header.length > 0)
+            : [];
+
+          if (filePath.length === 0 || hunkHeaders.length === 0) {
+            return null;
+          }
+
+          return {
+            filePath,
+            hunkHeaders,
+          };
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    : [];
 
   if (
     beforeTitle.length === 0 ||
@@ -93,6 +119,11 @@ function normalizeFlowComparison(value: unknown): AiFlowComparison | null {
     ...(technicalDetails.length > 0
       ? {
           technicalDetails,
+        }
+      : {}),
+    ...(hunkHeadersByFile.length > 0
+      ? {
+          hunkHeadersByFile,
         }
       : {}),
     filePaths,
@@ -369,6 +400,14 @@ function cloneCachedData(data: CachedAiAnalysisData): CachedAiAnalysisData {
       ...(pair.technicalDetails
         ? {
             technicalDetails: pair.technicalDetails,
+          }
+        : {}),
+      ...(pair.hunkHeadersByFile && pair.hunkHeadersByFile.length > 0
+        ? {
+            hunkHeadersByFile: pair.hunkHeadersByFile.map((entry) => ({
+              filePath: entry.filePath,
+              hunkHeaders: [...entry.hunkHeaders],
+            })),
           }
         : {}),
       filePaths: [...pair.filePaths],

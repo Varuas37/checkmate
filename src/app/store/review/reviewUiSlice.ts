@@ -179,8 +179,6 @@ export const reviewUiSlice = createSlice({
     },
     setActiveFileId(state, action: PayloadAction<{ readonly fileId: string | null }>): void {
       state.activeFileId = action.payload.fileId;
-      state.fileInspectionMode = "summary";
-      state.diffViewMode = "changes";
     },
     setDiffOrientation(state, action: PayloadAction<{ readonly orientation: DiffOrientation }>): void {
       state.diffOrientation = action.payload.orientation;
@@ -282,7 +280,15 @@ export const reviewUiSlice = createSlice({
           afterBody: pair.afterBody,
           ...(pair.technicalDetails
             ? {
-                technicalDetails: pair.technicalDetails,
+              technicalDetails: pair.technicalDetails,
+            }
+          : {}),
+          ...(pair.hunkHeadersByFile && pair.hunkHeadersByFile.length > 0
+            ? {
+                hunkHeadersByFile: pair.hunkHeadersByFile.map((entry) => ({
+                  filePath: entry.filePath,
+                  hunkHeaders: [...entry.hunkHeaders],
+                })),
               }
             : {}),
           filePaths: [...pair.filePaths],

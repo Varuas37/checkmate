@@ -82,6 +82,7 @@ interface SyntaxToken {
 export interface DiffViewerProps {
   readonly file: ChangedFile | null;
   readonly hunks: readonly DiffHunk[];
+  readonly featureHunkNotice?: string | null;
   readonly orientation: DiffOrientation;
   readonly viewMode: DiffViewMode;
   readonly threads?: readonly ThreadViewModel[];
@@ -1382,6 +1383,7 @@ function UnifiedIcon() {
 export function DiffViewer({
   file,
   hunks,
+  featureHunkNotice = null,
   orientation,
   viewMode,
   threads = [],
@@ -2279,9 +2281,16 @@ export function DiffViewer({
     <section className="flex h-full min-h-[28rem] flex-col overflow-hidden bg-canvas">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/70 bg-surface-subtle/40 px-3 py-2">
         <div className="min-w-0">
-          <p className="truncate font-mono text-xs text-text">
-            {file ? file.path : "Select a changed file from the sidebar"}
-          </p>
+          <div className="flex items-center gap-1.5">
+            <p className="truncate font-mono text-xs text-text">
+              {file ? file.path : "Select a changed file from the sidebar"}
+            </p>
+            {featureHunkNotice && (
+              <span className="inline-flex shrink-0 items-center rounded border border-caution/45 bg-caution/15 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.07em] text-caution">
+                {featureHunkNotice}
+              </span>
+            )}
+          </div>
           {file && (
             <p className="truncate text-[11px] text-muted">
               {file.status} · +{file.additions} / -{file.deletions}

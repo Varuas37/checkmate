@@ -69,6 +69,10 @@ export interface SequencePair {
   readonly before: SequenceBlock;
   readonly after: SequenceBlock;
   readonly technicalDetails?: string;
+  readonly hunkHeadersByFilePath?: readonly {
+    readonly filePath: string;
+    readonly hunkHeaders: readonly string[];
+  }[];
 }
 
 export interface CodeSequenceStep {
