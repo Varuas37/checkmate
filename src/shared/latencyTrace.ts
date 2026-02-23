@@ -1,3 +1,5 @@
+import { appendApplicationLog } from "./desktopIntegration.ts";
+
 type TraceFields = Readonly<Record<string, unknown>>;
 
 function nowMs(): number {
@@ -18,6 +20,14 @@ function normalizeError(error: unknown): string {
   }
 
   return String(error);
+}
+
+function safeStringify(value: unknown): string | null {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
 }
 
 function randomSuffix(length = 6): string {
@@ -55,20 +65,31 @@ export function startLatencyTrace(options: StartLatencyTraceOptions): LatencyTra
 
   const log = (event: string, fields?: TraceFields) => {
     const elapsedMs = roundMs(nowMs() - startedAt);
-    if (fields) {
-      console.info("[ai-trace]", {
-        ...basePayload,
-        event,
-        elapsedMs,
-        ...fields,
-      });
-      return;
-    }
+    const payload = fields
+      ? {
+          ...basePayload,
+          event,
+          elapsedMs,
+          ...fields,
+        }
+      : {
+          ...basePayload,
+          event,
+          elapsedMs,
+        };
 
-    console.info("[ai-trace]", {
-      ...basePayload,
-      event,
-      elapsedMs,
+    console.info("[ai-trace]", payload);
+
+    const fieldsJson = safeStringify(payload);
+    void appendApplicationLog({
+      source: "frontend_ai_trace",
+      event: `${options.scope}:${event}`,
+      message: `elapsedMs=${elapsedMs}`,
+      ...(fieldsJson
+        ? {
+            fieldsJson,
+          }
+        : {}),
     });
   };
 
@@ -91,4 +112,3 @@ export function startLatencyTrace(options: StartLatencyTraceOptions): LatencyTra
     },
   };
 }
-

@@ -75,6 +75,10 @@ const MAX_LINES_PER_HUNK = 25;
 const MAX_FILES_IN_PROMPT = 20;
 /** Max parallel file summary calls for SDK path. */
 const FILE_SUMMARY_CONCURRENCY = 4;
+/** CLI mode prompt budgets to keep end-to-end latency lower. */
+const CLI_MAX_HUNKS_IN_PROMPT = 6;
+const CLI_MAX_LINES_PER_HUNK = 12;
+const CLI_MAX_FILES_IN_PROMPT = 8;
 
 // ---------------------------------------------------------------------------
 // File exclusion — pattern-based + churn threshold
@@ -725,7 +729,7 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
   const { commit, files, hunks } = input;
 
   const fileListing = files
-    .slice(0, MAX_FILES_IN_PROMPT)
+    .slice(0, CLI_MAX_FILES_IN_PROMPT)
     .map(
       (f) =>
         `  ${f.status.padEnd(8)} ${f.path}  +${f.additions}/-${f.deletions}`,
@@ -738,14 +742,14 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
       const bChurn = b.lines.filter((l) => l.kind !== "context").length;
       return bChurn - aChurn;
     })
-    .slice(0, MAX_HUNKS_IN_PROMPT);
+    .slice(0, CLI_MAX_HUNKS_IN_PROMPT);
 
   const hunkText = sortedHunks
     .map((hunk) => {
       const file = files.find((f) => f.id === hunk.fileId);
       const filePath = file?.path ?? hunk.fileId;
       const lines = hunk.lines
-        .slice(0, MAX_LINES_PER_HUNK)
+        .slice(0, CLI_MAX_LINES_PER_HUNK)
         .map((l) => {
           const prefix =
             l.kind === "add" ? "+" : l.kind === "remove" ? "-" : " ";
@@ -797,7 +801,7 @@ function buildLegacyPrompt(input: AnalyseCommitInput): string {
       ? `Description: ${commit.description}`
       : null,
     "",
-    `Changed files (${files.length} total, showing up to ${MAX_FILES_IN_PROMPT}):`,
+    `Changed files (${files.length} total, showing up to ${CLI_MAX_FILES_IN_PROMPT}):`,
     fileListing,
     "",
     "Key diff hunks:",
@@ -1077,19 +1081,29 @@ export class AgentCommitAnalyser implements CommitAnalyser {
       return runFallbackPromptViaTauri(prompt);
     };
 
+    trace.mark("commit-analysis-provider-selection", {
+      preferCliSetting: preferCli,
+      activeCliAgentId: activeCliAgent?.id ?? null,
+      hasApiKey: Boolean(resolvedApiKey),
+    });
+
     // -----------------------------------------------------------------------
-    // Prefer CLI over API: try configured CLI first, fall back to SDK
+    // CLI-preferred path: use active CLI when configured, with SDK fallback.
     // -----------------------------------------------------------------------
     if (preferCli && activeCliAgent && isTauriRuntime()) {
       trace.mark("commit-analysis-cli-preferred", {
         cliAgent: activeCliAgent.id,
       });
       const legacyPrompt = buildLegacyPrompt(input);
+      trace.mark("commit-analysis-cli-request", {
+        promptLength: legacyPrompt.length,
+      });
       try {
         const startedAt = nowForTrace();
         const cliResponse = await runViaCli(legacyPrompt);
         trace.mark("commit-analysis-cli-response", {
           elapsedMs: durationMsSince(startedAt),
+          responseLength: cliResponse.length,
         });
         const parsed = parseLegacyResponse(cliResponse, input.commitId);
         if (parsed) {

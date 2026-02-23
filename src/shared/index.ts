@@ -79,6 +79,7 @@ export {
   type AppSettingsFile,
 } from "./settings/appSettingsFile.ts";
 export {
+  appendApplicationLog,
   deleteCommentImages,
   initializeAgentTracking,
   installCmCliInPath,
@@ -92,6 +93,7 @@ export {
   type AgentTrackingInitializationResult,
   type AgentTrackingRemovalResult,
   type AgentTrackingStatus,
+  type ApplicationLogInput,
   type CommentImageStorageResult,
   type CmCliInstallResult,
   type CmCliStatus,

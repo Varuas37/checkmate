@@ -48,6 +48,13 @@ export interface CommentImageStorageResult {
   readonly markdownUrl: string;
 }
 
+export interface ApplicationLogInput {
+  readonly source: string;
+  readonly event: string;
+  readonly message: string;
+  readonly fieldsJson?: string;
+}
+
 function isTauriRuntime(): boolean {
   if (typeof window === "undefined") {
     return false;
@@ -276,4 +283,32 @@ export async function deleteCommentImages(imageRefs: readonly string[]): Promise
   await invokeTauri<number>("delete_comment_images", {
     imageRefs: normalizedImageRefs,
   });
+}
+
+export async function appendApplicationLog(input: ApplicationLogInput): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  const source = input.source.trim();
+  const event = input.event.trim();
+  const message = input.message.trim();
+  if (source.length === 0 || event.length === 0 || message.length === 0) {
+    return;
+  }
+
+  try {
+    await invokeTauri<void>("append_application_log", {
+      source,
+      event,
+      message,
+      ...(typeof input.fieldsJson === "string" && input.fieldsJson.trim().length > 0
+        ? {
+            fieldsJson: input.fieldsJson,
+          }
+        : {}),
+    });
+  } catch {
+    // Best-effort logging path should never block user interactions.
+  }
 }

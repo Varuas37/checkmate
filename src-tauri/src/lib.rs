@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fs::OpenOptions, io::Write};
 use tauri::Manager;
 
 const COMMIT_FIELD_DELIMITER: &str = "\u{001f}";
@@ -1100,6 +1101,7 @@ fn tracking_status_for_repository(repository_path: &Path) -> Result<AgentTrackin
 
 const COMMENT_IMAGE_URL_PREFIX: &str = "checkmate-image://";
 const COMMENT_IMAGE_DIRECTORY: &str = "comment-images";
+const APPLICATION_LOG_FILE_NAME: &str = "application_logs.log";
 
 fn resolve_comment_images_directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app
@@ -1111,6 +1113,70 @@ fn resolve_comment_images_directory(app: &tauri::AppHandle) -> Result<PathBuf, S
     std::fs::create_dir_all(&image_dir)
         .map_err(|error| format!("Failed to create comment image directory: {}", error))?;
     Ok(image_dir)
+}
+
+fn resolve_application_log_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data directory: {}", error))?;
+    std::fs::create_dir_all(&app_data_dir)
+        .map_err(|error| format!("Failed to create app data directory: {}", error))?;
+    Ok(app_data_dir.join(APPLICATION_LOG_FILE_NAME))
+}
+
+fn sanitize_log_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+fn append_application_log_line(
+    app: &tauri::AppHandle,
+    source: &str,
+    event: &str,
+    message: &str,
+    fields_json: Option<&str>,
+) -> Result<(), String> {
+    let normalized_source = source.trim();
+    if !normalized_source.starts_with("frontend_") && !normalized_source.starts_with("backend_") {
+        return Err("Log source must begin with `frontend_` or `backend_`.".to_string());
+    }
+
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+
+    let log_path = resolve_application_log_path(app)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| format!("Failed to open application log file: {}", error))?;
+
+    let mut line = format!(
+        "{}\t{}\t{}\t{}",
+        timestamp_ms,
+        sanitize_log_value(normalized_source),
+        sanitize_log_value(event.trim()),
+        sanitize_log_value(message.trim()),
+    );
+
+    if let Some(raw_fields) = fields_json {
+        let normalized_fields = raw_fields.trim();
+        if !normalized_fields.is_empty() {
+            line.push('\t');
+            line.push_str(normalized_fields);
+        }
+    }
+
+    line.push('\n');
+    file.write_all(line.as_bytes())
+        .map_err(|error| format!("Failed to append application log line: {}", error))?;
+    Ok(())
 }
 
 fn extension_for_mime_type(mime_type: &str) -> Option<&'static str> {
@@ -1746,7 +1812,7 @@ fn read_commit_file_versions(
 }
 
 #[tauri::command]
-async fn run_claude_prompt(prompt: String) -> Result<String, String> {
+async fn run_claude_prompt(app: tauri::AppHandle, prompt: String) -> Result<String, String> {
     let trimmed_prompt = prompt.trim();
 
     if trimmed_prompt.is_empty() {
@@ -1754,8 +1820,16 @@ async fn run_claude_prompt(prompt: String) -> Result<String, String> {
     }
 
     let prompt_arg = trimmed_prompt.to_string();
+    let started_at = SystemTime::now();
+    let _ = append_application_log_line(
+        &app,
+        "backend_cli",
+        "run_claude_prompt_start",
+        &format!("prompt_len={}", prompt_arg.len()),
+        None,
+    );
 
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let output = Command::new("claude")
             .arg("-p")
             .arg(prompt_arg)
@@ -1780,7 +1854,35 @@ async fn run_claude_prompt(prompt: String) -> Result<String, String> {
             .map_err(|error| format!("Claude CLI output was not valid UTF-8: {}", error))
     })
     .await
-    .map_err(|error| format!("Failed to join Claude CLI task: {}", error))?
+    .map_err(|error| format!("Failed to join Claude CLI task: {}", error))?;
+
+    let elapsed_ms = SystemTime::now()
+        .duration_since(started_at)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+
+    match &result {
+        Ok(output) => {
+            let _ = append_application_log_line(
+                &app,
+                "backend_cli",
+                "run_claude_prompt_success",
+                &format!("elapsed_ms={} output_len={}", elapsed_ms, output.len()),
+                None,
+            );
+        }
+        Err(error_message) => {
+            let _ = append_application_log_line(
+                &app,
+                "backend_cli",
+                "run_claude_prompt_error",
+                &format!("elapsed_ms={} error={}", elapsed_ms, error_message),
+                None,
+            );
+        }
+    }
+
+    result
 }
 
 #[tauri::command]
@@ -1834,6 +1936,7 @@ fn read_system_username() -> Option<String> {
 
 #[tauri::command]
 async fn run_cli_agent_prompt(
+    app: tauri::AppHandle,
     command: String,
     args: Vec<String>,
     prompt: String,
@@ -1852,8 +1955,22 @@ async fn run_cli_agent_prompt(
 
     let command_name = trimmed_command.to_string();
     let prompt_arg = trimmed_prompt.to_string();
+    let started_at = SystemTime::now();
+    let _ = append_application_log_line(
+        &app,
+        "backend_cli",
+        "run_cli_agent_prompt_start",
+        &format!(
+            "command={} args_count={} prompt_len={}",
+            command_name,
+            args.len(),
+            prompt_arg.len()
+        ),
+        None,
+    );
 
-    tauri::async_runtime::spawn_blocking(move || {
+    let command_name_for_log = command_name.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let output = Command::new(&command_name)
             .args(&args)
             .arg(prompt_arg)
@@ -1878,7 +1995,62 @@ async fn run_cli_agent_prompt(
             .map_err(|error| format!("CLI agent output was not valid UTF-8: {}", error))
     })
     .await
-    .map_err(|error| format!("Failed to join CLI agent task: {}", error))?
+    .map_err(|error| format!("Failed to join CLI agent task: {}", error))?;
+
+    let elapsed_ms = SystemTime::now()
+        .duration_since(started_at)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+
+    match &result {
+        Ok(output) => {
+            let _ = append_application_log_line(
+                &app,
+                "backend_cli",
+                "run_cli_agent_prompt_success",
+                &format!(
+                    "command={} elapsed_ms={} output_len={}",
+                    command_name_for_log,
+                    elapsed_ms,
+                    output.len()
+                ),
+                None,
+            );
+        }
+        Err(error_message) => {
+            let _ = append_application_log_line(
+                &app,
+                "backend_cli",
+                "run_cli_agent_prompt_error",
+                &format!(
+                    "command={} elapsed_ms={} error={}",
+                    command_name_for_log,
+                    elapsed_ms,
+                    error_message
+                ),
+                None,
+            );
+        }
+    }
+
+    result
+}
+
+#[tauri::command]
+fn append_application_log(
+    app: tauri::AppHandle,
+    source: String,
+    event: String,
+    message: String,
+    fields_json: Option<String>,
+) -> Result<(), String> {
+    append_application_log_line(
+        &app,
+        &source,
+        &event,
+        &message,
+        fields_json.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -1999,8 +2171,16 @@ fn store_comment_image(
     base64_data: String,
     mime_type: String,
 ) -> Result<CommentImageStorageResult, String> {
+    let started_at = SystemTime::now();
+    let _ = append_application_log_line(
+        &app,
+        "backend_storage",
+        "store_comment_image_start",
+        &format!("mime_type={} base64_len={}", mime_type.trim(), base64_data.trim().len()),
+        None,
+    );
     let extension = extension_for_mime_type(&mime_type)
-        .ok_or_else(|| "Only PNG, JPG, WEBP, and GIF clipboard images are supported.".to_string())?;
+        .ok_or_else(|| "Only PNG, JPG, WEBP, GIF, and TIFF clipboard images are supported.".to_string())?;
     let image_bytes = general_purpose::STANDARD
         .decode(base64_data.trim())
         .map_err(|error| format!("Failed to decode image data: {}", error))?;
@@ -2013,6 +2193,18 @@ fn store_comment_image(
     let image_path = image_dir.join(&image_ref);
     std::fs::write(&image_path, image_bytes)
         .map_err(|error| format!("Failed to store image: {}", error))?;
+
+    let elapsed_ms = SystemTime::now()
+        .duration_since(started_at)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let _ = append_application_log_line(
+        &app,
+        "backend_storage",
+        "store_comment_image_success",
+        &format!("elapsed_ms={} image_ref={}", elapsed_ms, image_ref),
+        None,
+    );
 
     Ok(CommentImageStorageResult {
         image_ref: image_ref.clone(),
@@ -2196,6 +2388,7 @@ pub fn run() {
             write_app_settings,
             read_system_username,
             run_cli_agent_prompt,
+            append_application_log,
             read_launch_request,
             initialize_agent_tracking,
             read_agent_tracking_status,

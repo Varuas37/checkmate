@@ -7,6 +7,7 @@ import {
   readActiveCliAgentFromStorage,
   readApiKeyFromStorage,
   readCliPreferenceFromStorage,
+  startLatencyTrace,
 } from "../../shared/index.ts";
 
 interface SdkClient {
@@ -28,10 +29,10 @@ type SdkClientFactory = (apiKey: string) => Promise<SdkClient>;
 const DEFAULT_PROVIDER_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_MAX_OUTPUT_TOKENS = 1200;
 const DEFAULT_MAX_AUTO_ATTEMPTS = 2;
-const MAX_FILES_IN_PROMPT = 20;
-const MAX_HUNKS_IN_PROMPT = 8;
-const MAX_LINES_PER_HUNK = 16;
-const MAX_STEPS = 12;
+const MAX_FILES_IN_PROMPT = 10;
+const MAX_HUNKS_IN_PROMPT = 6;
+const MAX_LINES_PER_HUNK = 10;
+const MAX_STEPS = 10;
 const CUSTOM_SEQUENCE_SYSTEM_PROMPT =
   "You are a specialized sub-agent that produces structured sequence-step JSON for a custom React sequence renderer. Return only valid JSON.";
 
@@ -96,6 +97,19 @@ function sanitizeIdentifier(value: string, fallback: string): string {
 
 function tokenFallback(index: number): string {
   return `S${index + 1}`;
+}
+
+function nowForTrace(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function durationMsSince(startedAt: number): number {
+  const elapsed = nowForTrace() - startedAt;
+  return Math.round(elapsed * 100) / 100;
 }
 
 function truncateForPrompt(value: string, max = 900): string {
@@ -532,37 +546,84 @@ export class AgentSequenceDiagramGenerator implements SequenceDiagramGenerator {
       return [];
     }
 
+    const trace = startLatencyTrace({
+      scope: "sequence-generator",
+      traceId: `sequence-generator-${input.commitId}-${Date.now()}`,
+      fields: {
+        commitId: input.commitId,
+        fileCount: input.files.length,
+        hunkCount: input.hunks.length,
+      },
+    });
+    let traceSummaryFields: Readonly<Record<string, unknown>> | undefined;
+
     const allowedFilePaths = new Set(input.files.map((file) => file.path));
     const resolvedApiKey = this.#resolveApiKey();
+    const preferCli = readCliPreferenceFromStorage();
+    const activeCliAgent = readActiveCliAgentFromStorage();
+    trace.mark("sequence-generator-provider-selection", {
+      preferCliSetting: preferCli,
+      activeCliAgentId: activeCliAgent?.id ?? null,
+      hasApiKey: Boolean(resolvedApiKey),
+    });
     const basePrompt = buildBasePrompt(input);
     const attemptMessages: string[] = [];
     let nextPrompt = basePrompt;
     let previousResponse = "";
 
-    for (let attempt = 1; attempt <= this.#maxAutoAttempts; attempt += 1) {
-      try {
-        const raw = await this.#runPrompt(nextPrompt, resolvedApiKey);
-        previousResponse = raw;
-        const parsed = parseSequenceResponse(raw, allowedFilePaths);
+    try {
+      for (let attempt = 1; attempt <= this.#maxAutoAttempts; attempt += 1) {
+        const attemptStartedAt = nowForTrace();
+        trace.mark("sequence-generator-attempt-start", {
+          attempt,
+          promptLength: nextPrompt.length,
+        });
+        try {
+          const raw = await this.#runPrompt(nextPrompt, resolvedApiKey);
+          previousResponse = raw;
+          const parsed = parseSequenceResponse(raw, allowedFilePaths);
 
-        if (parsed && parsed.length > 0) {
-          return parsed;
+          trace.mark("sequence-generator-attempt-response", {
+            attempt,
+            elapsedMs: durationMsSince(attemptStartedAt),
+            responseLength: raw.length,
+            parsedStepCount: parsed?.length ?? 0,
+          });
+
+          if (parsed && parsed.length > 0) {
+            traceSummaryFields = {
+              success: true,
+              attempts: attempt,
+              stepCount: parsed.length,
+            };
+            return parsed;
+          }
+
+          const parseReason = "Response was not valid sequenceSteps JSON or contained disallowed file paths.";
+          attemptMessages.push(`attempt ${attempt}: ${parseReason}`);
+          nextPrompt = buildRetryPrompt(basePrompt, raw, parseReason);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown sequence generation error.";
+          trace.mark("sequence-generator-attempt-error", {
+            attempt,
+            elapsedMs: durationMsSince(attemptStartedAt),
+            message,
+          });
+          attemptMessages.push(`attempt ${attempt}: ${message}`);
+          nextPrompt = buildRetryPrompt(basePrompt, previousResponse, message);
         }
-
-        const parseReason = "Response was not valid sequenceSteps JSON or contained disallowed file paths.";
-        attemptMessages.push(`attempt ${attempt}: ${parseReason}`);
-        nextPrompt = buildRetryPrompt(basePrompt, raw, parseReason);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown sequence generation error.";
-        attemptMessages.push(`attempt ${attempt}: ${message}`);
-        nextPrompt = buildRetryPrompt(basePrompt, previousResponse, message);
       }
-    }
 
-    const details = attemptMessages.length > 0 ? ` ${attemptMessages.join(" | ")}` : "";
-    throw new Error(
-      `Failed to generate a structured sequence after ${this.#maxAutoAttempts} attempts.${details}`,
-    );
+      const details = attemptMessages.length > 0 ? ` ${attemptMessages.join(" | ")}` : "";
+      throw new Error(
+        `Failed to generate a structured sequence after ${this.#maxAutoAttempts} attempts.${details}`,
+      );
+    } catch (error) {
+      trace.fail(error);
+      throw error;
+    } finally {
+      trace.end(traceSummaryFields);
+    }
   }
 }
 
