@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import Skeleton from "react-loading-skeleton";
 
 import type { DiffViewMode, FileVersionsLoadStatus } from "../../../application/review/index.ts";
@@ -14,15 +22,78 @@ import type {
 import { Button, Textarea } from "../../../design-system/index.ts";
 import {
   applyCheckmateMentionSuggestion,
+  buildManagedCommentImageMarkdown,
   cn,
+  deleteCommentImages,
+  extractManagedCommentImageRefs,
   getCheckmateMentionSuggestion,
   hasCheckmateMention,
+  removeManagedCommentImageFromMarkdown,
+  storeCommentImage,
   stripCheckmateMentions,
 } from "../../../shared/index.ts";
 import type { CreateThreadInput, ThreadViewModel } from "../types.ts";
 import { MarkdownComment } from "./MarkdownComment.tsx";
 
 const EXPANSION_STEP = 15;
+const DIFF_COMMENT_DRAFT_STORAGE_KEY_PREFIX = "checkmate:diff-comment-draft:";
+
+interface DiffCommentDraft {
+  readonly reviewBody: string;
+  readonly promptByThreadId: Readonly<Record<string, string>>;
+}
+
+function encodeArrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let output = "";
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    output += String.fromCharCode(...chunk);
+  }
+
+  return btoa(output);
+}
+
+function readCommentDraftFromStorage(storageKey: string | null): DiffCommentDraft | null {
+  if (!storageKey || typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as {
+      readonly reviewBody?: unknown;
+      readonly promptByThreadId?: unknown;
+    };
+
+    const reviewBody = typeof parsed.reviewBody === "string" ? parsed.reviewBody : "";
+    const promptByThreadId: Record<string, string> = {};
+
+    if (parsed.promptByThreadId && typeof parsed.promptByThreadId === "object") {
+      Object.entries(parsed.promptByThreadId as Record<string, unknown>).forEach(([threadId, value]) => {
+        if (typeof value !== "string") {
+          return;
+        }
+        if (threadId.trim().length === 0) {
+          return;
+        }
+        promptByThreadId[threadId] = value;
+      });
+    }
+
+    return {
+      reviewBody,
+      promptByThreadId,
+    };
+  } catch {
+    return null;
+  }
+}
 
 interface ChangeGapRow {
   readonly kind: "gap";
@@ -83,6 +154,7 @@ export interface DiffViewerProps {
   readonly file: ChangedFile | null;
   readonly hunks: readonly DiffHunk[];
   readonly featureHunkNotice?: string | null;
+  readonly hunkFeatureLabelsById?: Readonly<Record<string, readonly string[]>>;
   readonly orientation: DiffOrientation;
   readonly viewMode: DiffViewMode;
   readonly threads?: readonly ThreadViewModel[];
@@ -853,6 +925,10 @@ function renderInlineThreads(
   expandedReplyThreadId: string | null,
   onToggleReplyComposer: (threadId: string) => void,
   onCloseReplyComposer: (threadId: string) => void,
+  replyImageRefsByThreadId: Readonly<Record<string, readonly string[]>>,
+  onReplyPaste: (threadId: string, event: ReactClipboardEvent<HTMLTextAreaElement>) => void,
+  onRemoveReplyDraftImage: (threadId: string, imageRef: string) => void,
+  onMarkReplyDraftImagesPersisted: (prompt: string) => void,
 ): ReactNode {
   if (threads.length === 0) {
     return null;
@@ -863,6 +939,7 @@ function renderInlineThreads(
       <div className="space-y-2">
         {threads.map((threadModel) => {
           const promptValue = promptsByThreadId[threadModel.thread.id] ?? "";
+          const promptImageRefs = replyImageRefsByThreadId[threadModel.thread.id] ?? [];
           const mentionSuggestion = getCheckmateMentionSuggestion(promptValue);
           const hasMention = hasCheckmateMention(promptValue);
           const isReplyComposerOpen = expandedReplyThreadId === threadModel.thread.id;
@@ -872,6 +949,7 @@ function renderInlineThreads(
               return;
             }
 
+            onMarkReplyDraftImagesPersisted(promptValue);
             onAskAgent(threadModel.thread.id, stripCheckmateMentions(promptValue));
             onPromptChange(threadModel.thread.id, "");
             onCloseReplyComposer(threadModel.thread.id);
@@ -964,12 +1042,27 @@ function renderInlineThreads(
 
                 {isReplyComposerOpen && (
                   <div className="space-y-1">
-                    <input
+                    <Textarea
+                      rows={3}
                       value={promptValue}
                       onChange={(event) => {
                         onPromptChange(threadModel.thread.id, event.target.value);
                       }}
+                      onPaste={(event) => {
+                        void onReplyPaste(threadModel.thread.id, event);
+                      }}
                       onKeyDown={(event) => {
+                        if (
+                          (event.metaKey || event.ctrlKey)
+                          && !event.shiftKey
+                          && !event.altKey
+                          && event.key.toLowerCase() === "a"
+                        ) {
+                          event.preventDefault();
+                          event.currentTarget.select();
+                          return;
+                        }
+
                         if ((event.key === "Tab" || event.key === "ArrowDown") && mentionSuggestion) {
                           event.preventDefault();
                           onPromptChange(
@@ -979,13 +1072,13 @@ function renderInlineThreads(
                           return;
                         }
 
-                        if (event.key === "Enter" && !event.shiftKey) {
+                        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                           event.preventDefault();
                           sendReply();
                         }
                       }}
-                      placeholder="Write reply... Mention @checkmate to ask agent"
-                      className="h-7 min-w-0 w-full rounded border border-border bg-canvas px-2 font-mono text-[11px] text-text outline-none transition-colors focus:border-accent"
+                      placeholder="Write reply... Mention @checkmate, then press Cmd/Ctrl+Enter to send"
+                      className="min-h-[4.25rem] w-full font-mono text-[11px]"
                       aria-label="Thread reply input"
                       disabled={!onAskAgent}
                     />
@@ -1023,6 +1116,25 @@ function renderInlineThreads(
                     <p className="text-[10px] text-muted">
                       Mention `@checkmate` to trigger an agent response for this thread.
                     </p>
+                    {promptImageRefs.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-[10px] uppercase tracking-[0.08em] text-muted">Attached Images</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {promptImageRefs.map((imageRef, index) => (
+                            <button
+                              key={`${threadModel.thread.id}-${imageRef}-${index}`}
+                              type="button"
+                              className="inline-flex items-center gap-1 rounded border border-border/70 bg-surface-subtle/60 px-2 py-1 text-[10px] text-text transition-colors hover:border-danger/55 hover:text-danger"
+                              onClick={() => onRemoveReplyDraftImage(threadModel.thread.id, imageRef)}
+                              title="Remove image"
+                            >
+                              <span className="font-mono">{imageRef}</span>
+                              <span aria-hidden="true">✕</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     <div className="flex justify-end gap-2">
                       <Button
@@ -1079,6 +1191,7 @@ function renderSplitLine(
   line: DiffLine,
   language: SyntaxLanguage,
   selection: LineSelectionContext,
+  featureTitle?: string,
 ) {
   const isAdded = line.kind === "add";
   const isRemoved = line.kind === "remove";
@@ -1088,7 +1201,7 @@ function renderSplitLine(
   const newSelectable = selection.isLineSelectable("new", line.newLineNumber);
 
   return (
-    <div key={rowKey} className="grid grid-cols-2 font-mono text-[11px] leading-6">
+    <div key={rowKey} className="grid grid-cols-2 font-mono text-[11px] leading-6" title={featureTitle}>
       <div
         className={cn(
           "grid min-w-0 grid-cols-[3.25rem_1.25rem_minmax(0,1fr)] overflow-x-auto border-r border-border/30 pr-2",
@@ -1191,6 +1304,7 @@ function renderUnifiedLine(
   line: DiffLine,
   language: SyntaxLanguage,
   selection: LineSelectionContext,
+  featureTitle?: string,
 ) {
   const marker = line.kind === "add" ? "+" : line.kind === "remove" ? "-" : " ";
   const oldSelected = selection.isLineSelected("old", line.oldLineNumber);
@@ -1206,6 +1320,7 @@ function renderUnifiedLine(
         unifiedRowClass(line.kind),
         (oldSelected || newSelected) && "ring-inset ring-1 ring-accent/40",
       )}
+      title={featureTitle}
     >
       {line.oldLineNumber !== undefined ? (
         <div className="flex items-center justify-end gap-1 pr-1">
@@ -1265,6 +1380,7 @@ function renderFullFileLine(
   changed: boolean,
   language: SyntaxLanguage,
   selection: LineSelectionContext,
+  featureTitle?: string,
 ) {
   const marker = changed ? (mode === "old" ? "-" : "+") : " ";
   const lineKind: DiffLineKind = changed ? (mode === "old" ? "remove" : "add") : "context";
@@ -1281,6 +1397,7 @@ function renderFullFileLine(
         changed && mode === "new" && "bg-positive/10",
         selected && "ring-inset ring-1 ring-accent/40",
       )}
+      title={featureTitle}
     >
       {selectable ? (
         <div className="flex items-center justify-end gap-1 pr-1">
@@ -1384,6 +1501,7 @@ export function DiffViewer({
   file,
   hunks,
   featureHunkNotice = null,
+  hunkFeatureLabelsById = {},
   orientation,
   viewMode,
   threads = [],
@@ -1401,6 +1519,9 @@ export function DiffViewer({
   toolbarActions,
   bodyOverride,
 }: DiffViewerProps) {
+  const reviewTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const draftImageRefsPreviousRef = useRef<ReadonlySet<string>>(new Set<string>());
+  const skipDraftImageCleanupRefsRef = useRef(new Set<string>());
   const [expandedById, setExpandedById] = useState<Record<string, number>>({});
   const [promptByThreadId, setPromptByThreadId] = useState<Record<string, string>>({});
   const [selectedAnchors, setSelectedAnchors] = useState<readonly SelectableLineAnchor[]>([]);
@@ -1413,25 +1534,115 @@ export function DiffViewer({
   const [activeReplyThreadId, setActiveReplyThreadId] = useState<string | null>(null);
   const reviewBodyMentionSuggestion = useMemo(() => getCheckmateMentionSuggestion(reviewBody), [reviewBody]);
   const reviewBodyHasMention = useMemo(() => hasCheckmateMention(reviewBody), [reviewBody]);
+  const reviewBodyImageRefs = useMemo(() => extractManagedCommentImageRefs(reviewBody), [reviewBody]);
+  const promptImageRefsByThreadId = useMemo(() => {
+    const next: Record<string, readonly string[]> = {};
+    Object.entries(promptByThreadId).forEach(([threadId, prompt]) => {
+      const refs = extractManagedCommentImageRefs(prompt);
+      if (refs.length > 0) {
+        next[threadId] = refs;
+      }
+    });
+    return next;
+  }, [promptByThreadId]);
+  const allDraftImageRefs = useMemo(() => {
+    const refs = new Set<string>(reviewBodyImageRefs);
+    Object.values(promptImageRefsByThreadId).forEach((imageRefs) => {
+      imageRefs.forEach((imageRef) => refs.add(imageRef));
+    });
+    return [...refs];
+  }, [promptImageRefsByThreadId, reviewBodyImageRefs]);
+  const draftStorageKey = useMemo(
+    () => (file ? `${DIFF_COMMENT_DRAFT_STORAGE_KEY_PREFIX}${file.id}` : null),
+    [file?.id],
+  );
+  const featureLabelsByHunkId = useMemo(() => {
+    const normalized: Record<string, string> = {};
+    Object.entries(hunkFeatureLabelsById).forEach(([hunkId, labels]) => {
+      const filteredLabels = [...new Set(labels.map((label) => label.trim()).filter((label) => label.length > 0))];
+      if (filteredLabels.length > 0) {
+        normalized[hunkId] = filteredLabels.join(", ");
+      }
+    });
+    return normalized;
+  }, [hunkFeatureLabelsById]);
   const resolvedAuthorId = useMemo(() => {
     const normalized = defaultAuthorId?.trim() ?? "";
     return normalized.length > 0 ? normalized : "reviewer";
   }, [defaultAuthorId]);
 
   useEffect(() => {
+    const savedDraft = readCommentDraftFromStorage(draftStorageKey);
+    const savedDraftRefs = new Set<string>();
+    if (savedDraft?.reviewBody) {
+      extractManagedCommentImageRefs(savedDraft.reviewBody).forEach((imageRef) => {
+        savedDraftRefs.add(imageRef);
+      });
+    }
+    Object.values(savedDraft?.promptByThreadId ?? {}).forEach((promptValue) => {
+      extractManagedCommentImageRefs(promptValue).forEach((imageRef) => {
+        savedDraftRefs.add(imageRef);
+      });
+    });
+    draftImageRefsPreviousRef.current = savedDraftRefs;
+    skipDraftImageCleanupRefsRef.current.clear();
     setExpandedById({});
     setSelectedAnchors([]);
     setSelectionPivot(null);
     setComposerAnchor(null);
     setRevealedThreadId(null);
     setActiveReplyThreadId(null);
-    setReviewBody("");
+    setReviewBody(savedDraft?.reviewBody ?? "");
+    setPromptByThreadId(savedDraft?.promptByThreadId ? { ...savedDraft.promptByThreadId } : {});
     setSelectionMessage(null);
-  }, [file?.id, viewMode]);
+  }, [draftStorageKey]);
 
   useEffect(() => {
-    setPromptByThreadId({});
-  }, [file?.id]);
+    if (!draftStorageKey || typeof window === "undefined") {
+      return;
+    }
+
+    const normalizedPromptByThreadId = Object.fromEntries(
+      Object.entries(promptByThreadId).filter(([, prompt]) => prompt.trim().length > 0),
+    );
+    if (reviewBody.trim().length === 0 && Object.keys(normalizedPromptByThreadId).length === 0) {
+      window.localStorage.removeItem(draftStorageKey);
+      return;
+    }
+
+    const payload: DiffCommentDraft = {
+      reviewBody,
+      promptByThreadId: normalizedPromptByThreadId,
+    };
+
+    try {
+      window.localStorage.setItem(draftStorageKey, JSON.stringify(payload));
+    } catch {
+      // Ignore localStorage quota/privacy errors.
+    }
+  }, [draftStorageKey, promptByThreadId, reviewBody]);
+
+  useEffect(() => {
+    const currentRefs = new Set(allDraftImageRefs);
+    const previousRefs = draftImageRefsPreviousRef.current;
+
+    const removedRefs = [...previousRefs].filter((imageRef) => !currentRefs.has(imageRef));
+    const refsToDelete = removedRefs.filter((imageRef) => {
+      if (skipDraftImageCleanupRefsRef.current.has(imageRef)) {
+        skipDraftImageCleanupRefsRef.current.delete(imageRef);
+        return false;
+      }
+
+      return true;
+    });
+    if (refsToDelete.length > 0) {
+      void deleteCommentImages(refsToDelete).catch(() => {
+        // Ignore image cleanup failures for draft edits.
+      });
+    }
+
+    draftImageRefsPreviousRef.current = currentRefs;
+  }, [allDraftImageRefs]);
 
   useEffect(() => {
     if (!activeReplyThreadId) {
@@ -1665,6 +1876,230 @@ export function DiffViewer({
     return selectedLineNumbersBySide.next.has(lineNumber);
   };
 
+  const featureTitleForHunk = (hunkId: string | undefined | null): string | undefined => {
+    if (!hunkId) {
+      return undefined;
+    }
+
+    const labels = featureLabelsByHunkId[hunkId];
+    if (!labels) {
+      return undefined;
+    }
+
+    return `Feature focus: ${labels}`;
+  };
+
+  const insertReviewBodyAtCursor = (snippet: string) => {
+    const textarea = reviewTextareaRef.current;
+    if (!textarea) {
+      setReviewBody((current) => (current.length > 0 ? `${current}\n${snippet}` : snippet));
+      return;
+    }
+
+    const selectionStart = textarea.selectionStart ?? reviewBody.length;
+    const selectionEnd = textarea.selectionEnd ?? reviewBody.length;
+    const nextBody = `${reviewBody.slice(0, selectionStart)}${snippet}${reviewBody.slice(selectionEnd)}`;
+    setReviewBody(nextBody);
+
+    const nextCursor = selectionStart + snippet.length;
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
+
+  const removeDraftImage = (imageRef: string) => {
+    setReviewBody((current) => removeManagedCommentImageFromMarkdown(current, imageRef));
+  };
+
+  const setThreadPrompt = (threadId: string, prompt: string) => {
+    const normalizedThreadId = threadId.trim();
+    if (normalizedThreadId.length === 0) {
+      return;
+    }
+
+    setPromptByThreadId((current) => {
+      if (prompt.length === 0) {
+        if (!(normalizedThreadId in current)) {
+          return current;
+        }
+        const { [normalizedThreadId]: _removed, ...rest } = current;
+        return rest;
+      }
+
+      return {
+        ...current,
+        [normalizedThreadId]: prompt,
+      };
+    });
+  };
+
+  const markDraftImagesPersisted = (markdown: string) => {
+    extractManagedCommentImageRefs(markdown).forEach((imageRef) => {
+      skipDraftImageCleanupRefsRef.current.add(imageRef);
+    });
+  };
+
+  const removeReplyDraftImage = (threadId: string, imageRef: string) => {
+    const normalizedThreadId = threadId.trim();
+    if (normalizedThreadId.length === 0) {
+      return;
+    }
+
+    setPromptByThreadId((current) => {
+      const currentPrompt = current[normalizedThreadId] ?? "";
+      const nextPrompt = removeManagedCommentImageFromMarkdown(currentPrompt, imageRef);
+
+      if (nextPrompt.length === 0) {
+        if (!(normalizedThreadId in current)) {
+          return current;
+        }
+        const { [normalizedThreadId]: _removed, ...rest } = current;
+        return rest;
+      }
+
+      return {
+        ...current,
+        [normalizedThreadId]: nextPrompt,
+      };
+    });
+  };
+
+  const handleReviewBodyPaste = async (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardItems = event.clipboardData?.items;
+    if (!clipboardItems || clipboardItems.length === 0) {
+      return;
+    }
+
+    const imageItems = [...clipboardItems].filter(
+      (item) => item.kind === "file" && item.type.toLowerCase().startsWith("image/"),
+    );
+    if (imageItems.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const markdownSnippets: string[] = [];
+    for (const item of imageItems) {
+      const fileItem = item.getAsFile();
+      if (!fileItem) {
+        continue;
+      }
+
+      const normalizedMimeType = fileItem.type.trim().toLowerCase();
+      if (!normalizedMimeType.startsWith("image/")) {
+        continue;
+      }
+
+      try {
+        const bytes = await fileItem.arrayBuffer();
+        const encodedData = encodeArrayBufferToBase64(bytes);
+        const stored = await storeCommentImage({
+          base64Data: encodedData,
+          mimeType: normalizedMimeType,
+        });
+        const markdown = buildManagedCommentImageMarkdown(stored.imageRef, "pasted image");
+        if (markdown.length > 0) {
+          markdownSnippets.push(markdown);
+        }
+      } catch {
+        // Keep editing flow stable if one image fails to persist.
+      }
+    }
+
+    if (markdownSnippets.length === 0) {
+      return;
+    }
+
+    const snippet = markdownSnippets.join("\n");
+    insertReviewBodyAtCursor(
+      reviewBody.length > 0 && !reviewBody.endsWith("\n") ? `\n${snippet}\n` : `${snippet}\n`,
+    );
+  };
+
+  const handleReplyBodyPaste = async (
+    threadId: string,
+    event: ReactClipboardEvent<HTMLTextAreaElement>,
+  ) => {
+    const normalizedThreadId = threadId.trim();
+    if (normalizedThreadId.length === 0) {
+      return;
+    }
+
+    const clipboardItems = event.clipboardData?.items;
+    if (!clipboardItems || clipboardItems.length === 0) {
+      return;
+    }
+
+    const imageItems = [...clipboardItems].filter(
+      (item) => item.kind === "file" && item.type.toLowerCase().startsWith("image/"),
+    );
+    if (imageItems.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const target = event.currentTarget;
+    const selectionStart = target.selectionStart ?? 0;
+    const selectionEnd = target.selectionEnd ?? selectionStart;
+
+    const markdownSnippets: string[] = [];
+    for (const item of imageItems) {
+      const fileItem = item.getAsFile();
+      if (!fileItem) {
+        continue;
+      }
+
+      const normalizedMimeType = fileItem.type.trim().toLowerCase();
+      if (!normalizedMimeType.startsWith("image/")) {
+        continue;
+      }
+
+      try {
+        const bytes = await fileItem.arrayBuffer();
+        const encodedData = encodeArrayBufferToBase64(bytes);
+        const stored = await storeCommentImage({
+          base64Data: encodedData,
+          mimeType: normalizedMimeType,
+        });
+        const markdown = buildManagedCommentImageMarkdown(stored.imageRef, "pasted image");
+        if (markdown.length > 0) {
+          markdownSnippets.push(markdown);
+        }
+      } catch {
+        // Keep editing flow stable if one image fails to persist.
+      }
+    }
+
+    if (markdownSnippets.length === 0) {
+      return;
+    }
+
+    const snippet = markdownSnippets.join("\n");
+    let nextCursor = selectionStart + snippet.length;
+    setPromptByThreadId((current) => {
+      const currentPrompt = current[normalizedThreadId] ?? "";
+      const safeStart = Math.min(selectionStart, currentPrompt.length);
+      const safeEnd = Math.min(Math.max(selectionEnd, safeStart), currentPrompt.length);
+      const insertion = currentPrompt.length > 0 && !currentPrompt.endsWith("\n")
+        ? `\n${snippet}\n`
+        : `${snippet}\n`;
+      const nextPrompt = `${currentPrompt.slice(0, safeStart)}${insertion}${currentPrompt.slice(safeEnd)}`;
+      nextCursor = safeStart + insertion.length;
+      return {
+        ...current,
+        [normalizedThreadId]: nextPrompt,
+      };
+    });
+
+    requestAnimationFrame(() => {
+      target.focus();
+      target.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
+
   const onSelectLine = (
     event: ReactMouseEvent<HTMLButtonElement>,
     side: CommentSide,
@@ -1776,6 +2211,7 @@ export function DiffViewer({
     }
 
     if (successCount > 0) {
+      markDraftImagesPersisted(reviewBody);
       setReviewBody("");
       setSelectedAnchors([]);
       setSelectionPivot(null);
@@ -1855,12 +2291,7 @@ export function DiffViewer({
       rowKey,
       [focusedThread],
       promptByThreadId,
-      (threadId, prompt) => {
-        setPromptByThreadId((current) => ({
-          ...current,
-          [threadId]: prompt,
-        }));
-      },
+      setThreadPrompt,
       onAskAgent,
       onDeleteComment,
       onSetThreadStatus,
@@ -1871,6 +2302,10 @@ export function DiffViewer({
       (threadId) => {
         setActiveReplyThreadId((current) => (current === threadId ? null : current));
       },
+      promptImageRefsByThreadId,
+      handleReplyBodyPaste,
+      removeReplyDraftImage,
+      markDraftImagesPersisted,
     );
   };
 
@@ -1900,16 +2335,37 @@ export function DiffViewer({
           <label className="space-y-1 text-xs text-muted">
             Comment
             <Textarea
+              ref={reviewTextareaRef}
               rows={3}
               value={reviewBody}
               onChange={(event) => setReviewBody(event.target.value)}
+              onPaste={(event) => {
+                void handleReviewBodyPaste(event);
+              }}
               onKeyDown={(event) => {
+                if (
+                  (event.metaKey || event.ctrlKey)
+                  && !event.shiftKey
+                  && !event.altKey
+                  && event.key.toLowerCase() === "a"
+                ) {
+                  event.preventDefault();
+                  event.currentTarget.select();
+                  return;
+                }
+
                 if ((event.key === "Tab" || event.key === "ArrowDown") && reviewBodyMentionSuggestion) {
                   event.preventDefault();
                   setReviewBody(applyCheckmateMentionSuggestion(reviewBody, reviewBodyMentionSuggestion));
+                  return;
+                }
+
+                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                  event.preventDefault();
+                  submitSelectedThreads();
                 }
               }}
-              placeholder="Write a review comment..."
+              placeholder="Write a review comment... Press Cmd/Ctrl+Enter to submit."
               className="text-sm"
             />
             {reviewBodyMentionSuggestion && (
@@ -1936,6 +2392,25 @@ export function DiffViewer({
                   @checkmate
                 </span>
               </p>
+            )}
+            {reviewBodyImageRefs.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-[10px] uppercase tracking-[0.08em] text-muted">Attached Images</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {reviewBodyImageRefs.map((imageRef, index) => (
+                    <button
+                      key={`${imageRef}-${index}`}
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded border border-border/70 bg-surface-subtle/60 px-2 py-1 text-[10px] text-text transition-colors hover:border-danger/55 hover:text-danger"
+                      onClick={() => removeDraftImage(imageRef)}
+                      title="Remove image"
+                    >
+                      <span className="font-mono">{imageRef}</span>
+                      <span aria-hidden="true">✕</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </label>
           {selectionMessage && (
@@ -2043,12 +2518,7 @@ export function DiffViewer({
           `${row.id}-threads`,
           rowThreads,
           promptByThreadId,
-          (threadId, prompt) => {
-            setPromptByThreadId((current) => ({
-              ...current,
-              [threadId]: prompt,
-            }));
-          },
+          setThreadPrompt,
           onAskAgent,
           onDeleteComment,
           onSetThreadStatus,
@@ -2059,6 +2529,10 @@ export function DiffViewer({
           (threadId) => {
             setActiveReplyThreadId((current) => (current === threadId ? null : current));
           },
+          promptImageRefsByThreadId,
+          handleReplyBodyPaste,
+          removeReplyDraftImage,
+          markDraftImagesPersisted,
         );
 
         if (showInlineThreads && inlineThreads) {
@@ -2066,9 +2540,12 @@ export function DiffViewer({
         }
 
         const node =
-          orientation === "split"
-            ? renderSplitLine(row.id, row.line, syntaxLanguage, lineSelectionContext)
-            : renderUnifiedLine(row.id, row.line, syntaxLanguage, lineSelectionContext);
+          (() => {
+            const featureTitle = featureTitleForHunk(row.hunkId);
+            return orientation === "split"
+              ? renderSplitLine(row.id, row.line, syntaxLanguage, lineSelectionContext, featureTitle)
+              : renderUnifiedLine(row.id, row.line, syntaxLanguage, lineSelectionContext, featureTitle);
+          })();
         rows.push(node);
 
         if (diffLineMatchesAnchor(row.line, composerAnchor)) {
@@ -2107,12 +2584,7 @@ export function DiffViewer({
           `${rowId}-threads`,
           rowThreads,
           promptByThreadId,
-          (threadId, prompt) => {
-            setPromptByThreadId((current) => ({
-              ...current,
-              [threadId]: prompt,
-            }));
-          },
+          setThreadPrompt,
           onAskAgent,
           onDeleteComment,
           onSetThreadStatus,
@@ -2123,16 +2595,24 @@ export function DiffViewer({
           (threadId) => {
             setActiveReplyThreadId((current) => (current === threadId ? null : current));
           },
+          promptImageRefsByThreadId,
+          handleReplyBodyPaste,
+          removeReplyDraftImage,
+          markDraftImagesPersisted,
         );
 
         if (showInlineThreads && inlineThreads) {
           rows.push(inlineThreads);
         }
 
+        const fallbackHunkId =
+          (oldLineNumber !== undefined ? hunkLineLookup.oldByLine.get(oldLineNumber) : undefined)
+          ?? (newLineNumber !== undefined ? hunkLineLookup.newByLine.get(newLineNumber) : undefined);
+        const featureTitle = featureTitleForHunk(fallbackHunkId);
         rows.push(
           orientation === "split"
-            ? renderSplitLine(rowId, line, syntaxLanguage, lineSelectionContext)
-            : renderUnifiedLine(rowId, line, syntaxLanguage, lineSelectionContext),
+            ? renderSplitLine(rowId, line, syntaxLanguage, lineSelectionContext, featureTitle)
+            : renderUnifiedLine(rowId, line, syntaxLanguage, lineSelectionContext, featureTitle),
         );
 
         if (diffLineMatchesAnchor(line, composerAnchor)) {
@@ -2224,12 +2704,7 @@ export function DiffViewer({
         `${mode}-line-${lineNumber}-threads`,
         rowThreads,
         promptByThreadId,
-        (threadId, prompt) => {
-          setPromptByThreadId((current) => ({
-            ...current,
-            [threadId]: prompt,
-          }));
-        },
+        setThreadPrompt,
         onAskAgent,
         onDeleteComment,
         onSetThreadStatus,
@@ -2240,6 +2715,10 @@ export function DiffViewer({
         (threadId) => {
           setActiveReplyThreadId((current) => (current === threadId ? null : current));
         },
+        promptImageRefsByThreadId,
+        handleReplyBodyPaste,
+        removeReplyDraftImage,
+        markDraftImagesPersisted,
       );
 
       if (showInlineThreads && inlineThreads) {
@@ -2255,6 +2734,11 @@ export function DiffViewer({
           changedSet.has(lineNumber),
           syntaxLanguage,
           lineSelectionContext,
+          featureTitleForHunk(
+            mode === "old"
+              ? hunkLineLookup.oldByLine.get(lineNumber)
+              : hunkLineLookup.newByLine.get(lineNumber),
+          ),
         ),
       );
 

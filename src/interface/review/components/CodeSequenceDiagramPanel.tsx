@@ -53,11 +53,14 @@ const MIN_SVG_WIDTH = 860;
 const LANE_GAP = 165;
 const LANE_START_X = 72;
 const LANE_END_PADDING = 72;
-const ACTOR_BOX_WIDTH = 132;
+const MIN_ACTOR_BOX_WIDTH = 132;
+const ACTOR_BOX_HORIZONTAL_PADDING = 18;
 const ACTOR_BOX_HEIGHT = 30;
 const TOP_BOX_Y = 24;
 const ROW_START_Y = TOP_BOX_Y + ACTOR_BOX_HEIGHT + 56;
 const ROW_GAP = 52;
+const APPROX_SVG_TEXT_CHAR_WIDTH = 6.2;
+const MESSAGE_WIDTH_PADDING = 48;
 
 interface DiagramStep {
   readonly id: string;
@@ -92,6 +95,7 @@ interface SequenceLayout {
   readonly interactions: readonly SequenceInteraction[];
   readonly width: number;
   readonly height: number;
+  readonly actorBoxWidth: number;
   readonly laneTopY: number;
   readonly laneBottomY: number;
   readonly topBoxY: number;
@@ -136,27 +140,19 @@ function normalizeId(value: string, fallback: string): string {
 
 function sanitizeLabel(value: string, fallback: string): string {
   const normalized = normalizeWhitespace(value).replaceAll(/["`\\<>]/g, "");
-  return normalized.length > 0 ? normalized.slice(0, 28) : fallback;
+  return normalized.length > 0 ? normalized : fallback;
 }
 
 function sanitizeMessage(value: string, fallback: string): string {
   const normalized = normalizeWhitespace(value)
     .replaceAll(/["`\\<>]/g, "")
     .replaceAll(/[{}[\]]/g, " ");
-  return normalized.length > 0 ? normalized.slice(0, 88) : fallback;
+  return normalized.length > 0 ? normalized : fallback;
 }
 
 function sanitizeToken(value: string, index: number): string {
   const normalized = normalizeWhitespace(value).replaceAll(/[^A-Za-z0-9_-]/g, "");
   return normalized.length > 0 ? normalized.slice(0, 12) : `S${index + 1}`;
-}
-
-function trimLabel(value: string, max = 20): string {
-  if (value.length <= max) {
-    return value;
-  }
-
-  return `${value.slice(0, Math.max(1, max - 1))}\u2026`;
 }
 
 function buildSequenceLayout(steps: readonly DiagramStep[]): SequenceLayout {
@@ -184,10 +180,20 @@ function buildSequenceLayout(steps: readonly DiagramStep[]): SequenceLayout {
     });
   });
 
+  const maxParticipantLabelChars = participantOrder.reduce((maxChars, participantId) => {
+    const label = labelById.get(participantId) ?? "";
+    return Math.max(maxChars, label.length);
+  }, 0);
+  const actorBoxWidth = Math.max(
+    MIN_ACTOR_BOX_WIDTH,
+    maxParticipantLabelChars * APPROX_SVG_TEXT_CHAR_WIDTH + ACTOR_BOX_HORIZONTAL_PADDING * 2,
+  );
+  const laneGap = Math.max(LANE_GAP, actorBoxWidth + 34);
+
   const participants: SequenceParticipant[] = participantOrder.map((participantId, index) => ({
     id: participantId,
     label: labelById.get(participantId) ?? "Component",
-    x: LANE_START_X + index * LANE_GAP,
+    x: LANE_START_X + index * laneGap,
     fileIds: [...(fileIdsByParticipant.get(participantId) ?? new Set<string>())],
   }));
 
@@ -205,7 +211,24 @@ function buildSequenceLayout(steps: readonly DiagramStep[]): SequenceLayout {
     participants.length > 0
       ? participants[participants.length - 1]?.x ?? LANE_START_X
       : LANE_START_X;
-  const width = Math.max(MIN_SVG_WIDTH, furthestLaneX + LANE_END_PADDING);
+  const participantsById = new Map(participants.map((participant) => [participant.id, participant] as const));
+  const messageDrivenWidth = interactions.reduce((maxWidth, interaction) => {
+    const source = participantsById.get(interaction.sourceId);
+    const target = participantsById.get(interaction.targetId);
+    if (!source || !target) {
+      return maxWidth;
+    }
+
+    const textValue = `${interaction.token} ${interaction.message}`;
+    const textWidth = textValue.length * APPROX_SVG_TEXT_CHAR_WIDTH;
+    const textCenterX = source.id === target.id
+      ? source.x + 22
+      : (source.x + target.x) / 2;
+    const rightEdge = textCenterX + textWidth / 2 + MESSAGE_WIDTH_PADDING;
+
+    return Math.max(maxWidth, rightEdge);
+  }, furthestLaneX + LANE_END_PADDING);
+  const width = Math.max(MIN_SVG_WIDTH, messageDrivenWidth);
 
   const laneTopY = TOP_BOX_Y + ACTOR_BOX_HEIGHT + 10;
   const lastInteractionY =
@@ -221,6 +244,7 @@ function buildSequenceLayout(steps: readonly DiagramStep[]): SequenceLayout {
     interactions,
     width,
     height,
+    actorBoxWidth,
     laneTopY,
     laneBottomY,
     topBoxY: TOP_BOX_Y,
@@ -484,11 +508,11 @@ export function CodeSequenceDiagramPanel({
                   onClick={() => applySelection(participant.fileIds, expandedSurface)}
                 >
                   <rect
-                    x={participant.x - ACTOR_BOX_WIDTH / 2}
+                    x={participant.x - layout.actorBoxWidth / 2}
                     y={boxY}
                     rx={6}
                     ry={6}
-                    width={ACTOR_BOX_WIDTH}
+                    width={layout.actorBoxWidth}
                     height={ACTOR_BOX_HEIGHT}
                     fill={isHighlighted ? "hsl(var(--color-accent) / 0.14)" : "hsl(var(--color-canvas) / 0.92)"}
                     stroke={isHighlighted ? "hsl(var(--color-accent) / 0.7)" : "hsl(var(--color-border) / 0.85)"}
@@ -500,7 +524,7 @@ export function CodeSequenceDiagramPanel({
                     fontSize="11"
                     fill={isHighlighted ? "hsl(var(--color-accent))" : "hsl(var(--color-text))"}
                   >
-                    {trimLabel(participant.label)}
+                    {participant.label}
                   </text>
                 </g>
               ))}
@@ -543,9 +567,9 @@ export function CodeSequenceDiagramPanel({
                   className={interaction.fileIds.length > 0 ? "cursor-pointer" : ""}
                   onClick={() => applySelection(interaction.fileIds, expandedSurface)}
                 />
-                <text x={startX + 22} y={y - 7} fontSize="10.5" textAnchor="middle" fill={tone}>
-                  {interaction.token} {trimLabel(interaction.message, 46)}
-                </text>
+              <text x={startX + 22} y={y - 7} fontSize="10.5" textAnchor="middle" fill={tone}>
+                  {interaction.token} {interaction.message}
+              </text>
               </g>
             );
           }
@@ -569,7 +593,7 @@ export function CodeSequenceDiagramPanel({
                 onClick={() => applySelection(interaction.fileIds, expandedSurface)}
               />
               <text x={centerX} y={y - 7} fontSize="10.5" textAnchor="middle" fill={tone}>
-                {interaction.token} {trimLabel(interaction.message, 64)}
+                {interaction.token} {interaction.message}
               </text>
             </g>
           );

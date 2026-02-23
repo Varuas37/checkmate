@@ -27,6 +27,8 @@ import type {
   ThreadStatus,
 } from "../../../domain/review/index.ts";
 import {
+  deleteCommentImages,
+  extractManagedCommentImageRefs,
   readRepositoryCommits,
   readRepositoryReviewCommits,
   stripCheckmateMentions,
@@ -877,13 +879,36 @@ export function useReviewWorkspace(): {
         return;
       }
 
+      const commentToDelete = entities.commentsById[normalizedCommentId];
+      if (commentToDelete) {
+        const managedImageRefs = extractManagedCommentImageRefs(commentToDelete.body);
+        if (managedImageRefs.length > 0) {
+          const refsUsedByOtherComments = new Set<string>();
+          Object.values(entities.commentsById).forEach((comment) => {
+            if (!comment || comment.id === normalizedCommentId) {
+              return;
+            }
+            extractManagedCommentImageRefs(comment.body).forEach((imageRef) => {
+              refsUsedByOtherComments.add(imageRef);
+            });
+          });
+
+          const refsToDelete = managedImageRefs.filter((imageRef) => !refsUsedByOtherComments.has(imageRef));
+          if (refsToDelete.length > 0) {
+            void deleteCommentImages(refsToDelete).catch(() => {
+              // Ignore cleanup errors so comment deletion still succeeds.
+            });
+          }
+        }
+      }
+
       dispatch(
         deleteCommentRequested({
           commentId: normalizedCommentId,
         }),
       );
     },
-    [dispatch],
+    [dispatch, entities.commentsById],
   );
 
   const setThreadStatus = useCallback(

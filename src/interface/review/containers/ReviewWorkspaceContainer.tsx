@@ -10,6 +10,8 @@ import {
 } from "../../../design-system/index.ts";
 import {
   clearApiKeyFromStorage,
+  type AgentTrackingRemovalResult,
+  type AgentTrackingStatus,
   initializeAgentTracking,
   installCmCliInPath,
   APP_NAME,
@@ -22,6 +24,7 @@ import {
   readLaunchRequestFromRuntime,
   readAiAnalysisConfigFromStorage,
   readAndSyncAppSettingsFile,
+  readAgentTrackingStatus,
   readApiKeyFromStorage,
   readCliAgentsSettingsFromStorage,
   readProjectStandardsPathFromStorage,
@@ -29,6 +32,7 @@ import {
   readSystemUserName,
   readReviewerProfileFromStorage,
   recordRecentProjectInStorage,
+  removeAgentTracking,
   projectLabelFromPath,
   selectRepositoryFolder,
   testAnthropicApiConnection,
@@ -126,6 +130,14 @@ function normalizeHunkHeaderText(value: string): string {
   return value.replaceAll(/\s+/g, " ").trim();
 }
 
+function stripFlowStagePrefix(value: string): string {
+  return value
+    .replaceAll(/\s+/g, " ")
+    .trim()
+    .replace(/^(before|after)\b\s*[:\-]?\s*/i, "")
+    .trim();
+}
+
 function toLowerIncludes(value: string, query: string): boolean {
   return value.toLowerCase().includes(query.toLowerCase());
 }
@@ -136,6 +148,27 @@ function isMacOperatingSystem(): boolean {
   }
 
   return /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (target.isContentEditable) {
+    return true;
+  }
+
+  if (target instanceof HTMLTextAreaElement) {
+    return true;
+  }
+
+  if (target instanceof HTMLInputElement) {
+    const type = target.type.toLowerCase();
+    return type !== "checkbox" && type !== "radio" && type !== "button" && type !== "submit";
+  }
+
+  return false;
 }
 
 function CommentsIcon({ muted }: { readonly muted: boolean }) {
@@ -384,6 +417,10 @@ export function ReviewWorkspaceContainer() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isEditableKeyboardTarget(event.target)) {
+        return;
+      }
+
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "p") {
         return;
       }
@@ -395,6 +432,43 @@ export function ReviewWorkspaceContainer() {
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleSelectAllShortcut = (event: KeyboardEvent) => {
+      const hasCommandModifier = event.metaKey || event.ctrlKey;
+      if (!hasCommandModifier || event.shiftKey || event.altKey || event.key.toLowerCase() !== "a") {
+        return;
+      }
+
+      const target = event.target;
+      if (!isEditableKeyboardTarget(target)) {
+        return;
+      }
+
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        event.preventDefault();
+        target.select();
+        return;
+      }
+
+      if (target instanceof HTMLElement && target.isContentEditable) {
+        event.preventDefault();
+        const selection = window.getSelection();
+        if (!selection) {
+          return;
+        }
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    };
+
+    window.addEventListener("keydown", handleSelectAllShortcut);
+    return () => {
+      window.removeEventListener("keydown", handleSelectAllShortcut);
     };
   }, []);
 
@@ -460,8 +534,8 @@ export function ReviewWorkspaceContainer() {
 
     state.sequencePairs.forEach((pair, index) => {
       const resolvedLabel =
-        normalizeInputValue(pair.after.title)
-        || normalizeInputValue(pair.before.title)
+        stripFlowStagePrefix(normalizeInputValue(pair.after.title))
+        || stripFlowStagePrefix(normalizeInputValue(pair.before.title))
         || `Feature ${index + 1}`;
       const normalizedLabel = resolvedLabel.toLowerCase();
       const optionId = slugify(resolvedLabel) || `feature-${index + 1}`;
@@ -654,6 +728,52 @@ export function ReviewWorkspaceContainer() {
       notice: "Showing feature-specific hunks",
     };
   }, [featureFocusOptions, selectedFeatureFocusId, state.activeFile, state.activeFileHunks]);
+
+  const activeFileHunkFeatureLabelsById = useMemo(() => {
+    const activeFile = state.activeFile;
+    if (!activeFile || state.activeFileHunks.length === 0) {
+      return {} as Readonly<Record<string, readonly string[]>>;
+    }
+
+    const labelsByHunkId = new Map<string, Set<string>>();
+    state.activeFileHunks.forEach((hunk) => {
+      labelsByHunkId.set(hunk.id, new Set<string>());
+    });
+
+    featureFocusOptions.forEach((feature) => {
+      const hunkEntry = feature.hunkHeadersByFilePath.find((entry) => entry.filePath === activeFile.path);
+      if (!hunkEntry || hunkEntry.hunkHeaders.length === 0) {
+        return;
+      }
+
+      const hintedHeaders = hunkEntry.hunkHeaders.map((header) => normalizeHunkHeaderText(header));
+      state.activeFileHunks.forEach((hunk) => {
+        const header = normalizeHunkHeaderText(hunk.header);
+        if (header.length === 0) {
+          return;
+        }
+
+        const matched = hintedHeaders.some((hint) => {
+          return hint.length > 0 && (header === hint || header.includes(hint) || hint.includes(header));
+        });
+
+        if (!matched) {
+          return;
+        }
+
+        labelsByHunkId.get(hunk.id)?.add(feature.label);
+      });
+    });
+
+    const output: Record<string, readonly string[]> = {};
+    labelsByHunkId.forEach((labels, hunkId) => {
+      if (labels.size > 0) {
+        output[hunkId] = [...labels];
+      }
+    });
+
+    return output;
+  }, [featureFocusOptions, state.activeFile, state.activeFileHunks]);
 
   const sequenceExplorerTabs = useMemo(() => {
     return sequenceExplorerTabFileIds
@@ -1316,6 +1436,35 @@ export function ReviewWorkspaceContainer() {
     return initializeAgentTracking(normalizedRepositoryPath);
   }, []);
 
+  const readTrackingStatusFromSettings = useCallback(
+    async (repositoryPath: string): Promise<AgentTrackingStatus> => {
+      const normalizedRepositoryPath = normalizeInputValue(repositoryPath);
+      if (normalizedRepositoryPath.length === 0) {
+        return {
+          enabled: false,
+          hasTrackingBlock: false,
+          hasAgentReference: false,
+          hasCommitContextSchema: false,
+        };
+      }
+
+      return readAgentTrackingStatus(normalizedRepositoryPath);
+    },
+    [],
+  );
+
+  const removeTrackingFromSettings = useCallback(
+    async (repositoryPath: string): Promise<AgentTrackingRemovalResult> => {
+      const normalizedRepositoryPath = normalizeInputValue(repositoryPath);
+      if (normalizedRepositoryPath.length === 0) {
+        throw new Error("Open a project first to remove tracking files.");
+      }
+
+      return removeAgentTracking(normalizedRepositoryPath);
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!isStartingFromHome) {
       return;
@@ -1426,6 +1575,10 @@ export function ReviewWorkspaceContainer() {
 
   useEffect(() => {
     const handleOpenNewProjectWindowShortcut = (event: KeyboardEvent) => {
+      if (isEditableKeyboardTarget(event.target)) {
+        return;
+      }
+
       const hasCommandModifier = event.metaKey || event.ctrlKey;
       if (!hasCommandModifier || !event.shiftKey || event.altKey) {
         return;
@@ -1449,6 +1602,10 @@ export function ReviewWorkspaceContainer() {
 
   useEffect(() => {
     const handleCloseSequenceExplorerTabShortcut = (event: KeyboardEvent) => {
+      if (isEditableKeyboardTarget(event.target)) {
+        return;
+      }
+
       const hasCommandModifier = event.metaKey || event.ctrlKey;
       if (!hasCommandModifier || event.shiftKey || event.altKey) {
         return;
@@ -1611,6 +1768,7 @@ export function ReviewWorkspaceContainer() {
             <DiffViewer
               file={state.activeFile}
               hunks={state.activeFileHunks}
+              hunkFeatureLabelsById={activeFileHunkFeatureLabelsById}
               threads={state.threadModels}
               showInlineThreads={showInlineComments}
               orientation={state.diffOrientation}
@@ -1644,6 +1802,7 @@ export function ReviewWorkspaceContainer() {
     );
   }, [
     actions,
+    activeFileHunkFeatureLabelsById,
     closeSequenceExplorerTab,
     isSequenceExplorerDiffReady,
     resolvedSequenceExplorerActiveFileId,
@@ -2164,6 +2323,7 @@ export function ReviewWorkspaceContainer() {
                 file={state.activeFile}
                 hunks={activeFeatureFilteredHunks.hunks}
                 featureHunkNotice={activeFeatureFilteredHunks.notice}
+                hunkFeatureLabelsById={activeFileHunkFeatureLabelsById}
                 threads={state.threadModels}
                 showInlineThreads={showInlineComments}
                 orientation={state.diffOrientation}
@@ -2214,6 +2374,7 @@ export function ReviewWorkspaceContainer() {
                 file={state.activeFile}
                 hunks={activeFeatureFilteredHunks.hunks}
                 featureHunkNotice={activeFeatureFilteredHunks.notice}
+                hunkFeatureLabelsById={activeFileHunkFeatureLabelsById}
                 threads={state.threadModels}
                 showInlineThreads={showInlineComments}
                 orientation={state.diffOrientation}
@@ -2377,6 +2538,7 @@ export function ReviewWorkspaceContainer() {
     activeFileSummary,
     activeFileFeatureSummaries,
     activeFeatureFilteredHunks,
+    activeFileHunkFeatureLabelsById,
     filesById,
     showInlineComments,
     reviewerAuthorId,
@@ -2444,6 +2606,8 @@ export function ReviewWorkspaceContainer() {
           activeRepositoryPath={activeRepositoryPath}
           cmCliStatus={cmCliStatus}
           onInitializeTracking={initializeTrackingFromSettings}
+          onReadTrackingStatus={readTrackingStatusFromSettings}
+          onRemoveTracking={removeTrackingFromSettings}
           onInstallCmCli={installCmCliCommand}
           onRefreshCmCliStatus={refreshCmCliStatus}
           onSave={(key) => {
@@ -2522,6 +2686,8 @@ export function ReviewWorkspaceContainer() {
         activeRepositoryPath={activeRepositoryPath}
         cmCliStatus={cmCliStatus}
         onInitializeTracking={initializeTrackingFromSettings}
+        onReadTrackingStatus={readTrackingStatusFromSettings}
+        onRemoveTracking={removeTrackingFromSettings}
         onInstallCmCli={installCmCliCommand}
         onRefreshCmCliStatus={refreshCmCliStatus}
         onSave={(key) => {

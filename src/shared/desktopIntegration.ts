@@ -1,3 +1,5 @@
+import { normalizeManagedCommentImageRef } from "./commentImageStorage.ts";
+
 interface RuntimeLaunchRequest {
   readonly repositoryPath: string;
   readonly commitSha: string;
@@ -22,11 +24,28 @@ export interface CmCliInstallResult {
 export interface AgentTrackingInitializationResult {
   readonly agentFileCreated: boolean;
   readonly agentFileUpdated: boolean;
-  readonly claudeFileCreated: boolean;
-  readonly claudeFileUpdated: boolean;
+  readonly agentReferenceFileCreated: boolean;
+  readonly agentReferenceFileUpdated: boolean;
   readonly schemaFileCreated: boolean;
   readonly schemaFileUpdated: boolean;
   readonly message: string;
+}
+
+export interface AgentTrackingStatus {
+  readonly enabled: boolean;
+  readonly hasTrackingBlock: boolean;
+  readonly hasAgentReference: boolean;
+  readonly hasCommitContextSchema: boolean;
+}
+
+export interface AgentTrackingRemovalResult {
+  readonly removed: boolean;
+  readonly message: string;
+}
+
+export interface CommentImageStorageResult {
+  readonly imageRef: string;
+  readonly markdownUrl: string;
 }
 
 function isTauriRuntime(): boolean {
@@ -160,10 +179,101 @@ export async function initializeAgentTracking(
   return {
     agentFileCreated: Boolean(response.agentFileCreated),
     agentFileUpdated: Boolean(response.agentFileUpdated),
-    claudeFileCreated: Boolean(response.claudeFileCreated),
-    claudeFileUpdated: Boolean(response.claudeFileUpdated),
+    agentReferenceFileCreated: Boolean(response.agentReferenceFileCreated),
+    agentReferenceFileUpdated: Boolean(response.agentReferenceFileUpdated),
     schemaFileCreated: Boolean(response.schemaFileCreated),
     schemaFileUpdated: Boolean(response.schemaFileUpdated),
     message: response.message.trim(),
   };
+}
+
+export async function readAgentTrackingStatus(repositoryPath: string): Promise<AgentTrackingStatus> {
+  if (!isTauriRuntime()) {
+    return {
+      enabled: false,
+      hasTrackingBlock: false,
+      hasAgentReference: false,
+      hasCommitContextSchema: false,
+    };
+  }
+
+  const response = await invokeTauri<AgentTrackingStatus>("read_agent_tracking_status", {
+    repoPath: repositoryPath,
+  });
+
+  return {
+    enabled: Boolean(response.enabled),
+    hasTrackingBlock: Boolean(response.hasTrackingBlock),
+    hasAgentReference: Boolean(response.hasAgentReference),
+    hasCommitContextSchema: Boolean(response.hasCommitContextSchema),
+  };
+}
+
+export async function removeAgentTracking(repositoryPath: string): Promise<AgentTrackingRemovalResult> {
+  if (!isTauriRuntime()) {
+    throw new Error("Tracking removal is available only in the desktop app.");
+  }
+
+  const response = await invokeTauri<AgentTrackingRemovalResult>("remove_agent_tracking", {
+    repoPath: repositoryPath,
+  });
+
+  return {
+    removed: Boolean(response.removed),
+    message: response.message.trim(),
+  };
+}
+
+export async function storeCommentImage(input: {
+  readonly base64Data: string;
+  readonly mimeType: string;
+}): Promise<CommentImageStorageResult> {
+  if (!isTauriRuntime()) {
+    throw new Error("Image paste storage is available only in the desktop app.");
+  }
+
+  const response = await invokeTauri<CommentImageStorageResult>("store_comment_image", {
+    base64Data: input.base64Data,
+    mimeType: input.mimeType,
+  });
+
+  return {
+    imageRef: response.imageRef.trim(),
+    markdownUrl: response.markdownUrl.trim(),
+  };
+}
+
+export async function resolveCommentImageDataUrl(imageRefOrUrl: string): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error("Comment images are available only in the desktop app.");
+  }
+
+  const normalized = normalizeManagedCommentImageRef(imageRefOrUrl);
+  if (!normalized) {
+    throw new Error("Invalid comment image reference.");
+  }
+
+  const dataUrl = await invokeTauri<string>("resolve_comment_image_data_url", {
+    imageRef: normalized,
+  });
+  return dataUrl.trim();
+}
+
+export async function deleteCommentImages(imageRefs: readonly string[]): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  const normalizedImageRefs = [...new Set(
+    imageRefs
+      .map((imageRef) => normalizeManagedCommentImageRef(imageRef))
+      .filter((imageRef): imageRef is string => imageRef !== null),
+  )];
+  if (normalizedImageRefs.length === 0) {
+    return;
+  }
+
+  await invokeTauri<number>("delete_comment_images", {
+    imageRefs: normalizedImageRefs,
+  });
 }

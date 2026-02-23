@@ -56,6 +56,14 @@ export {
   type MentionSuggestion,
 } from "./checkmateMention.ts";
 export {
+  buildManagedCommentImageMarkdown,
+  extractManagedCommentImageRefs,
+  isManagedCommentImageUrl,
+  normalizeManagedCommentImageRef,
+  removeManagedCommentImageFromMarkdown,
+  toManagedCommentImageUrl,
+} from "./commentImageStorage.ts";
+export {
   DEFAULT_CLI_AGENTS,
   readActiveCliAgentFromStorage,
   readCliAgentsSettingsFromStorage,
@@ -71,12 +79,20 @@ export {
   type AppSettingsFile,
 } from "./settings/appSettingsFile.ts";
 export {
+  deleteCommentImages,
   initializeAgentTracking,
   installCmCliInPath,
+  readAgentTrackingStatus,
   readCmCliStatus,
   readLaunchRequestFromRuntime,
+  removeAgentTracking,
+  resolveCommentImageDataUrl,
   readSystemUserName,
+  storeCommentImage,
   type AgentTrackingInitializationResult,
+  type AgentTrackingRemovalResult,
+  type AgentTrackingStatus,
+  type CommentImageStorageResult,
   type CmCliInstallResult,
   type CmCliStatus,
 } from "./desktopIntegration.ts";

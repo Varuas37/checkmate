@@ -4,6 +4,8 @@ import { Button, Input, Modal, ThemeSwitcher } from "../../../design-system/inde
 import { cn } from "../../../shared/index.ts";
 import type {
   AgentTrackingInitializationResult,
+  AgentTrackingRemovalResult,
+  AgentTrackingStatus,
   CliAgentConfig,
   CliAgentsSettings,
   CmCliInstallResult,
@@ -21,6 +23,8 @@ export interface SettingsPanelProps {
   readonly onInitializeTracking: (
     repositoryPath: string,
   ) => Promise<AgentTrackingInitializationResult>;
+  readonly onReadTrackingStatus: (repositoryPath: string) => Promise<AgentTrackingStatus>;
+  readonly onRemoveTracking: (repositoryPath: string) => Promise<AgentTrackingRemovalResult>;
   readonly onInstallCmCli: () => Promise<CmCliInstallResult>;
   readonly onRefreshCmCliStatus: () => Promise<void>;
   readonly onSave: (apiKey: string) => void;
@@ -142,6 +146,8 @@ export function SettingsPanel({
   activeRepositoryPath,
   cmCliStatus,
   onInitializeTracking,
+  onReadTrackingStatus,
+  onRemoveTracking,
   onInstallCmCli,
   onRefreshCmCliStatus,
   onSave,
@@ -169,6 +175,8 @@ export function SettingsPanel({
   const [cliConnectionStatus, setCliConnectionStatus] = useState<ConnectionStatus>("idle");
   const [cliConnectionMessage, setCliConnectionMessage] = useState<string | null>(null);
   const [testedCliAgentId, setTestedCliAgentId] = useState<string | null>(null);
+  const [trackingStatus, setTrackingStatus] = useState<AgentTrackingStatus | null>(null);
+  const [isTrackingStatusLoading, setIsTrackingStatusLoading] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -191,6 +199,8 @@ export function SettingsPanel({
     setCliConnectionStatus("idle");
     setCliConnectionMessage(null);
     setTestedCliAgentId(null);
+    setTrackingStatus(null);
+    setIsTrackingStatusLoading(false);
     setActiveSection("projects");
     // Only re-initialise when the modal opens, not on every prop change while open.
     // Local state is authoritative while open; changes propagate up via callbacks.
@@ -398,6 +408,61 @@ export function SettingsPanel({
     activeCliAgent && testedCliAgentId === activeCliAgent.id ? cliConnectionMessage : null;
 
   const hasActiveRepositoryPath = activeRepositoryPath.trim().length > 0;
+  const isTrackingEnabled = Boolean(trackingStatus?.enabled);
+
+  const refreshTrackingStatus = async () => {
+    if (!hasActiveRepositoryPath) {
+      setTrackingStatus(null);
+      setIsTrackingStatusLoading(false);
+      return;
+    }
+
+    setIsTrackingStatusLoading(true);
+    try {
+      const status = await onReadTrackingStatus(activeRepositoryPath);
+      setTrackingStatus(status);
+    } finally {
+      setIsTrackingStatusLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    if (!hasActiveRepositoryPath) {
+      setTrackingStatus(null);
+      setIsTrackingStatusLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsTrackingStatusLoading(true);
+    void onReadTrackingStatus(activeRepositoryPath)
+      .then((status) => {
+        if (cancelled) {
+          return;
+        }
+        setTrackingStatus(status);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setTrackingStatus(null);
+      })
+      .finally(() => {
+        if (cancelled) {
+          return;
+        }
+        setIsTrackingStatusLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRepositoryPath, hasActiveRepositoryPath, onReadTrackingStatus, open]);
 
   return (
     <Modal
@@ -498,28 +563,56 @@ export function SettingsPanel({
               <div className="space-y-2 border-t border-border/60 pt-3">
                 <p className="text-[11px] uppercase tracking-[0.1em] text-muted">Tracking Files</p>
                 <p className="text-sm text-muted">
-                  Initialize repository tracking files with <code className="font-mono text-xs">cm init</code>{" "}
-                  behavior.
+                  Initialize or remove repository tracking files using <code className="font-mono text-xs">cm init</code>{" "}
+                  and <code className="font-mono text-xs">cm remove</code> behavior.
                 </p>
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
                     variant="secondary"
                     size="sm"
-                    disabled={isCmCliActionRunning || !hasActiveRepositoryPath}
+                    className={cn(
+                      isTrackingEnabled
+                        && "border-positive/55 bg-positive/18 text-positive hover:border-positive/70 hover:bg-positive/24",
+                    )}
+                    disabled={isCmCliActionRunning || isTrackingStatusLoading || !hasActiveRepositoryPath}
                     onClick={() => {
+                      if (isTrackingEnabled) {
+                        const confirmed = window.confirm(
+                          "Tracking is currently enabled. Remove managed tracking files and hooks for this repository?",
+                        );
+                        if (!confirmed) {
+                          return;
+                        }
+                        void runCmCliAction(async () => {
+                          const result = await onRemoveTracking(activeRepositoryPath);
+                          setCmCliActionMessage(result.message);
+                          await refreshTrackingStatus();
+                        });
+                        return;
+                      }
+
                       void runCmCliAction(async () => {
                         const result = await onInitializeTracking(activeRepositoryPath);
                         setCmCliActionMessage(result.message);
+                        await refreshTrackingStatus();
                       });
                     }}
                   >
-                    Initialize Tracking
+                    {isTrackingStatusLoading
+                      ? "Checking Tracking..."
+                      : isTrackingEnabled
+                      ? "Tracking Enabled"
+                      : "Initialize Tracking"}
                   </Button>
                 </div>
+                {isTrackingEnabled && (
+                  <p className="text-xs text-positive">
+                    Tracking is enabled. Click <strong>Tracking Enabled</strong> again to remove it.
+                  </p>
+                )}
                 <p className="text-xs text-muted">
-                  Ensures <code className="font-mono">AGENT.md</code> exists, and{" "}
-                  <code className="font-mono">CLAUDE.md</code> includes{" "}
-                  <code className="font-mono">@AGENT.md</code>, and writes{" "}
+                  Ensures <code className="font-mono">AGENT.md</code> exists, updates the agent-reference
+                  entry in <code className="font-mono">CLAUDE.md</code> (or equivalent), and writes{" "}
                   <code className="font-mono">.checkmate/commit_context.schema.json</code>.
                 </p>
               </div>

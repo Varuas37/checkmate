@@ -1,9 +1,11 @@
+use base64::{engine::general_purpose, Engine as _};
 use serde::Serialize;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 const COMMIT_FIELD_DELIMITER: &str = "\u{001f}";
@@ -145,11 +147,34 @@ pub struct CmCliStatus {
 pub struct AgentTrackingInitializationResult {
     pub agent_file_created: bool,
     pub agent_file_updated: bool,
-    pub claude_file_created: bool,
-    pub claude_file_updated: bool,
+    pub agent_reference_file_created: bool,
+    pub agent_reference_file_updated: bool,
     pub schema_file_created: bool,
     pub schema_file_updated: bool,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTrackingStatus {
+    pub enabled: bool,
+    pub has_tracking_block: bool,
+    pub has_agent_reference: bool,
+    pub has_commit_context_schema: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTrackingRemovalResult {
+    pub removed: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommentImageStorageResult {
+    pub image_ref: String,
+    pub markdown_url: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -805,7 +830,7 @@ fn contains_agent_reference(content: &str) -> bool {
         .any(|line| line.to_ascii_lowercase().contains("@agent.md"))
 }
 
-fn ensure_claude_agent_reference(repository_path: &Path) -> Result<(bool, bool), String> {
+fn ensure_agent_reference_file(repository_path: &Path) -> Result<(bool, bool), String> {
     let claude_path = repository_path.join("CLAUDE.md");
 
     if !claude_path.exists() {
@@ -856,6 +881,280 @@ fn ensure_commit_context_schema_file(repository_path: &Path) -> Result<(bool, bo
     }
 
     Ok((false, false))
+}
+
+fn has_agent_tracking_block(content: &str) -> bool {
+    content.contains(AGENT_TRACKING_BLOCK_START) && content.contains(AGENT_TRACKING_BLOCK_END)
+}
+
+fn is_agent_reference_line(line: &str) -> bool {
+    line.trim()
+        .to_ascii_lowercase()
+        .replace(' ', "")
+        .eq("@agent.md")
+}
+
+fn remove_agent_tracking_block(repository_path: &Path) -> Result<bool, String> {
+    let agent_path = repository_path.join("AGENT.md");
+    if !agent_path.exists() {
+        return Ok(false);
+    }
+
+    let existing = std::fs::read_to_string(&agent_path)
+        .map_err(|error| format!("Failed to read {}: {}", agent_path.display(), error))?;
+
+    if !has_agent_tracking_block(&existing) {
+        return Ok(false);
+    }
+
+    let mut skip = false;
+    let mut kept_lines: Vec<&str> = Vec::new();
+    for line in existing.lines() {
+        let trimmed = line.trim_end();
+        if trimmed == AGENT_TRACKING_BLOCK_START {
+            skip = true;
+            continue;
+        }
+        if trimmed == AGENT_TRACKING_BLOCK_END {
+            skip = false;
+            continue;
+        }
+        if !skip {
+            kept_lines.push(line);
+        }
+    }
+
+    let mut updated = kept_lines.join("\n");
+    if existing.ends_with('\n') && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+
+    if updated == existing {
+        return Ok(false);
+    }
+
+    std::fs::write(&agent_path, updated)
+        .map_err(|error| format!("Failed to update {}: {}", agent_path.display(), error))?;
+    Ok(true)
+}
+
+fn remove_agent_reference_file(repository_path: &Path) -> Result<bool, String> {
+    let claude_path = repository_path.join("CLAUDE.md");
+    if !claude_path.exists() {
+        return Ok(false);
+    }
+
+    let existing = std::fs::read_to_string(&claude_path)
+        .map_err(|error| format!("Failed to read {}: {}", claude_path.display(), error))?;
+
+    let kept_lines: Vec<&str> = existing
+        .lines()
+        .filter(|line| !is_agent_reference_line(line))
+        .collect();
+
+    let mut updated = kept_lines.join("\n");
+    if existing.ends_with('\n') && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+
+    if updated == existing {
+        return Ok(false);
+    }
+
+    std::fs::write(&claude_path, updated)
+        .map_err(|error| format!("Failed to update {}: {}", claude_path.display(), error))?;
+    Ok(true)
+}
+
+fn remove_managed_schema(repository_path: &Path) -> Result<bool, String> {
+    let schema_path = repository_path.join(AGENT_TRACKING_SCHEMA_RELATIVE_PATH);
+    if !schema_path.exists() {
+        return Ok(false);
+    }
+
+    let existing = std::fs::read_to_string(&schema_path)
+        .map_err(|error| format!("Failed to read {}: {}", schema_path.display(), error))?;
+    if !existing.contains(AGENT_TRACKING_SCHEMA_MANAGED_MARKER) {
+        return Ok(false);
+    }
+
+    std::fs::remove_file(&schema_path)
+        .map_err(|error| format!("Failed to remove {}: {}", schema_path.display(), error))?;
+    Ok(true)
+}
+
+fn remove_managed_enforcement(repository_path: &Path) -> Result<bool, String> {
+    let enforcement_path = repository_path.join(".checkmate/enforcement.json");
+    if !enforcement_path.exists() {
+        return Ok(false);
+    }
+
+    let existing = std::fs::read_to_string(&enforcement_path)
+        .map_err(|error| format!("Failed to read {}: {}", enforcement_path.display(), error))?;
+    if !existing.contains("\"x-checkmate-managed\": true") {
+        return Ok(false);
+    }
+
+    std::fs::remove_file(&enforcement_path)
+        .map_err(|error| format!("Failed to remove {}: {}", enforcement_path.display(), error))?;
+    Ok(true)
+}
+
+fn remove_managed_hooks_fallback(repository_path: &Path) -> Result<bool, String> {
+    let mut changed = false;
+
+    let hooks_path_args = vec![
+        "config".to_string(),
+        "--local".to_string(),
+        "--get".to_string(),
+        "core.hooksPath".to_string(),
+    ];
+    let local_hooks_path = run_git_optional(repository_path, &hooks_path_args)?
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+
+    if local_hooks_path == ".githooks" {
+        let unset_args = vec![
+            "config".to_string(),
+            "--local".to_string(),
+            "--unset".to_string(),
+            "core.hooksPath".to_string(),
+        ];
+        let _ = run_git_optional(repository_path, &unset_args)?;
+        changed = true;
+    }
+
+    let tracked_hook_args = vec![
+        "ls-files".to_string(),
+        "--error-unmatch".to_string(),
+        ".githooks/commit-msg".to_string(),
+    ];
+    let tracked_hook_exists = run_git_optional(repository_path, &tracked_hook_args)?
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+
+    let hook_path = repository_path.join(".githooks/commit-msg");
+    if !tracked_hook_exists && hook_path.exists() {
+        let hook_content = std::fs::read_to_string(&hook_path)
+            .map_err(|error| format!("Failed to read {}: {}", hook_path.display(), error))?;
+        if hook_content.contains("# checkmate-managed: commit-msg-hook-v1") {
+            std::fs::remove_file(&hook_path)
+                .map_err(|error| format!("Failed to remove {}: {}", hook_path.display(), error))?;
+            changed = true;
+        }
+    }
+
+    Ok(changed)
+}
+
+fn run_hooks_remove_script_if_present(repository_path: &Path) {
+    let hooks_script = repository_path.join("scripts/install-git-hooks.sh");
+    if !hooks_script.is_file() {
+        return;
+    }
+
+    let _ = Command::new("bash")
+        .arg(hooks_script)
+        .arg("--remove")
+        .current_dir(repository_path)
+        .output();
+}
+
+fn remove_directory_if_empty(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+
+    let _ = std::fs::remove_dir(path);
+}
+
+fn tracking_status_for_repository(repository_path: &Path) -> Result<AgentTrackingStatus, String> {
+    let agent_path = repository_path.join("AGENT.md");
+    let has_tracking_block = if agent_path.exists() {
+        let content = std::fs::read_to_string(&agent_path)
+            .map_err(|error| format!("Failed to read {}: {}", agent_path.display(), error))?;
+        has_agent_tracking_block(&content)
+    } else {
+        false
+    };
+
+    let claude_path = repository_path.join("CLAUDE.md");
+    let has_agent_reference = if claude_path.exists() {
+        let content = std::fs::read_to_string(&claude_path)
+            .map_err(|error| format!("Failed to read {}: {}", claude_path.display(), error))?;
+        contains_agent_reference(&content)
+    } else {
+        false
+    };
+
+    let schema_path = repository_path.join(AGENT_TRACKING_SCHEMA_RELATIVE_PATH);
+    let has_commit_context_schema = schema_path.exists();
+
+    Ok(AgentTrackingStatus {
+        enabled: has_tracking_block && has_agent_reference && has_commit_context_schema,
+        has_tracking_block,
+        has_agent_reference,
+        has_commit_context_schema,
+    })
+}
+
+const COMMENT_IMAGE_URL_PREFIX: &str = "checkmate-image://";
+const COMMENT_IMAGE_DIRECTORY: &str = "comment-images";
+
+fn resolve_comment_images_directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data directory: {}", error))?;
+
+    let image_dir = app_data_dir.join(COMMENT_IMAGE_DIRECTORY);
+    std::fs::create_dir_all(&image_dir)
+        .map_err(|error| format!("Failed to create comment image directory: {}", error))?;
+    Ok(image_dir)
+}
+
+fn extension_for_mime_type(mime_type: &str) -> Option<&'static str> {
+    match mime_type.trim().to_ascii_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
+
+fn mime_type_for_extension(extension: &str) -> &'static str {
+    match extension.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "application/octet-stream",
+    }
+}
+
+fn validate_comment_image_ref(image_ref: &str) -> Result<String, String> {
+    let trimmed = image_ref.trim();
+    if trimmed.is_empty() {
+        return Err("Image reference is required.".to_string());
+    }
+
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-')
+    {
+        return Err("Image reference contains unsupported characters.".to_string());
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn build_comment_image_ref(extension: &str) -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("img-{}-{}.{}", std::process::id(), timestamp, extension)
 }
 
 fn cm_script_contents() -> String {
@@ -1024,7 +1323,7 @@ BLOCK
     printf '\n' >> "$agent_file"
   }}
 
-  ensure_claude_file() {{
+  ensure_agent_reference_file() {{
     local claude_file="$REPO_PATH/CLAUDE.md"
     if [[ ! -f "$claude_file" ]]; then
       printf '@AGENT.md\n' > "$claude_file"
@@ -1053,7 +1352,7 @@ SCHEMA
   }}
 
   ensure_agent_file
-  ensure_claude_file
+  ensure_agent_reference_file
   ensure_schema_file
   hooks_script="$REPO_PATH/scripts/install-git-hooks.sh"
   if [[ -f "$hooks_script" ]]; then
@@ -1096,7 +1395,7 @@ if [[ "$MODE" == "remove" ]]; then
     mv "$tmp_file" "$agent_file"
   }}
 
-  remove_claude_agent_reference() {{
+  remove_agent_reference_file() {{
     local claude_file="$REPO_PATH/CLAUDE.md"
     if [[ ! -f "$claude_file" ]]; then
       return
@@ -1151,7 +1450,7 @@ if [[ "$MODE" == "remove" ]]; then
   fi
 
   remove_agent_block
-  remove_claude_agent_reference
+  remove_agent_reference_file
   remove_managed_schema
   remove_managed_enforcement
   rmdir "$REPO_PATH/.githooks" >/dev/null 2>&1 || true
@@ -1596,15 +1895,15 @@ fn initialize_agent_tracking(
     let repository_path = validate_repository_path(&repo_path)?;
 
     let (agent_file_created, agent_file_updated) = ensure_agent_tracking_file(&repository_path)?;
-    let (claude_file_created, claude_file_updated) =
-        ensure_claude_agent_reference(&repository_path)?;
+    let (agent_reference_file_created, agent_reference_file_updated) =
+        ensure_agent_reference_file(&repository_path)?;
     let (schema_file_created, schema_file_updated) =
         ensure_commit_context_schema_file(&repository_path)?;
 
     let message = if agent_file_created
         || agent_file_updated
-        || claude_file_created
-        || claude_file_updated
+        || agent_reference_file_created
+        || agent_reference_file_updated
         || schema_file_created
         || schema_file_updated
     {
@@ -1614,10 +1913,10 @@ fn initialize_agent_tracking(
         } else if agent_file_updated {
             changes.push("updated AGENT.md".to_string());
         }
-        if claude_file_created {
-            changes.push("created CLAUDE.md".to_string());
-        } else if claude_file_updated {
-            changes.push("updated CLAUDE.md".to_string());
+        if agent_reference_file_created {
+            changes.push("created agent reference file (CLAUDE.md)".to_string());
+        } else if agent_reference_file_updated {
+            changes.push("updated agent reference file (CLAUDE.md)".to_string());
         }
         if schema_file_created {
             changes.push(format!("created {}", AGENT_TRACKING_SCHEMA_RELATIVE_PATH));
@@ -1626,18 +1925,147 @@ fn initialize_agent_tracking(
         }
         format!("Tracking initialized: {}.", changes.join(", "))
     } else {
-        "Tracking already initialized (AGENT.md, CLAUDE.md, and commit context schema are up to date).".to_string()
+        "Tracking already initialized (AGENT.md, agent reference file, and commit context schema are up to date).".to_string()
     };
 
     Ok(AgentTrackingInitializationResult {
         agent_file_created,
         agent_file_updated,
-        claude_file_created,
-        claude_file_updated,
+        agent_reference_file_created,
+        agent_reference_file_updated,
         schema_file_created,
         schema_file_updated,
         message,
     })
+}
+
+#[tauri::command]
+fn read_agent_tracking_status(repo_path: String) -> Result<AgentTrackingStatus, String> {
+    let repository_path = validate_repository_path(&repo_path)?;
+    tracking_status_for_repository(&repository_path)
+}
+
+#[tauri::command]
+fn remove_agent_tracking(repo_path: String) -> Result<AgentTrackingRemovalResult, String> {
+    let repository_path = validate_repository_path(&repo_path)?;
+
+    run_hooks_remove_script_if_present(&repository_path);
+    let hooks_fallback_removed = remove_managed_hooks_fallback(&repository_path)?;
+    let agent_block_removed = remove_agent_tracking_block(&repository_path)?;
+    let agent_reference_removed = remove_agent_reference_file(&repository_path)?;
+    let schema_removed = remove_managed_schema(&repository_path)?;
+    let enforcement_removed = remove_managed_enforcement(&repository_path)?;
+
+    remove_directory_if_empty(&repository_path.join(".githooks"));
+    remove_directory_if_empty(&repository_path.join(".checkmate/comment-images"));
+    remove_directory_if_empty(&repository_path.join(".checkmate"));
+
+    let removed = agent_block_removed
+        || agent_reference_removed
+        || schema_removed
+        || enforcement_removed
+        || hooks_fallback_removed;
+
+    let message = if removed {
+        let mut changes: Vec<String> = Vec::new();
+        if agent_block_removed {
+            changes.push("removed tracking block from AGENT.md".to_string());
+        }
+        if agent_reference_removed {
+            changes.push("removed @AGENT.md reference from agent reference file (CLAUDE.md)".to_string());
+        }
+        if schema_removed {
+            changes.push(format!("removed {}", AGENT_TRACKING_SCHEMA_RELATIVE_PATH));
+        }
+        if enforcement_removed {
+            changes.push("removed .checkmate/enforcement.json".to_string());
+        }
+        if hooks_fallback_removed {
+            changes.push("removed managed git hook configuration".to_string());
+        }
+        format!("Tracking removed: {}.", changes.join(", "))
+    } else {
+        "Tracking was already disabled for this repository.".to_string()
+    };
+
+    Ok(AgentTrackingRemovalResult { removed, message })
+}
+
+#[tauri::command]
+fn store_comment_image(
+    app: tauri::AppHandle,
+    base64_data: String,
+    mime_type: String,
+) -> Result<CommentImageStorageResult, String> {
+    let extension = extension_for_mime_type(&mime_type)
+        .ok_or_else(|| "Only PNG, JPG, WEBP, and GIF clipboard images are supported.".to_string())?;
+    let image_bytes = general_purpose::STANDARD
+        .decode(base64_data.trim())
+        .map_err(|error| format!("Failed to decode image data: {}", error))?;
+    if image_bytes.is_empty() {
+        return Err("Image data is empty.".to_string());
+    }
+
+    let image_dir = resolve_comment_images_directory(&app)?;
+    let image_ref = build_comment_image_ref(extension);
+    let image_path = image_dir.join(&image_ref);
+    std::fs::write(&image_path, image_bytes)
+        .map_err(|error| format!("Failed to store image: {}", error))?;
+
+    Ok(CommentImageStorageResult {
+        image_ref: image_ref.clone(),
+        markdown_url: format!("{}{}", COMMENT_IMAGE_URL_PREFIX, image_ref),
+    })
+}
+
+#[tauri::command]
+fn resolve_comment_image_data_url(
+    app: tauri::AppHandle,
+    image_ref: String,
+) -> Result<String, String> {
+    let normalized_ref = validate_comment_image_ref(&image_ref)?;
+    let image_dir = resolve_comment_images_directory(&app)?;
+    let image_path = image_dir.join(&normalized_ref);
+
+    if !image_path.is_file() {
+        return Err("Stored comment image was not found.".to_string());
+    }
+
+    let bytes = std::fs::read(&image_path)
+        .map_err(|error| format!("Failed to read stored comment image: {}", error))?;
+    let extension = image_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let mime_type = mime_type_for_extension(extension);
+    let encoded = general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{};base64,{}", mime_type, encoded))
+}
+
+#[tauri::command]
+fn delete_comment_images(app: tauri::AppHandle, image_refs: Vec<String>) -> Result<usize, String> {
+    let image_dir = resolve_comment_images_directory(&app)?;
+    let mut removed_count = 0usize;
+
+    for image_ref in image_refs {
+        let normalized_ref = match validate_comment_image_ref(&image_ref) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        let image_path = image_dir.join(normalized_ref);
+        if !image_path.exists() {
+            continue;
+        }
+
+        std::fs::remove_file(&image_path)
+            .map_err(|error| format!("Failed to delete comment image: {}", error))?;
+        removed_count += 1;
+    }
+
+    remove_directory_if_empty(&image_dir);
+
+    Ok(removed_count)
 }
 
 #[tauri::command]
@@ -1768,6 +2196,11 @@ pub fn run() {
             run_cli_agent_prompt,
             read_launch_request,
             initialize_agent_tracking,
+            read_agent_tracking_status,
+            remove_agent_tracking,
+            store_comment_image,
+            resolve_comment_image_data_url,
+            delete_comment_images,
             read_cm_cli_status,
             install_cm_cli_in_path
         ])

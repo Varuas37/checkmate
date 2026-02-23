@@ -1,6 +1,12 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 
-import { cn, splitTextByCheckmateMention } from "../../../shared/index.ts";
+import {
+  cn,
+  isManagedCommentImageUrl,
+  normalizeManagedCommentImageRef,
+  resolveCommentImageDataUrl,
+  splitTextByCheckmateMention,
+} from "../../../shared/index.ts";
 
 export interface MarkdownCommentProps {
   readonly body: string;
@@ -472,6 +478,65 @@ function CodeFenceBlock({ code, language }: CodeFenceBlockProps): ReactNode {
   );
 }
 
+interface ManagedCommentImageProps {
+  readonly imageRef: string;
+  readonly alt: string;
+}
+
+function ManagedCommentImage({ imageRef, alt }: ManagedCommentImageProps): ReactNode {
+  const [src, setSrc] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSrc(null);
+    setLoadError(false);
+
+    void resolveCommentImageDataUrl(imageRef)
+      .then((resolved) => {
+        if (cancelled) {
+          return;
+        }
+        setSrc(resolved);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setLoadError(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [imageRef]);
+
+  if (loadError) {
+    return (
+      <span className="inline-flex rounded border border-danger/45 bg-danger/10 px-1.5 py-0.5 text-[10px] text-danger">
+        Failed to load image
+      </span>
+    );
+  }
+
+  if (!src) {
+    return (
+      <span className="inline-flex rounded border border-border/60 bg-surface-subtle/50 px-1.5 py-0.5 text-[10px] text-muted">
+        Loading image...
+      </span>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className="max-h-72 max-w-full rounded border border-border/70 bg-canvas/70 object-contain"
+      loading="lazy"
+    />
+  );
+}
+
 function renderMention(value: string, key: string): ReactNode {
   return (
     <span
@@ -511,7 +576,7 @@ function pushPlainWithMentions(
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const tokenPattern =
-    /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\([^)]+\))/g;
+    /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|!\[[^\]\n]*\]\([^)]+\)|\[[^\]\n]+\]\([^)]+\))/g;
 
   let cursor = 0;
   let keyIndex = 0;
@@ -574,6 +639,37 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
       );
       cursor = start + token.length;
       continue;
+    }
+
+    const imageMatch = token.match(/^!\[([^\]\n]*)\]\(([^)\s]+)\)$/);
+    if (imageMatch) {
+      const alt = (imageMatch[1] ?? "Comment image").trim() || "Comment image";
+      const imageUrl = imageMatch[2] ?? "";
+
+      if (isManagedCommentImageUrl(imageUrl)) {
+        const imageRef = normalizeManagedCommentImageRef(imageUrl);
+        if (imageRef) {
+          nodes.push(
+            <ManagedCommentImage key={tokenKey} imageRef={imageRef} alt={alt} />,
+          );
+          cursor = start + token.length;
+          continue;
+        }
+      }
+
+      if (imageUrl.startsWith("https://") || imageUrl.startsWith("http://")) {
+        nodes.push(
+          <img
+            key={tokenKey}
+            src={imageUrl}
+            alt={alt}
+            className="max-h-72 max-w-full rounded border border-border/70 bg-canvas/70 object-contain"
+            loading="lazy"
+          />,
+        );
+        cursor = start + token.length;
+        continue;
+      }
     }
 
     const linkMatch = token.match(/^\[([^\]\n]+)\]\(([^)\s]+)\)$/);
