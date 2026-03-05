@@ -1934,6 +1934,60 @@ fn read_system_username() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn read_clipboard_text_with_command(command: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(command)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Failed to run clipboard command '{}': {}", command, error))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            return Err(format!("Clipboard command '{}' failed.", command));
+        }
+        return Err(format!(
+            "Clipboard command '{}' failed: {}",
+            command, stderr
+        ));
+    }
+
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim_end_matches(['\r', '\n']).to_string())
+        .map_err(|error| format!("Clipboard output is not valid UTF-8: {}", error))
+}
+
+#[tauri::command]
+fn read_clipboard_text() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        return read_clipboard_text_with_command("pbpaste", &[]);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return read_clipboard_text_with_command("powershell", &["-NoProfile", "-Command", "Get-Clipboard -Raw"]);
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        match read_clipboard_text_with_command("wl-paste", &["--no-newline"]) {
+            Ok(value) => return Ok(value),
+            Err(wl_error) => match read_clipboard_text_with_command("xclip", &["-selection", "clipboard", "-out"])
+            {
+                Ok(value) => return Ok(value),
+                Err(xclip_error) => {
+                    return Err(format!(
+                        "Unable to read clipboard text. wl-paste error: {}; xclip error: {}",
+                        wl_error, xclip_error
+                    ));
+                }
+            },
+        }
+    }
+
+    #[allow(unreachable_code)]
+    Err("Clipboard read is not supported on this platform.".to_string())
+}
+
 #[tauri::command]
 async fn run_cli_agent_prompt(
     app: tauri::AppHandle,
@@ -2387,6 +2441,7 @@ pub fn run() {
             read_app_settings,
             write_app_settings,
             read_system_username,
+            read_clipboard_text,
             run_cli_agent_prompt,
             append_application_log,
             read_launch_request,

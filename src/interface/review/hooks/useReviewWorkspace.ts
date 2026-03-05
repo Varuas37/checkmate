@@ -1,6 +1,8 @@
 import { useCallback, useMemo } from "react";
 
 import {
+  createCommentThreadPlanMarkdown,
+  createPublishReviewPackage,
   selectActiveCommit,
   selectActiveFile,
   selectFilesForActiveCommit,
@@ -145,6 +147,41 @@ function normalizeReloadInput(input: ReloadReviewWorkspaceInput): ReloadReviewWo
     commitSha: commitSha.length > 0 ? commitSha : DEFAULT_LOAD_REQUEST.commitSha,
     standardsRuleText: standardsRuleText.length > 0 ? standardsRuleText : DEFAULT_STANDARDS_RULE_TEXT,
   };
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through to legacy copy behavior for unsupported clipboard contexts.
+    }
+  }
+
+  if (typeof document === "undefined") {
+    throw new Error("Clipboard write is unavailable in this context.");
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.setAttribute("readonly", "true");
+  textArea.style.position = "fixed";
+  textArea.style.left = "-9999px";
+  textArea.style.opacity = "0";
+  textArea.style.pointerEvents = "none";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+
+  try {
+    const copied = document.execCommand("copy");
+    if (!copied) {
+      throw new Error("Clipboard write command was rejected.");
+    }
+  } finally {
+    document.body.removeChild(textArea);
+  }
 }
 
 export function useReviewWorkspace(): {
@@ -613,6 +650,98 @@ export function useReviewWorkspace(): {
     };
   }, [entities.threadsById, ui.activeCommitId]);
 
+  const commitCommentActivities = useMemo(() => {
+    const activeCommitId = ui.activeCommitId;
+    if (!activeCommitId) {
+      return [];
+    }
+
+    return Object.values(entities.threadsById)
+      .filter((thread): thread is NonNullable<typeof thread> => {
+        return thread !== undefined && thread.commitId === activeCommitId;
+      })
+      .flatMap((thread) => {
+        const filePath = entities.filesById[thread.fileId]?.path ?? "(Unknown file)";
+        const commentIds = entities.commentIdsByThreadId[thread.id] ?? thread.messageIds;
+
+        return commentIds
+          .map((commentId) => entities.commentsById[commentId])
+          .filter((comment): comment is NonNullable<typeof comment> => comment !== undefined)
+          .filter((comment) => !comment.isDraft)
+          .map((comment) => {
+            const authorKey = `${comment.authorType}:${comment.authorId}`;
+            return {
+              id: comment.id,
+              threadId: thread.id,
+              threadStatus: thread.status,
+              fileId: thread.fileId,
+              filePath,
+              hunkId: thread.hunkId,
+              side: thread.anchor.side,
+              lineNumber: thread.anchor.lineNumber,
+              authorKey,
+              authorType: comment.authorType,
+              authorId: comment.authorId,
+              body: comment.body,
+              createdAtIso: comment.createdAtIso,
+            };
+          });
+      })
+      .sort((left, right) => right.createdAtIso.localeCompare(left.createdAtIso));
+  }, [
+    entities.commentIdsByThreadId,
+    entities.commentsById,
+    entities.filesById,
+    entities.threadsById,
+    ui.activeCommitId,
+  ]);
+
+  const commentAuthors = useMemo(() => {
+    const countsByAuthor = new Map<
+      string,
+      {
+        readonly authorKey: string;
+        readonly authorType: "human" | "agent";
+        readonly authorId: string;
+        commentCount: number;
+      }
+    >();
+
+    commitCommentActivities.forEach((comment) => {
+      const existing = countsByAuthor.get(comment.authorKey);
+      if (existing) {
+        existing.commentCount += 1;
+        return;
+      }
+
+      countsByAuthor.set(comment.authorKey, {
+        authorKey: comment.authorKey,
+        authorType: comment.authorType,
+        authorId: comment.authorId,
+        commentCount: 1,
+      });
+    });
+
+    return [...countsByAuthor.values()]
+      .sort((left, right) => {
+        if (left.commentCount !== right.commentCount) {
+          return right.commentCount - left.commentCount;
+        }
+
+        if (left.authorType !== right.authorType) {
+          return left.authorType.localeCompare(right.authorType);
+        }
+
+        return left.authorId.localeCompare(right.authorId);
+      })
+      .map((author) => ({
+        authorKey: author.authorKey,
+        authorType: author.authorType,
+        authorId: author.authorId,
+        commentCount: author.commentCount,
+      }));
+  }, [commitCommentActivities]);
+
   const fileSummaries = useMemo(() => {
     const aiSummaryByPath = new Map(
       hasAiAnalysis && ui.aiAnalysis !== null
@@ -937,6 +1066,34 @@ export function useReviewWorkspace(): {
     );
   }, [dispatch]);
 
+  const copyPlanToClipboard = useCallback(async () => {
+    try {
+      const pkg = createPublishReviewPackage({
+        state: {
+          reviewEntities: entities,
+          reviewUi: ui,
+        },
+        generatedAtIso: new Date().toISOString(),
+      });
+      const markdown = createCommentThreadPlanMarkdown(pkg);
+      await copyTextToClipboard(markdown);
+
+      return {
+        ok: true,
+        message: `Plan copied to clipboard for commit ${pkg.commitSha.slice(0, 8)}.`,
+      };
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : "Failed to copy plan to clipboard.";
+
+      return {
+        ok: false,
+        message,
+      };
+    }
+  }, [entities, ui]);
+
   const refreshAiAnalysis = useCallback(() => {
     if (!ui.activeCommitId) {
       return;
@@ -997,6 +1154,8 @@ export function useReviewWorkspace(): {
       standardsChecks,
       fileStandardsInsights,
       threadModels,
+      commentAuthors,
+      commitCommentActivities,
       threadCounts,
       fileSummaries,
       publishPackage: ui.lastPublishPackage,
@@ -1029,6 +1188,7 @@ export function useReviewWorkspace(): {
       askAgent,
       deleteComment,
       publishReview,
+      copyPlanToClipboard,
       refreshAiAnalysis,
       refreshStandardsAnalysis,
       retrySequenceGeneration,

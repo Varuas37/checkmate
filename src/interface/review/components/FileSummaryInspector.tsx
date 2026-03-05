@@ -5,6 +5,7 @@ import type { ChangedFile } from "../../../domain/review/index.ts";
 import Skeleton from "react-loading-skeleton";
 
 import type { FileSummary, SequencePair } from "../types.ts";
+import { AiRetryIcon } from "./AiRetryIcon.tsx";
 import { MarkdownComment } from "./MarkdownComment.tsx";
 
 export interface FileSummaryInspectorProps {
@@ -13,6 +14,7 @@ export interface FileSummaryInspectorProps {
   readonly relatedFeatures: readonly SequencePair[];
   readonly aiAnalysisStatus: "idle" | "analysing" | "analysed" | "error";
   readonly onOpenFeatureFiles: (fileIds: readonly string[]) => void;
+  readonly onRetryAiAnalysis: () => void;
 }
 
 function uniqueFileIds(input: readonly string[]): readonly string[] {
@@ -47,6 +49,7 @@ export function FileSummaryInspector({
   relatedFeatures,
   aiAnalysisStatus,
   onOpenFeatureFiles,
+  onRetryAiAnalysis,
 }: FileSummaryInspectorProps) {
   const [isFileTechnicalExpanded, setIsFileTechnicalExpanded] = useState(false);
   const [expandedFeatureIds, setExpandedFeatureIds] = useState<Readonly<Record<string, boolean>>>({});
@@ -218,9 +221,20 @@ export function FileSummaryInspector({
             </div>
           )}
           {aiAnalysisStatus === "error" && (
-            <p className="text-xs text-danger">
-              AI summary failed. Reload the commit or run AI analysis again.
-            </p>
+            <div className="flex items-center gap-1.5 text-danger">
+              <p className="text-xs">AI summary failed. Reload the commit or run AI analysis again.</p>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 shrink-0 gap-1 border border-danger/35 px-1.5 text-[10px] text-danger hover:border-danger/55 hover:text-danger"
+                onClick={onRetryAiAnalysis}
+                aria-label="Retry AI analysis"
+                title="Retry AI analysis"
+              >
+                <AiRetryIcon />
+                Retry
+              </Button>
+            </div>
           )}
         </div>
       </div>

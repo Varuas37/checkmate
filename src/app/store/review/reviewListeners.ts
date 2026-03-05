@@ -32,6 +32,7 @@ import {
 import { reviewEntitiesActions } from "./reviewEntitiesSlice.ts";
 import { reviewUiActions } from "./reviewUiSlice.ts";
 import {
+  readAiAnalysisConfigFromStorage,
   hasCheckmateMention,
   readAiAnalysisFromStorage,
   readProjectStandardsPathFromStorage,
@@ -362,6 +363,23 @@ export function createReviewListenerMiddleware(
           repositoryPath: aggregate.commit.repositoryPath,
           commitSha: aggregate.commit.commitSha,
         });
+        const { autoRunOnCommitChange } = readAiAnalysisConfigFromStorage();
+
+        let analysisQueued = false;
+        const queueCommitAnalysis = () => {
+          if (analysisQueued) {
+            return;
+          }
+
+          analysisQueued = true;
+          globalThis.setTimeout(() => {
+            listenerApi.dispatch(
+              analyseCommitRequested({
+                commitId: aggregate.commit.id,
+              }),
+            );
+          }, 0);
+        };
 
         if (cachedAiAnalysis) {
           const output = {
@@ -389,26 +407,18 @@ export function createReviewListenerMiddleware(
             listenerApi.dispatch(reviewUiActions.standardsAnalysisSucceeded());
           } else {
             listenerApi.dispatch(reviewUiActions.standardsAnalysisStarted());
-            globalThis.setTimeout(() => {
-              listenerApi.dispatch(
-                analyseCommitRequested({
-                  commitId: aggregate.commit.id,
-                }),
-              );
-            }, 0);
+            queueCommitAnalysis();
+          }
+
+          if (autoRunOnCommitChange) {
+            queueCommitAnalysis();
           }
 
           return;
         }
 
         // Run AI analysis once per loaded commit in the background when cache is absent.
-        globalThis.setTimeout(() => {
-          listenerApi.dispatch(
-            analyseCommitRequested({
-              commitId: aggregate.commit.id,
-            }),
-          );
-        }, 0);
+        queueCommitAnalysis();
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to load commit review.";
         listenerApi.dispatch(reviewUiActions.markLoadFailed({ errorMessage: message }));

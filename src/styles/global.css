@@ -2,6 +2,55 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  .cm-floating-tooltip {
+    position: fixed;
+    pointer-events: none;
+    z-index: 1000;
+    max-width: min(22rem, calc(100vw - 1rem));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0.25rem 0.45rem;
+    border-radius: 0.35rem;
+    border: 1px solid hsl(var(--color-border) / 0.9);
+    background-color: hsl(var(--color-canvas) / 0.98);
+    color: hsl(var(--color-text));
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.625rem;
+    line-height: 1.15;
+    letter-spacing: 0.04em;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+    transition: opacity 80ms ease-out, transform 80ms ease-out;
+    opacity: 1;
+  }
+
+  .cm-floating-tooltip::after {
+    content: "";
+    position: absolute;
+    bottom: calc(100% + 0.2rem);
+    left: 50%;
+    transform: translateX(-50%);
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 4px solid hsl(var(--color-border) / 0.9);
+  }
+
+  .cm-floating-tooltip--top::after {
+    top: 100%;
+    bottom: auto;
+    border-top: 4px solid hsl(var(--color-border) / 0.9);
+    border-bottom: 0;
+  }
+
+  .cm-floating-tooltip--bottom::after {
+    top: auto;
+    bottom: 100%;
+    border-top: 0;
+    border-bottom: 4px solid hsl(var(--color-border) / 0.9);
+  }
+}
+
 @layer base {
   *,
   *::before,

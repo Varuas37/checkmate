@@ -115,6 +115,29 @@ export interface ThreadViewModel {
   readonly askAgentDraft: string;
 }
 
+export interface CommentAuthorSummary {
+  readonly authorKey: string;
+  readonly authorType: "human" | "agent";
+  readonly authorId: string;
+  readonly commentCount: number;
+}
+
+export interface CommitCommentActivity {
+  readonly id: string;
+  readonly threadId: string;
+  readonly threadStatus: ThreadStatus;
+  readonly fileId: string;
+  readonly filePath: string;
+  readonly hunkId: string;
+  readonly side: CommentSide;
+  readonly lineNumber: number;
+  readonly authorKey: string;
+  readonly authorType: "human" | "agent";
+  readonly authorId: string;
+  readonly body: string;
+  readonly createdAtIso: string;
+}
+
 export interface CreateThreadInput {
   readonly hunkId: string;
   readonly side: CommentSide;
@@ -146,6 +169,8 @@ export interface ReviewWorkspaceState {
   readonly standardsChecks: readonly StandardsCheck[];
   readonly fileStandardsInsights: readonly FileStandardsInsight[];
   readonly threadModels: readonly ThreadViewModel[];
+  readonly commentAuthors: readonly CommentAuthorSummary[];
+  readonly commitCommentActivities: readonly CommitCommentActivity[];
   readonly threadCounts: {
     readonly all: number;
     readonly open: number;
@@ -187,6 +212,7 @@ export interface ReviewWorkspaceActions {
   readonly askAgent: (threadId: string, prompt: string) => void;
   readonly deleteComment: (commentId: string) => void;
   readonly publishReview: () => void;
+  readonly copyPlanToClipboard: () => Promise<{ readonly ok: boolean; readonly message: string }>;
   readonly refreshAiAnalysis: () => void;
   readonly refreshStandardsAnalysis: () => void;
   readonly retrySequenceGeneration: () => void;

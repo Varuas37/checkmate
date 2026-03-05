@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { Button, Input, Modal, ThemeSwitcher } from "../../../design-system/index.ts";
-import { cn } from "../../../shared/index.ts";
+import { cn, readClipboardTextFromDesktop } from "../../../shared/index.ts";
 import type {
   AgentTrackingInitializationResult,
   AgentTrackingRemovalResult,
@@ -16,6 +16,7 @@ export interface SettingsPanelProps {
   readonly open: boolean;
   readonly initialApiKey: string;
   readonly initialMaxChurn: number;
+  readonly initialAutoRunOnCommitChange: boolean;
   readonly initialProjectStandardsPath: string;
   readonly initialCliAgents: CliAgentsSettings;
   readonly activeRepositoryPath: string;
@@ -30,6 +31,7 @@ export interface SettingsPanelProps {
   readonly onSave: (apiKey: string) => void;
   readonly onTestApiConnection: (apiKey: string) => Promise<string>;
   readonly onSaveMaxChurn: (maxChurn: number) => void;
+  readonly onSaveAutoRunOnCommitChange: (enabled: boolean) => void;
   readonly onSaveProjectStandardsPath: (standardsPath: string) => void;
   readonly onSaveCliAgents: (settings: CliAgentsSettings) => void;
   readonly onTestCliConnection: (agent: CliAgentConfig) => Promise<string>;
@@ -141,6 +143,7 @@ export function SettingsPanel({
   open,
   initialApiKey,
   initialMaxChurn,
+  initialAutoRunOnCommitChange,
   initialProjectStandardsPath,
   initialCliAgents,
   activeRepositoryPath,
@@ -153,6 +156,7 @@ export function SettingsPanel({
   onSave,
   onTestApiConnection,
   onSaveMaxChurn,
+  onSaveAutoRunOnCommitChange,
   onSaveProjectStandardsPath,
   onSaveCliAgents,
   onTestCliConnection,
@@ -162,6 +166,9 @@ export function SettingsPanel({
   const [isApiKeyVisible, setIsApiKeyVisible] = useState(false);
   const [isApiKeyEditing, setIsApiKeyEditing] = useState(false);
   const [churnDraft, setChurnDraft] = useState(String(initialMaxChurn));
+  const [autoRunOnCommitChange, setAutoRunOnCommitChange] = useState(
+    initialAutoRunOnCommitChange,
+  );
   const [projectStandardsPathDraft, setProjectStandardsPathDraft] = useState(initialProjectStandardsPath);
   const [cmCliActionError, setCmCliActionError] = useState<string | null>(null);
   const [cmCliActionMessage, setCmCliActionMessage] = useState<string | null>(null);
@@ -185,8 +192,9 @@ export function SettingsPanel({
 
     setDraft(initialApiKey);
     setIsApiKeyVisible(false);
-    setIsApiKeyEditing(false);
+    setIsApiKeyEditing(initialApiKey.trim().length === 0);
     setChurnDraft(String(initialMaxChurn));
+    setAutoRunOnCommitChange(initialAutoRunOnCommitChange);
     setProjectStandardsPathDraft(initialProjectStandardsPath);
     setCmCliActionError(null);
     setCmCliActionMessage(null);
@@ -307,6 +315,57 @@ export function SettingsPanel({
     } else {
       setApiConnectionStatus("idle");
       setApiConnectionMessage(null);
+    }
+  };
+
+  const stageApiKeyDraft = (value: string) => {
+    const normalized = value.trim();
+    if (normalized.length === 0) {
+      setApiConnectionStatus("failed");
+      setApiConnectionMessage("Clipboard is empty.");
+      return;
+    }
+
+    setDraft(normalized);
+    setIsApiKeyVisible(false);
+    setIsApiKeyEditing(true);
+    setApiConnectionStatus("idle");
+    setApiConnectionMessage(null);
+  };
+
+  const pasteApiKeyFromClipboard = async () => {
+    let desktopClipboardError: string | null = null;
+    try {
+      const clipboardValue = await readClipboardTextFromDesktop();
+      stageApiKeyDraft(clipboardValue);
+      return;
+    } catch (error) {
+      desktopClipboardError = getErrorMessage(error);
+    }
+
+    if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
+      setApiConnectionStatus("failed");
+      setApiConnectionMessage(
+        desktopClipboardError
+          ? `Unable to read clipboard: ${desktopClipboardError}`
+          : "Clipboard access is unavailable. Focus the input and use Cmd/Ctrl+V.",
+      );
+      setIsApiKeyEditing(true);
+      return;
+    }
+
+    try {
+      const clipboardValue = await navigator.clipboard.readText();
+      stageApiKeyDraft(clipboardValue);
+    } catch (error) {
+      const browserClipboardError = getErrorMessage(error);
+      setApiConnectionStatus("failed");
+      setApiConnectionMessage(
+        desktopClipboardError
+          ? `Unable to read clipboard. Desktop: ${desktopClipboardError}. Browser: ${browserClipboardError}.`
+          : `Unable to read clipboard: ${browserClipboardError}`,
+      );
+      setIsApiKeyEditing(true);
     }
   };
 
@@ -674,6 +733,29 @@ export function SettingsPanel({
                 </p>
               </div>
               <div className="space-y-2 border-b border-border/60 pb-3">
+                <label className="flex cursor-pointer items-start gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={autoRunOnCommitChange}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      setAutoRunOnCommitChange(enabled);
+                      onSaveAutoRunOnCommitChange(enabled);
+                    }}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                  />
+                  <div>
+                    <p className="text-sm font-medium text-text">
+                      Automatically run AI analysis on branch/commit change
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted">
+                      When enabled, switching branch or commit re-runs AI analysis even if cached output
+                      already exists.
+                    </p>
+                  </div>
+                </label>
+              </div>
+              <div className="space-y-2 border-b border-border/60 pb-3">
                 <label className="block text-xs text-text-subtle">
                   Coding standards file path (current project)
                 </label>
@@ -729,6 +811,17 @@ export function SettingsPanel({
                         setDraft(event.target.value);
                       }}
                       onKeyDown={(event) => {
+                        if (
+                          (event.metaKey || event.ctrlKey)
+                          && !event.shiftKey
+                          && !event.altKey
+                          && event.key.toLowerCase() === "v"
+                        ) {
+                          event.preventDefault();
+                          void pasteApiKeyFromClipboard();
+                          return;
+                        }
+
                         if (event.key === "Enter") {
                           event.preventDefault();
                           saveApiKeyDraft();
@@ -740,10 +833,27 @@ export function SettingsPanel({
                           setIsApiKeyEditing(false);
                         }
                       }}
+                      onPaste={(event) => {
+                        const pasted = event.clipboardData.getData("text");
+                        if (!pasted || pasted.trim().length === 0) {
+                          return;
+                        }
+                        event.preventDefault();
+                        stageApiKeyDraft(pasted);
+                      }}
                       placeholder="sk-ant-..."
                       aria-label="Anthropic API key"
                       className="font-mono text-xs"
                     />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void pasteApiKeyFromClipboard();
+                      }}
+                    >
+                      Paste
+                    </Button>
                     <Button variant="secondary" size="sm" onClick={saveApiKeyDraft}>
                       Save
                     </Button>
@@ -764,9 +874,18 @@ export function SettingsPanel({
                       type="button"
                       onClick={() => {
                         if (draft.trim().length === 0) {
+                          setIsApiKeyEditing(true);
                           return;
                         }
                         setIsApiKeyVisible((current) => !current);
+                      }}
+                      onPaste={(event) => {
+                        const pasted = event.clipboardData.getData("text");
+                        if (!pasted || pasted.trim().length === 0) {
+                          return;
+                        }
+                        event.preventDefault();
+                        stageApiKeyDraft(pasted);
                       }}
                       className={cn(
                         "flex h-9 min-w-0 flex-1 items-center rounded-md border border-border bg-canvas px-3 text-left font-mono text-xs text-text transition-colors",
@@ -806,6 +925,15 @@ export function SettingsPanel({
                         <path d="M12 20h9" />
                         <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
                       </svg>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void pasteApiKeyFromClipboard();
+                      }}
+                    >
+                      Paste
                     </Button>
                     <Button
                       variant="ghost"

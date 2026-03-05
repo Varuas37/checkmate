@@ -11,3 +11,4 @@ export { SettingsPanel, type SettingsPanelProps } from "./SettingsPanel.tsx";
 export { StandardsPanel, type StandardsPanelProps } from "./StandardsPanel.tsx";
 export { SummaryPanel, type SummaryPanelProps } from "./SummaryPanel.tsx";
 export { TopTabs, type TopTabsProps } from "./TopTabs.tsx";
+export { UserCommentsModal, type UserCommentsModalProps } from "./UserCommentsModal.tsx";

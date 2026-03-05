@@ -11,6 +11,8 @@ import {
 import { reviewEntitiesActions } from "./reviewEntitiesSlice.ts";
 import { reviewUiActions } from "./reviewUiSlice.ts";
 
+const AI_ANALYSIS_CONFIG_STORAGE_KEY = "codelens-ai-analysis-config";
+
 function createCommitAggregateFixture(): CommitReviewAggregate {
   return {
     commit: {
@@ -55,6 +57,34 @@ function createCommitAggregateFixture(): CommitReviewAggregate {
   };
 }
 
+function createStandardsFixture(commitId: string, filePath: string) {
+  return {
+    standardsRules: [
+      {
+        id: "rule-1",
+        title: "Add tests",
+        description: "Add tests for behavior changes.",
+        severity: "medium" as const,
+      },
+    ],
+    standardsResults: [
+      {
+        id: `result-${commitId}-rule-1`,
+        commitId,
+        ruleId: "rule-1",
+        status: "pass" as const,
+        summary: "Tests were updated in this commit.",
+        evidence: [
+          {
+            filePath,
+            note: "Test file was changed.",
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function waitForListener(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
@@ -93,8 +123,20 @@ function createDeferred<T>() {
   };
 }
 
-function installMockLocalStorage(): void {
+function installMockLocalStorage(options?: {
+  readonly autoRunOnCommitChange?: boolean;
+}): void {
   const storage = new Map<string, string>();
+  if (options?.autoRunOnCommitChange !== undefined) {
+    storage.set(
+      AI_ANALYSIS_CONFIG_STORAGE_KEY,
+      JSON.stringify({
+        maxChurnThreshold: 500,
+        autoRunOnCommitChange: options.autoRunOnCommitChange,
+      }),
+    );
+  }
+
   const localStorageMock: Storage = {
     get length() {
       return storage.size;
@@ -217,12 +259,14 @@ test("publish listener captures adapter failures in UI state", async () => {
 
 test("analyse listener skips sequence regeneration when analysis already has sequence steps", async () => {
   let sequenceGenerationCalls = 0;
+  const aggregate = createCommitAggregateFixture();
+  const standards = createStandardsFixture(aggregate.commit.id, aggregate.files[0]?.path ?? "");
 
   const store = createReviewStore({
     dependencies: {
       commitAnalyser: {
         analyseCommit: async () => ({
-          commitId: "commit-1",
+          commitId: aggregate.commit.id,
           overviewCards: [],
           flowComparisons: [],
           sequenceSteps: [
@@ -235,8 +279,8 @@ test("analyse listener skips sequence regeneration when analysis already has seq
             },
           ],
           fileSummaries: [],
-          standardsRules: [],
-          standardsResults: [],
+          standardsRules: standards.standardsRules,
+          standardsResults: standards.standardsResults,
         }),
       },
       sequenceDiagramGenerator: {
@@ -265,18 +309,20 @@ test("analyse listener skips sequence regeneration when analysis already has seq
 
 test("analyse listener regenerates sequence when analysis response has no sequence steps", async () => {
   let sequenceGenerationCalls = 0;
+  const aggregate = createCommitAggregateFixture();
+  const standards = createStandardsFixture(aggregate.commit.id, aggregate.files[0]?.path ?? "");
 
   const store = createReviewStore({
     dependencies: {
       commitAnalyser: {
         analyseCommit: async () => ({
-          commitId: "commit-1",
+          commitId: aggregate.commit.id,
           overviewCards: [],
           flowComparisons: [],
           sequenceSteps: [],
           fileSummaries: [],
-          standardsRules: [],
-          standardsResults: [],
+          standardsRules: standards.standardsRules,
+          standardsResults: standards.standardsResults,
         }),
       },
       sequenceDiagramGenerator: {
@@ -316,6 +362,7 @@ test("load listener analyses once per commit and reuses cached analysis on reloa
 
   let analysisCalls = 0;
   const aggregate = createCommitAggregateFixture();
+  const standards = createStandardsFixture(aggregate.commit.id, aggregate.files[0]?.path ?? "");
 
   const store = createReviewStore({
     dependencies: {
@@ -334,7 +381,15 @@ test("load listener analyses once per commit and reuses cached analysis on reloa
             commitId: aggregate.commit.id,
             overviewCards: [],
             flowComparisons: [],
-            sequenceSteps: [],
+            sequenceSteps: [
+              {
+                token: "S1",
+                sourceLabel: "UI",
+                targetLabel: "ReviewStore",
+                message: "DISPATCH analyseCommitRequested",
+                filePath: aggregate.files[0]?.path ?? "",
+              },
+            ],
             fileSummaries: [
               {
                 filePath: aggregate.files[0]?.path ?? "",
@@ -342,29 +397,8 @@ test("load listener analyses once per commit and reuses cached analysis on reloa
                 riskNote: "Low risk.",
               },
             ],
-            standardsRules: [
-              {
-                id: "rule-1",
-                title: "Add tests",
-                description: "Add tests for behavior changes.",
-                severity: "medium",
-              },
-            ],
-            standardsResults: [
-              {
-                id: `result-${aggregate.commit.id}-rule-1`,
-                commitId: aggregate.commit.id,
-                ruleId: "rule-1",
-                status: "pass",
-                summary: "Tests were updated in this commit.",
-                evidence: [
-                  {
-                    filePath: aggregate.files[0]?.path ?? "src/app/store/review/reviewListeners.ts",
-                    note: "Test file was changed.",
-                  },
-                ],
-              },
-            ],
+            standardsRules: standards.standardsRules,
+            standardsResults: standards.standardsResults,
           };
         },
       },
@@ -401,4 +435,78 @@ test("load listener analyses once per commit and reuses cached analysis on reloa
   assert.equal(analysisCalls, 1);
   assert.equal(store.getState().reviewUi.aiAnalysisStatus, "analysed");
   assert.equal(store.getState().reviewUi.standardsAnalysisStatus, "ready");
+});
+
+test("load listener reruns analysis for cached commits when auto-run-on-change is enabled", async () => {
+  installMockLocalStorage({
+    autoRunOnCommitChange: true,
+  });
+
+  let analysisCalls = 0;
+  const aggregate = createCommitAggregateFixture();
+  const standards = createStandardsFixture(aggregate.commit.id, aggregate.files[0]?.path ?? "");
+
+  const store = createReviewStore({
+    dependencies: {
+      reviewDataSource: {
+        loadCommitReview: async () => aggregate,
+        listRepositoryCommits: async () => [],
+        readCommitFileVersions: async () => ({
+          oldContent: null,
+          newContent: null,
+        }),
+      },
+      commitAnalyser: {
+        analyseCommit: async () => {
+          analysisCalls += 1;
+          return {
+            commitId: aggregate.commit.id,
+            overviewCards: [],
+            flowComparisons: [],
+            sequenceSteps: [
+              {
+                token: "S1",
+                sourceLabel: "UI",
+                targetLabel: "ReviewStore",
+                message: "DISPATCH analyseCommitRequested",
+                filePath: aggregate.files[0]?.path ?? "",
+              },
+            ],
+            fileSummaries: [],
+            standardsRules: standards.standardsRules,
+            standardsResults: standards.standardsResults,
+          };
+        },
+      },
+    },
+  });
+
+  store.dispatch(
+    loadCommitReviewRequested({
+      repositoryPath: aggregate.commit.repositoryPath,
+      commitSha: aggregate.commit.commitSha,
+      standardsRuleText: "1. Add tests for behavior changes.",
+    }),
+  );
+
+  await waitForListener();
+  await waitForListener();
+  await waitForListener();
+
+  assert.equal(analysisCalls, 1);
+
+  store.dispatch(
+    loadCommitReviewRequested({
+      repositoryPath: aggregate.commit.repositoryPath,
+      commitSha: aggregate.commit.commitSha,
+      standardsRuleText: "1. Add tests for behavior changes.",
+    }),
+  );
+
+  await waitForListener();
+  await waitForListener();
+  await waitForListener();
+
+  assert.equal(analysisCalls, 2);
+  assert.equal(store.getState().reviewUi.aiAnalysisStatus, "analysed");
 });

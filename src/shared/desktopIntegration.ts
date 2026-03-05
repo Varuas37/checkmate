@@ -143,6 +143,15 @@ export async function readSystemUserName(): Promise<string | null> {
   return envFallback;
 }
 
+export async function readClipboardTextFromDesktop(): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error("Clipboard read is available only in the desktop app.");
+  }
+
+  const value = await invokeTauri<string>("read_clipboard_text");
+  return value;
+}
+
 export async function readCmCliStatus(): Promise<CmCliStatus | null> {
   if (!isTauriRuntime()) {
     return null;

@@ -61,6 +61,7 @@ import {
   StandardsPanel,
   SummaryPanel,
   TopTabs,
+  UserCommentsModal,
 } from "../components/index.ts";
 import { useReviewWorkspace } from "../hooks/useReviewWorkspace.ts";
 import type { ReviewTabId } from "../types.ts";
@@ -216,6 +217,30 @@ function SummaryIcon() {
   );
 }
 
+function UserCommentsIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="19"
+      height="19"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M7 6.25a1.75 1.75 0 1 0-3.5 0A1.75 1.75 0 0 0 7 6.25Z" />
+      <path d="M16.5 6.25a1.75 1.75 0 1 0-3.5 0A1.75 1.75 0 0 0 16.5 6.25Z" />
+      <path d="M11.75 4.75a2.25 2.25 0 1 0-4.5 0 2.25 2.25 0 0 0 4.5 0Z" />
+      <path d="M1.75 13.75c0-1.9 1.4-3.25 3.25-3.25 1.85 0 3.25 1.35 3.25 3.25" />
+      <path d="M11.75 14c0-2.2-1.7-3.75-3.75-3.75-2.05 0-3.75 1.55-3.75 3.75" />
+      <path d="M11.75 13.75c0-1.9 1.4-3.25 3.25-3.25 1.85 0 3.25 1.35 3.25 3.25" />
+    </svg>
+  );
+}
+
 export function ReviewWorkspaceContainer() {
   const { state, actions } = useReviewWorkspace();
   const launchRequestFromLocation = useMemo(resolveLaunchRequestFromLocation, []);
@@ -250,11 +275,16 @@ export function ReviewWorkspaceContainer() {
   const [hasAttemptedAutoStart, setHasAttemptedAutoStart] = useState(false);
   const [showInlineComments, setShowInlineComments] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showUserCommentsModal, setShowUserCommentsModal] = useState(false);
+  const [selectedCommentAuthorKey, setSelectedCommentAuthorKey] = useState<string | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [storedApiKey, setStoredApiKey] = useState(() => readApiKeyFromStorage() ?? "");
   const [maxChurnThreshold, setMaxChurnThreshold] = useState(
     () => readAiAnalysisConfigFromStorage().maxChurnThreshold,
+  );
+  const [autoRunOnCommitChange, setAutoRunOnCommitChange] = useState(
+    () => readAiAnalysisConfigFromStorage().autoRunOnCommitChange,
   );
   const [projectStandardsPath, setProjectStandardsPath] = useState(() => {
     const defaultRepositoryPath =
@@ -283,8 +313,14 @@ export function ReviewWorkspaceContainer() {
   const [isBranchListLoading, setIsBranchListLoading] = useState(false);
   const [branchListError, setBranchListError] = useState<string | null>(null);
   const [branchListRefreshKey, setBranchListRefreshKey] = useState(0);
+  const [isCopyingPlan, setIsCopyingPlan] = useState(false);
+  const [copyPlanFeedback, setCopyPlanFeedback] = useState<{
+    readonly tone: "success" | "error";
+    readonly message: string;
+  } | null>(null);
   const projectSwitcherRef = useRef<HTMLDivElement | null>(null);
   const branchSwitcherRef = useRef<HTMLDivElement | null>(null);
+  const copyPlanFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const commitFeedHydratedRepositoryRef = useRef<string | null>(null);
   const launchRequest = launchRequestFromLocation ?? launchRequestFromRuntime;
 
@@ -299,6 +335,10 @@ export function ReviewWorkspaceContainer() {
 
         if (synced.maxChurnThreshold !== undefined) {
           setMaxChurnThreshold(synced.maxChurnThreshold);
+        }
+
+        if (synced.autoRunOnCommitChange !== undefined) {
+          setAutoRunOnCommitChange(synced.autoRunOnCommitChange);
         }
 
         if (synced.cliAgents !== undefined) {
@@ -404,6 +444,14 @@ export function ReviewWorkspaceContainer() {
 
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (copyPlanFeedbackTimerRef.current !== null) {
+        clearTimeout(copyPlanFeedbackTimerRef.current);
+      }
     };
   }, []);
 
@@ -678,6 +726,24 @@ export function ReviewWorkspaceContainer() {
         || pair.after.fileIds.includes(activeFileId);
     });
   }, [state.activeFileId, state.sequencePairs]);
+
+  const selectedAuthorComments = useMemo(() => {
+    if (!selectedCommentAuthorKey) {
+      return [];
+    }
+
+    return state.commitCommentActivities.filter(
+      (comment) => comment.authorKey === selectedCommentAuthorKey,
+    );
+  }, [selectedCommentAuthorKey, state.commitCommentActivities]);
+
+  const openUserCommentsView = useCallback(() => {
+    if (!selectedCommentAuthorKey && state.commentAuthors.length > 0) {
+      setSelectedCommentAuthorKey(state.commentAuthors[0]?.authorKey ?? null);
+    }
+
+    setShowUserCommentsModal(true);
+  }, [selectedCommentAuthorKey, state.commentAuthors]);
 
   const activeFeatureFilteredHunks = useMemo(() => {
     const activeFile = state.activeFile;
@@ -1109,6 +1175,22 @@ export function ReviewWorkspaceContainer() {
 
   const firstProjectSwitcherEntry = projectSwitcherEntries[0] ?? null;
   const firstFilteredBranch = filteredBranches[0] ?? null;
+
+  useEffect(() => {
+    if (state.commentAuthors.length === 0) {
+      setSelectedCommentAuthorKey(null);
+      return;
+    }
+
+    const hasSelection = selectedCommentAuthorKey
+      ? state.commentAuthors.some((author) => author.authorKey === selectedCommentAuthorKey)
+      : false;
+    if (hasSelection) {
+      return;
+    }
+
+    setSelectedCommentAuthorKey(state.commentAuthors[0]?.authorKey ?? null);
+  }, [selectedCommentAuthorKey, state.commentAuthors]);
 
   useEffect(() => {
     const normalizedRepositoryPath = normalizeInputValue(activeRepositoryPath);
@@ -1784,16 +1866,29 @@ export function ReviewWorkspaceContainer() {
               onCreateThread={actions.createThread}
               defaultAuthorId={reviewerAuthorId}
               toolbarActions={(
-                <Button
-                  size="sm"
-                  variant={showInlineComments ? "secondary" : "ghost"}
-                  onClick={() => setShowInlineComments((current) => !current)}
-                  className="h-9 w-9 px-0 text-text hover:text-text"
-                  aria-label={showInlineComments ? "Hide comments" : "Show comments"}
-                  title={showInlineComments ? "Hide comments" : "Show comments"}
-                >
-                  <CommentsIcon muted={!showInlineComments} />
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    variant={showInlineComments ? "secondary" : "ghost"}
+                    onClick={() => setShowInlineComments((current) => !current)}
+                    className="h-9 w-9 px-0 text-text hover:text-text"
+                    aria-label={showInlineComments ? "Hide comments" : "Show comments"}
+                    title={showInlineComments ? "Hide comments" : "Show comments"}
+                  >
+                    <CommentsIcon muted={!showInlineComments} />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={openUserCommentsView}
+                    className="h-9 w-9 px-0 text-text hover:text-text"
+                    aria-label="View comments by user"
+                    title="View comments by user"
+                    disabled={state.commentAuthors.length === 0}
+                  >
+                    <UserCommentsIcon />
+                  </Button>
+                </>
               )}
             />
           )}
@@ -1811,11 +1906,13 @@ export function ReviewWorkspaceContainer() {
     sequenceExplorerActiveFile,
     sequenceExplorerTabs,
     showInlineComments,
+    openUserCommentsView,
     state.activeFile,
     state.activeFileHunks,
     state.activeFileVersions,
     state.activeFileVersionsError,
     state.activeFileVersionsStatus,
+    state.commentAuthors,
     state.diffOrientation,
     state.diffViewMode,
     state.threadModels,
@@ -1963,6 +2060,7 @@ export function ReviewWorkspaceContainer() {
           }}
           className="inline-flex h-7 items-center gap-1.5 rounded-sm px-1.5 text-muted transition-colors hover:bg-elevated/45 hover:text-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/65"
           aria-label="Open branch switcher"
+          title="Open branch switcher"
         >
           <span className="truncate">{activeBranchLabel}</span>
           <svg
@@ -2067,6 +2165,51 @@ export function ReviewWorkspaceContainer() {
     </div>
   );
 
+  const showCopyPlanFeedback = useCallback(
+    (tone: "success" | "error", message: string) => {
+      if (copyPlanFeedbackTimerRef.current !== null) {
+        clearTimeout(copyPlanFeedbackTimerRef.current);
+      }
+
+      setCopyPlanFeedback({
+        tone,
+        message,
+      });
+
+      copyPlanFeedbackTimerRef.current = setTimeout(() => {
+        setCopyPlanFeedback(null);
+        copyPlanFeedbackTimerRef.current = null;
+      }, 4000);
+    },
+    [],
+  );
+
+  const handleCopyPlan = useCallback(() => {
+    if (isCopyingPlan) {
+      return;
+    }
+
+    setIsCopyingPlan(true);
+    void actions.copyPlanToClipboard()
+      .then((result) => {
+        if (result.ok) {
+          showCopyPlanFeedback("success", result.message);
+          return;
+        }
+
+        showCopyPlanFeedback("error", result.message);
+      })
+      .catch((error) => {
+        const message = error instanceof Error
+          ? error.message
+          : "Failed to copy plan to clipboard.";
+        showCopyPlanFeedback("error", message);
+      })
+      .finally(() => {
+        setIsCopyingPlan(false);
+      });
+  }, [actions, isCopyingPlan, showCopyPlanFeedback]);
+
   const header = (
     <header className="bg-surface/85 backdrop-blur-sm">
       <div className="relative flex h-11 items-center bg-transparent pr-3">
@@ -2122,6 +2265,16 @@ export function ReviewWorkspaceContainer() {
             ))}
           </select>
           <Button
+            variant="secondary"
+            size="sm"
+            className="h-8 px-2 text-[11px] font-medium"
+            onClick={actions.refreshAiAnalysis}
+            disabled={!state.commit || state.aiAnalysisStatus === "analysing"}
+            title="Run AI analysis for the selected commit"
+          >
+            {state.aiAnalysisStatus === "analysing" ? "Running AI..." : "Run AI Analysis"}
+          </Button>
+          <Button
             variant="ghost"
             size="sm"
             onClick={() => setShowSettings(true)}
@@ -2147,23 +2300,19 @@ export function ReviewWorkspaceContainer() {
           </Button>
           <Button
             size="sm"
-            onClick={actions.publishReview}
-            disabled={!state.isPublishingReady || state.publishStatus === "publishing"}
+            onClick={handleCopyPlan}
+            disabled={!state.isPublishingReady || isCopyingPlan}
           >
-            {state.publishStatus === "publishing" ? "Publishing..." : "Publish Review"}
+            {isCopyingPlan ? "Copying..." : "Copy Plan"}
           </Button>
         </div>
       </div>
 
-      {(state.publishError || state.publishResult) && (
+      {copyPlanFeedback && (
         <div className="border-b border-border px-4 py-1 text-xs">
-          {state.publishError ? (
-            <p className="text-danger">Claude publish failed: {state.publishError}</p>
-          ) : (
-            <p className="whitespace-pre-wrap break-words text-muted">
-              Claude published `{state.publishResult?.publicationId}`: {state.publishResult?.summary}
-            </p>
-          )}
+          <p className={copyPlanFeedback.tone === "error" ? "text-danger" : "text-muted"}>
+            {copyPlanFeedback.message}
+          </p>
         </div>
       )}
 
@@ -2312,6 +2461,17 @@ export function ReviewWorkspaceContainer() {
           >
             <SummaryIcon />
           </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={openUserCommentsView}
+            className="h-9 w-9 px-0 text-text hover:text-text"
+            aria-label="View comments by user"
+            title="View comments by user"
+            disabled={state.commentAuthors.length === 0}
+          >
+            <UserCommentsIcon />
+          </Button>
         </>
       );
 
@@ -2351,6 +2511,7 @@ export function ReviewWorkspaceContainer() {
                     fileSummary={activeFileSummary}
                     relatedFeatures={activeFileFeatureSummaries}
                     aiAnalysisStatus={state.aiAnalysisStatus}
+                    onRetryAiAnalysis={actions.refreshAiAnalysis}
                     onOpenFeatureFiles={(fileIds) => {
                       const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
                       if (uniqueFileIds.length === 0) {
@@ -2405,10 +2566,8 @@ export function ReviewWorkspaceContainer() {
             overviewCards={state.overviewCards}
             impactClusters={state.architectureClusters}
             featureSummaries={state.sequencePairs}
-            publishPackage={state.publishPackage}
-            publishStatus={state.publishStatus}
-            canPublish={state.isPublishingReady}
             aiAnalysisStatus={state.aiAnalysisStatus}
+            onRetryAiAnalysis={actions.refreshAiAnalysis}
             onOpenImpactFiles={(fileIds) => {
               const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
               if (uniqueFileIds.length === 0) {
@@ -2441,7 +2600,6 @@ export function ReviewWorkspaceContainer() {
               actions.setFileInspectionMode("diff");
               setActiveTab("files");
             }}
-            onPublishReview={actions.publishReview}
           />
         </div>
       );
@@ -2514,13 +2672,9 @@ export function ReviewWorkspaceContainer() {
     state.errorMessage,
     state.fileInspectionMode,
     state.fileSummaries,
-    state.isPublishingReady,
+    state.commentAuthors,
     state.loadStatus,
     state.overviewCards,
-    state.publishPackage,
-    state.publishStatus,
-    state.publishResult,
-    state.publishError,
     state.sequencePairs,
     state.codeSequenceSteps,
     state.aiAnalysisStatus,
@@ -2541,6 +2695,7 @@ export function ReviewWorkspaceContainer() {
     activeFileHunkFeatureLabelsById,
     filesById,
     showInlineComments,
+    openUserCommentsView,
     reviewerAuthorId,
     isSequenceExplorerOpen,
     openSequenceFilesInExplorer,
@@ -2601,6 +2756,7 @@ export function ReviewWorkspaceContainer() {
           open={showSettings}
           initialApiKey={storedApiKey}
           initialMaxChurn={maxChurnThreshold}
+          initialAutoRunOnCommitChange={autoRunOnCommitChange}
           initialProjectStandardsPath={projectStandardsPath}
           initialCliAgents={cliAgentsSettings}
           activeRepositoryPath={activeRepositoryPath}
@@ -2625,6 +2781,11 @@ export function ReviewWorkspaceContainer() {
             writeAiAnalysisConfigToStorage({ maxChurnThreshold: n });
             setMaxChurnThreshold(n);
             void writeAppSettingsFile({ maxChurnThreshold: n });
+          }}
+          onSaveAutoRunOnCommitChange={(enabled) => {
+            writeAiAnalysisConfigToStorage({ autoRunOnCommitChange: enabled });
+            setAutoRunOnCommitChange(enabled);
+            void writeAppSettingsFile({ autoRunOnCommitChange: enabled });
           }}
           onSaveProjectStandardsPath={(standardsPath) => {
             writeProjectStandardsPathToStorage(activeRepositoryPath, standardsPath);
@@ -2681,6 +2842,7 @@ export function ReviewWorkspaceContainer() {
         open={showSettings}
         initialApiKey={storedApiKey}
         initialMaxChurn={maxChurnThreshold}
+        initialAutoRunOnCommitChange={autoRunOnCommitChange}
         initialProjectStandardsPath={projectStandardsPath}
         initialCliAgents={cliAgentsSettings}
         activeRepositoryPath={activeRepositoryPath}
@@ -2706,6 +2868,11 @@ export function ReviewWorkspaceContainer() {
           setMaxChurnThreshold(n);
           void writeAppSettingsFile({ maxChurnThreshold: n });
         }}
+        onSaveAutoRunOnCommitChange={(enabled) => {
+          writeAiAnalysisConfigToStorage({ autoRunOnCommitChange: enabled });
+          setAutoRunOnCommitChange(enabled);
+          void writeAppSettingsFile({ autoRunOnCommitChange: enabled });
+        }}
         onSaveProjectStandardsPath={(standardsPath) => {
           writeProjectStandardsPathToStorage(activeRepositoryPath, standardsPath);
           setProjectStandardsPath(standardsPath);
@@ -2717,6 +2884,14 @@ export function ReviewWorkspaceContainer() {
         }}
         onTestCliConnection={testCliAgentConnection}
         onClose={() => setShowSettings(false)}
+      />
+      <UserCommentsModal
+        open={showUserCommentsModal}
+        authors={state.commentAuthors}
+        selectedAuthorKey={selectedCommentAuthorKey}
+        comments={selectedAuthorComments}
+        onSelectAuthorKey={(authorKey) => setSelectedCommentAuthorKey(authorKey)}
+        onClose={() => setShowUserCommentsModal(false)}
       />
       <CommandPalette
         open={showCommandPalette}

@@ -9,6 +9,7 @@ import {
 export interface AppSettingsFile {
   readonly apiKey?: string;
   readonly maxChurnThreshold?: number;
+  readonly autoRunOnCommitChange?: boolean;
   readonly cliAgents?: CliAgentsSettings;
 }
 
@@ -35,6 +36,10 @@ function normalizeAppSettingsFile(value: unknown): AppSettingsFile {
 
   if (typeof obj["maxChurnThreshold"] === "number" && obj["maxChurnThreshold"] >= 0) {
     result["maxChurnThreshold"] = Math.floor(obj["maxChurnThreshold"]);
+  }
+
+  if (typeof obj["autoRunOnCommitChange"] === "boolean") {
+    result["autoRunOnCommitChange"] = obj["autoRunOnCommitChange"];
   }
 
   if (obj["cliAgents"] && typeof obj["cliAgents"] === "object") {
@@ -88,6 +93,10 @@ export async function writeAppSettingsFile(patch: Partial<AppSettingsFile>): Pro
       next["maxChurnThreshold"] = patch.maxChurnThreshold;
     }
 
+    if ("autoRunOnCommitChange" in patch) {
+      next["autoRunOnCommitChange"] = patch.autoRunOnCommitChange;
+    }
+
     if ("cliAgents" in patch) {
       next["cliAgents"] = patch.cliAgents;
     }
@@ -105,6 +114,7 @@ export async function writeAppSettingsFile(patch: Partial<AppSettingsFile>): Pro
 export async function readAndSyncAppSettingsFile(): Promise<{
   readonly apiKey?: string;
   readonly maxChurnThreshold?: number;
+  readonly autoRunOnCommitChange?: boolean;
   readonly cliAgents?: CliAgentsSettings;
 }> {
   const settings = await readAppSettingsFile();
@@ -115,6 +125,7 @@ export async function readAndSyncAppSettingsFile(): Promise<{
   const result: {
     apiKey?: string;
     maxChurnThreshold?: number;
+    autoRunOnCommitChange?: boolean;
     cliAgents?: CliAgentsSettings;
   } = {};
 
@@ -129,6 +140,13 @@ export async function readAndSyncAppSettingsFile(): Promise<{
   if (settings.maxChurnThreshold !== undefined) {
     writeAiAnalysisConfigToStorage({ maxChurnThreshold: settings.maxChurnThreshold });
     result.maxChurnThreshold = settings.maxChurnThreshold;
+  }
+
+  if (settings.autoRunOnCommitChange !== undefined) {
+    writeAiAnalysisConfigToStorage({
+      autoRunOnCommitChange: settings.autoRunOnCommitChange,
+    });
+    result.autoRunOnCommitChange = settings.autoRunOnCommitChange;
   }
 
   if (settings.cliAgents !== undefined) {

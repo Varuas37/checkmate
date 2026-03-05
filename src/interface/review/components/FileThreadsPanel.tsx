@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { Badge, Button, Card, CardBody, CardDescription, CardHeader, CardTitle, Input, Textarea } from "../../../design-system/index.ts";
-import type { PublishReviewPackage } from "../../../application/review/index.ts";
 import type { ChangedFile, CommentSide, DiffHunk } from "../../../domain/review/index.ts";
 import {
   applyCheckmateMentionSuggestion,
@@ -18,10 +17,8 @@ export interface FileThreadsPanelProps {
   readonly file: ChangedFile | null;
   readonly hunks: readonly DiffHunk[];
   readonly threads: readonly ThreadViewModel[];
-  readonly publishPackage: PublishReviewPackage | null;
   readonly onCreateThread: (input: CreateThreadInput) => { readonly ok: boolean; readonly message: string };
   readonly onAskAgent: (threadId: string, prompt: string) => void;
-  readonly onPublishReview: () => void;
 }
 
 function toneForThread(status: "open" | "resolved"): "accent" | "positive" {
@@ -33,10 +30,8 @@ export function FileThreadsPanel({
   file,
   hunks,
   threads,
-  publishPackage,
   onCreateThread,
   onAskAgent,
-  onPublishReview,
 }: FileThreadsPanelProps) {
   const [selectedHunkId, setSelectedHunkId] = useState("");
   const [lineNumber, setLineNumber] = useState(1);
@@ -66,24 +61,6 @@ export function FileThreadsPanel({
     setLineNumber(Math.max(1, firstHunk.newStart));
   }, [hunks]);
 
-  const activeFilePublishPayload = useMemo(() => {
-    if (!publishPackage || !file) {
-      return null;
-    }
-
-    return publishPackage.files.find((entry) => entry.id === file.id) ?? null;
-  }, [file, publishPackage]);
-
-  const payloadPreview = useMemo(() => {
-    const source = activeFilePublishPayload ?? publishPackage;
-
-    if (!source) {
-      return null;
-    }
-
-    return JSON.stringify(source, null, 2);
-  }, [activeFilePublishPayload, publishPackage]);
-
   const canCreateThread = Boolean(commitId && file && selectedHunkId.length > 0);
   const bodyMentionSuggestion = useMemo(() => getCheckmateMentionSuggestion(body), [body]);
   const bodyHasMention = useMemo(() => hasCheckmateMention(body), [body]);
@@ -98,9 +75,6 @@ export function FileThreadsPanel({
               {file ? `Discussion for ${file.path}` : "Select a file to add threaded comments."}
             </CardDescription>
           </div>
-          <Button size="sm" variant="secondary" onClick={onPublishReview} disabled={!commitId}>
-            Publish Review
-          </Button>
         </div>
       </CardHeader>
 
@@ -367,12 +341,6 @@ export function FileThreadsPanel({
           )}
         </div>
 
-        {payloadPreview && (
-          <div className="space-y-2 rounded-md border border-border bg-elevated/40 p-3">
-            <h4 className="font-display text-sm font-semibold">Publish Payload Preview</h4>
-            <pre className="max-h-56 overflow-auto rounded-md bg-surface p-2 font-mono text-xs text-text">{payloadPreview}</pre>
-          </div>
-        )}
       </CardBody>
     </Card>
   );

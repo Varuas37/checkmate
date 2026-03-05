@@ -41,6 +41,7 @@ export {
 
 export { createAskAgentDraft } from "./useCases/askAgentDraft.ts";
 export { createCommentThread } from "./useCases/commentCreation.ts";
+export { createCommentThreadPlanMarkdown } from "./useCases/commentPlan.ts";
 export { toggleDiffOrientation } from "./useCases/diffOrientation.ts";
 export { applyFileFilter } from "./useCases/fileFiltering.ts";
 export { createPublishReviewPackage, mapHunksById } from "./useCases/publishPackage.ts";

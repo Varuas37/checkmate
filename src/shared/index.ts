@@ -84,6 +84,7 @@ export {
   initializeAgentTracking,
   installCmCliInPath,
   readAgentTrackingStatus,
+  readClipboardTextFromDesktop,
   readCmCliStatus,
   readLaunchRequestFromRuntime,
   removeAgentTracking,
