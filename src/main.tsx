@@ -15,6 +15,7 @@ if (!rootElement) {
 const ensuredRootElement: HTMLElement = rootElement;
 
 let root: ReactDOM.Root | null = null;
+let isStartupErrorCaptureActive = true;
 
 function getRoot(): ReactDOM.Root {
   if (!root) {
@@ -62,11 +63,33 @@ function renderStartupError(title: string, error: unknown): void {
   );
 }
 
+function shouldIgnoreStartupRuntimeError(error: unknown): boolean {
+  const details = formatErrorDetails(error);
+  return details.includes("@react-refresh") || details.includes("scheduleRefresh");
+}
+
 window.addEventListener("error", (event) => {
-  renderStartupError("Runtime Error", event.error ?? event.message);
+  if (!isStartupErrorCaptureActive) {
+    return;
+  }
+
+  const details = event.error ?? event.message;
+  if (shouldIgnoreStartupRuntimeError(details)) {
+    return;
+  }
+
+  renderStartupError("Runtime Error", details);
 });
 
 window.addEventListener("unhandledrejection", (event) => {
+  if (!isStartupErrorCaptureActive) {
+    return;
+  }
+
+  if (shouldIgnoreStartupRuntimeError(event.reason)) {
+    return;
+  }
+
   renderStartupError("Unhandled Promise Rejection", event.reason);
 });
 
@@ -80,7 +103,14 @@ async function bootstrap(): Promise<void> {
         <App />
       </React.StrictMode>,
     );
+
+    // Limit fatal startup interception to the boot sequence.
+    // After mount, let App-level boundaries/dev tooling handle runtime errors.
+    queueMicrotask(() => {
+      isStartupErrorCaptureActive = false;
+    });
   } catch (error) {
+    isStartupErrorCaptureActive = false;
     renderStartupError("Application Bootstrap Failed", error);
   }
 }
