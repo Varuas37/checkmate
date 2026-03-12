@@ -1,33 +1,71 @@
 const STORAGE_KEY = "codelens-cli-agents-settings";
 
+export type AiProviderPreference = "api" | "local-agent";
+export type LocalAgentTransport = "acp" | "cli";
+
 export interface CliAgentConfig {
   readonly id: string;
   readonly name: string;
-  /** Binary name or full path, e.g. "claude" or "/usr/local/bin/gemini" */
+  /** Binary name or full path for the legacy CLI transport, e.g. "claude". */
   readonly command: string;
-  /** Arguments inserted between the command and the prompt, e.g. ["-p"] for claude */
+  /** Arguments inserted between the legacy CLI command and the prompt. */
   readonly promptArgs: readonly string[];
+  /** Binary name or full path for the ACP adapter, e.g. "claude-code-acp". */
+  readonly acpCommand: string;
+  /** Arguments passed to the ACP adapter command. */
+  readonly acpArgs: readonly string[];
 }
 
 export interface CliAgentsSettings {
   readonly agents: readonly CliAgentConfig[];
   readonly activeAgentId: string | null;
-  /** When true, the active CLI agent is tried before the Anthropic SDK API. */
-  readonly preferCliOverApi: boolean;
+  readonly preferredProvider: AiProviderPreference;
+  readonly fallbackToSecondary: boolean;
+  readonly localTransport: LocalAgentTransport;
 }
 
 export const DEFAULT_CLI_AGENTS: readonly CliAgentConfig[] = [
-  { id: "claude-code", name: "Claude Code", command: "claude", promptArgs: ["-p"] },
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    command: "claude",
+    promptArgs: ["-p"],
+    acpCommand: "claude-code-acp",
+    acpArgs: [],
+  },
   // `codex exec` is the non-interactive mode suitable for app-driven prompts.
-  { id: "codex", name: "Codex CLI", command: "codex", promptArgs: ["exec"] },
-  { id: "gemini", name: "Gemini CLI", command: "gemini", promptArgs: [] },
+  {
+    id: "codex",
+    name: "Codex CLI",
+    command: "codex",
+    promptArgs: ["exec"],
+    acpCommand: "codex-acp",
+    acpArgs: [],
+  },
 ];
 
 const DEFAULT_SETTINGS: CliAgentsSettings = {
   agents: DEFAULT_CLI_AGENTS,
-  activeAgentId: null,
-  preferCliOverApi: false,
+  activeAgentId: "codex",
+  preferredProvider: "api",
+  fallbackToSecondary: true,
+  localTransport: "acp",
 };
+
+function defaultAcpCommandForAgent(id: string, command: string): string {
+  const normalizedId = id.trim().toLowerCase();
+  const normalizedCommand = command.trim().toLowerCase();
+
+  if (normalizedId === "claude-code" || normalizedCommand === "claude") {
+    return "claude-code-acp";
+  }
+
+  if (normalizedId === "codex" || normalizedCommand === "codex") {
+    return "codex-acp";
+  }
+
+  return "";
+}
 
 function normalizeCliAgentConfig(value: unknown): CliAgentConfig | null {
   if (!value || typeof value !== "object") {
@@ -40,6 +78,11 @@ function normalizeCliAgentConfig(value: unknown): CliAgentConfig | null {
   const command = typeof obj["command"] === "string" ? obj["command"].trim() : "";
   const promptArgs = Array.isArray(obj["promptArgs"])
     ? (obj["promptArgs"] as unknown[]).filter((a): a is string => typeof a === "string")
+    : [];
+  const acpCommand =
+    typeof obj["acpCommand"] === "string" ? obj["acpCommand"].trim() : "";
+  const acpArgs = Array.isArray(obj["acpArgs"])
+    ? (obj["acpArgs"] as unknown[]).filter((a): a is string => typeof a === "string")
     : [];
 
   if (id.length === 0 || command.length === 0) {
@@ -61,6 +104,8 @@ function normalizeCliAgentConfig(value: unknown): CliAgentConfig | null {
     name: name.length > 0 ? name : id,
     command,
     promptArgs: normalizedPromptArgs,
+    acpCommand: acpCommand.length > 0 ? acpCommand : defaultAcpCommandForAgent(id, command),
+    acpArgs,
   };
 }
 
@@ -81,13 +126,41 @@ function normalizeCliAgentsSettings(value: unknown): CliAgentsSettings {
   const activeAgentId =
     typeof obj["activeAgentId"] === "string" ? obj["activeAgentId"].trim() || null : null;
 
-  const preferCliOverApi =
-    typeof obj["preferCliOverApi"] === "boolean" ? obj["preferCliOverApi"] : false;
+  const preferredProviderRaw =
+    typeof obj["preferredProvider"] === "string" ? obj["preferredProvider"].trim() : "";
+  const preferredProvider: AiProviderPreference =
+    preferredProviderRaw === "local-agent" || preferredProviderRaw === "api"
+      ? preferredProviderRaw
+      : typeof obj["preferCliOverApi"] === "boolean" && obj["preferCliOverApi"]
+        ? "local-agent"
+        : DEFAULT_SETTINGS.preferredProvider;
+
+  const fallbackToSecondary =
+    typeof obj["fallbackToSecondary"] === "boolean"
+      ? obj["fallbackToSecondary"]
+      : DEFAULT_SETTINGS.fallbackToSecondary;
+
+  const hasExplicitLocalTransport =
+    obj["localTransport"] === "acp" || obj["localTransport"] === "cli";
+  const activeAgent =
+    (activeAgentId
+      ? agents.find((agent) => agent.id === activeAgentId) ?? null
+      : null) ??
+    null;
+  const localTransport: LocalAgentTransport = hasExplicitLocalTransport
+    ? (obj["localTransport"] as LocalAgentTransport)
+    : typeof obj["preferCliOverApi"] === "boolean"
+      ? "cli"
+      : activeAgent && activeAgent.acpCommand.trim().length === 0
+        ? "cli"
+        : DEFAULT_SETTINGS.localTransport;
 
   return {
     agents: agents.length > 0 ? agents : [...DEFAULT_CLI_AGENTS],
     activeAgentId,
-    preferCliOverApi,
+    preferredProvider,
+    fallbackToSecondary,
+    localTransport,
   };
 }
 
@@ -123,5 +196,17 @@ export function readActiveCliAgentFromStorage(): CliAgentConfig | null {
 }
 
 export function readCliPreferenceFromStorage(): boolean {
-  return readCliAgentsSettingsFromStorage().preferCliOverApi;
+  return readCliAgentsSettingsFromStorage().preferredProvider === "local-agent";
+}
+
+export function readPreferredProviderFromStorage(): AiProviderPreference {
+  return readCliAgentsSettingsFromStorage().preferredProvider;
+}
+
+export function readLocalAgentTransportFromStorage(): LocalAgentTransport {
+  return readCliAgentsSettingsFromStorage().localTransport;
+}
+
+export function readFallbackToSecondaryFromStorage(): boolean {
+  return readCliAgentsSettingsFromStorage().fallbackToSecondary;
 }

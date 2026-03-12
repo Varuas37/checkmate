@@ -5,6 +5,13 @@ import type {
   StandardsResult,
 } from "../../domain/review/index.ts";
 import { readApiKeyFromStorage } from "../../shared/index.ts";
+import {
+  canUseApiProvider,
+  resolveAiProviderState,
+  resolveSecondaryProvider,
+  runPreferredLocalAgentPrompt,
+  shouldPreferLocalAgent,
+} from "./providerRouting.ts";
 import { parseStandardsRulesFromText } from "./standardsRuleTextEvaluator.ts";
 
 interface ClaudeSdkClient {
@@ -30,10 +37,6 @@ const DEFAULT_SYSTEM_PROMPT =
 const MAX_FILES_IN_PROMPT = 40;
 const MAX_HUNKS_IN_PROMPT = 16;
 const MAX_LINES_PER_HUNK = 20;
-
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
 
 function trimToNull(value: string | null | undefined): string | null {
   if (!value) {
@@ -100,15 +103,6 @@ function isMissingClaudeSdkError(error: unknown): boolean {
 
   const message = error.message.toLowerCase();
   return message.includes("@anthropic-ai/sdk") || message.includes("anthropic constructor");
-}
-
-async function runClaudePromptViaTauri(prompt: string): Promise<string> {
-  if (!isTauriRuntime()) {
-    throw new Error("Claude CLI fallback is available only in Tauri runtime.");
-  }
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("run_claude_prompt", { prompt });
 }
 
 function extractTextFromResponse(response: unknown): string {
@@ -372,18 +366,43 @@ export class ClaudeSdkStandardsAnalyser implements StandardsAnalyser {
   async analyseStandards(input: AnalyseStandardsInput): Promise<StandardsEvaluationOutput> {
     const prompt = buildPrompt(input);
     const resolvedApiKey = this.#resolveApiKey();
+    const providerState = resolveAiProviderState(resolvedApiKey);
+    const secondaryProvider = resolveSecondaryProvider(providerState);
 
-    if (!resolvedApiKey) {
-      const cliResponse = await runClaudePromptViaTauri(prompt);
-      const parsed = parseAnalysis(cliResponse, input);
+    if (shouldPreferLocalAgent(providerState)) {
+      try {
+        const localResponse = await runPreferredLocalAgentPrompt(
+          prompt,
+          input.commit.repositoryPath,
+          providerState,
+        );
+        const parsed = parseAnalysis(localResponse, input);
+        if (!parsed) {
+          throw new Error("Local-agent standards response was not valid JSON.");
+        }
+        return parsed;
+      } catch (error) {
+        if (secondaryProvider !== "api" || !canUseApiProvider(providerState)) {
+          throw error;
+        }
+      }
+    }
+
+    if (!canUseApiProvider(providerState)) {
+      const localResponse = await runPreferredLocalAgentPrompt(
+        prompt,
+        input.commit.repositoryPath,
+        providerState,
+      );
+      const parsed = parseAnalysis(localResponse, input);
       if (!parsed) {
-        throw new Error("Claude CLI standards response was not valid JSON.");
+        throw new Error("Local-agent standards response was not valid JSON.");
       }
       return parsed;
     }
 
     try {
-      const client = await this.#createClient(resolvedApiKey);
+      const client = await this.#createClient(providerState.apiKey as string);
       const response = await client.messages.create({
         model: this.#model,
         max_tokens: this.#maxOutputTokens,
@@ -398,14 +417,18 @@ export class ClaudeSdkStandardsAnalyser implements StandardsAnalyser {
 
       return parsed;
     } catch (error) {
-      if (!isTauriRuntime() || !isMissingClaudeSdkError(error)) {
+      if (secondaryProvider !== "local-agent" || !isMissingClaudeSdkError(error)) {
         throw error;
       }
 
-      const cliResponse = await runClaudePromptViaTauri(prompt);
-      const parsed = parseAnalysis(cliResponse, input);
+      const localResponse = await runPreferredLocalAgentPrompt(
+        prompt,
+        input.commit.repositoryPath,
+        providerState,
+      );
+      const parsed = parseAnalysis(localResponse, input);
       if (!parsed) {
-        throw new Error("Claude CLI standards response was not valid JSON.");
+        throw new Error("Local-agent standards response was not valid JSON.");
       }
       return parsed;
     }

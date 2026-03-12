@@ -4,11 +4,16 @@ import type {
   ReviewPublisher,
 } from "../../domain/review/index.ts";
 import {
-  readActiveCliAgentFromStorage,
   readApiKeyFromStorage,
-  readCliPreferenceFromStorage,
   startLatencyTrace,
 } from "../../shared/index.ts";
+import {
+  canUseApiProvider,
+  resolveAiProviderState,
+  resolveSecondaryProvider,
+  runPreferredLocalAgentPrompt,
+  shouldPreferLocalAgent,
+} from "./providerRouting.ts";
 
 interface SdkClient {
   readonly messages: {
@@ -26,14 +31,10 @@ interface SdkClient {
 
 type SdkClientFactory = (apiKey: string) => Promise<SdkClient>;
 
-const DEFAULT_PROVIDER_MODEL = "claude-sonnet-4-6";
+const DEFAULT_PROVIDER_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_MAX_OUTPUT_TOKENS = 900;
 const DEFAULT_SYSTEM_PROMPT =
   "You are assisting with publishing structured code-review feedback for downstream agent actions.";
-
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
 
 function trimToNull(value: string | null | undefined): string | null {
   if (!value) {
@@ -212,30 +213,6 @@ async function createSdkClient(apiKey: string): Promise<SdkClient> {
   return client;
 }
 
-async function runFallbackPromptViaTauri(prompt: string): Promise<string> {
-  if (!isTauriRuntime()) {
-    throw new Error("Fallback CLI is available only in Tauri runtime.");
-  }
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("run_claude_prompt", {
-    prompt,
-  });
-}
-
-async function runCliAgentPromptViaTauri(
-  command: string,
-  args: readonly string[],
-  prompt: string,
-): Promise<string> {
-  if (!isTauriRuntime()) {
-    throw new Error("CLI agent is available only in Tauri runtime.");
-  }
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("run_cli_agent_prompt", { command, args: [...args], prompt });
-}
-
 export interface AgentReviewPublisherOptions {
   readonly apiKey?: string;
   readonly model?: string;
@@ -280,41 +257,10 @@ export class AgentReviewPublisher implements ReviewPublisher {
 
     const prompt = this.#createPrompt(input);
     const resolvedApiKey = this.#resolveApiKey();
-    const preferCli = readCliPreferenceFromStorage();
-    const activeCliAgent = readActiveCliAgentFromStorage();
-
-    const runViaCli = async (): Promise<string> => {
-      if (activeCliAgent && isTauriRuntime()) {
-        try {
-          return await runCliAgentPromptViaTauri(
-            activeCliAgent.command,
-            activeCliAgent.promptArgs,
-            prompt,
-          );
-        } catch (activeCliError) {
-          const normalizedCommand = activeCliAgent.command.trim().toLowerCase();
-          if (normalizedCommand === "claude") {
-            throw activeCliError;
-          }
-
-          try {
-            return await runFallbackPromptViaTauri(prompt);
-          } catch (fallbackCliError) {
-            const activeMessage =
-              activeCliError instanceof Error ? activeCliError.message : "CLI execution failed.";
-            const fallbackMessage =
-              fallbackCliError instanceof Error
-                ? fallbackCliError.message
-                : "Fallback CLI execution failed.";
-            throw new Error(
-              `Primary CLI agent "${activeCliAgent.name}" failed (${activeMessage}) and fallback CLI failed (${fallbackMessage}).`,
-            );
-          }
-        }
-      }
-
-      return runFallbackPromptViaTauri(prompt);
-    };
+    const providerState = resolveAiProviderState(resolvedApiKey);
+    const secondaryProvider = resolveSecondaryProvider(providerState);
+    const runViaLocalAgent = async (): Promise<string> =>
+      runPreferredLocalAgentPrompt(prompt, undefined, providerState);
 
     const buildCliResult = (raw: string): PublishReviewResult => {
       const summary = raw.trim();
@@ -332,51 +278,54 @@ export class AgentReviewPublisher implements ReviewPublisher {
 
     // Prefer CLI over API: try configured CLI first, fall back to SDK.
     try {
-      if (preferCli && activeCliAgent && isTauriRuntime()) {
-        trace.mark("review-publish-cli-preferred", {
-          cliAgent: activeCliAgent.id,
+      if (shouldPreferLocalAgent(providerState)) {
+        trace.mark("review-publish-local-preferred", {
+          localAgent: providerState.localAgent?.id ?? null,
+          transport: providerState.localTransport,
         });
         try {
           const startedAt = nowForTrace();
-          const cliResponse = await runViaCli();
-          trace.mark("review-publish-cli-response", {
+          const localResponse = await runViaLocalAgent();
+          trace.mark("review-publish-local-response", {
             elapsedMs: durationMsSince(startedAt),
           });
-          const result = buildCliResult(cliResponse);
+          const result = buildCliResult(localResponse);
           traceSummaryFields = {
-            provider: "cli",
+            provider: providerState.localTransport,
             path: "preferred",
           };
           return result;
         } catch (error) {
-          if (!resolvedApiKey) {
-            const message = error instanceof Error ? error.message : "CLI execution failed.";
+          if (secondaryProvider !== "api" || !canUseApiProvider(providerState)) {
+            const message = error instanceof Error ? error.message : "Local-agent execution failed.";
             throw new Error(
-              `Primary CLI agent "${activeCliAgent.name}" failed and no API key is available for SDK fallback (${message}).`,
+              `Local-agent review publishing failed and no API fallback is available (${message}).`,
             );
           }
-          // CLI failed — fall through to SDK.
         }
       }
 
-      if (!resolvedApiKey) {
-        trace.mark("review-publish-cli-required");
+      if (!canUseApiProvider(providerState)) {
+        trace.mark("review-publish-local-required", {
+          localAgent: providerState.localAgent?.id ?? null,
+          transport: providerState.localTransport,
+        });
         try {
           const startedAt = nowForTrace();
-          const cliResponse = await runViaCli();
-          trace.mark("review-publish-cli-response", {
+          const localResponse = await runViaLocalAgent();
+          trace.mark("review-publish-local-response", {
             elapsedMs: durationMsSince(startedAt),
           });
-          const result = buildCliResult(cliResponse);
+          const result = buildCliResult(localResponse);
           traceSummaryFields = {
-            provider: "cli",
+            provider: providerState.localTransport,
             path: "required",
           };
           return result;
         } catch (error) {
-          const message = error instanceof Error ? error.message : "CLI fallback failed.";
+          const message = error instanceof Error ? error.message : "Local-agent execution failed.";
           throw new Error(
-            `Publish requires ANTHROPIC_API_KEY or a configured CLI agent (${message}).`,
+            `Review publishing requires a working Anthropic API key or configured local agent (${message}).`,
           );
         }
       }
@@ -386,7 +335,7 @@ export class AgentReviewPublisher implements ReviewPublisher {
         trace.mark("review-publish-sdk-client-create-start", {
           model: this.#model,
         });
-        const client = await this.#createClient(resolvedApiKey);
+        const client = await this.#createClient(providerState.apiKey as string);
         trace.mark("review-publish-sdk-client-create-complete", {
           elapsedMs: durationMsSince(clientStartedAt),
         });
@@ -424,27 +373,28 @@ export class AgentReviewPublisher implements ReviewPublisher {
           summary,
         };
       } catch (error) {
-        if (!isTauriRuntime() || !isMissingSdkClientError(error)) {
+        if (secondaryProvider !== "local-agent" || !isMissingSdkClientError(error)) {
           throw error;
         }
 
         try {
-          trace.mark("review-publish-sdk-missing-cli-fallback");
+          trace.mark("review-publish-sdk-missing-local-fallback");
           const startedAt = nowForTrace();
-          const cliResponse = await runViaCli();
-          trace.mark("review-publish-cli-fallback-response", {
+          const localResponse = await runViaLocalAgent();
+          trace.mark("review-publish-local-fallback-response", {
             elapsedMs: durationMsSince(startedAt),
           });
-          const result = buildCliResult(cliResponse);
+          const result = buildCliResult(localResponse);
           traceSummaryFields = {
-            provider: "cli-fallback",
+            provider: `${providerState.localTransport}-fallback`,
           };
           return result;
         } catch (cliError) {
           const sdkMessage = error instanceof Error ? error.message : "AI SDK client setup failed.";
-          const cliMessage = cliError instanceof Error ? cliError.message : "CLI fallback failed.";
+          const cliMessage =
+            cliError instanceof Error ? cliError.message : "Local-agent fallback failed.";
           throw new Error(
-            `Publish failed in SDK path (${sdkMessage}) and CLI fallback (${cliMessage}).`,
+            `Publish failed in API path (${sdkMessage}) and local-agent fallback (${cliMessage}).`,
           );
         }
       }

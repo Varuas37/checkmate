@@ -65,12 +65,17 @@ export {
 } from "./commentImageStorage.ts";
 export {
   DEFAULT_CLI_AGENTS,
+  readFallbackToSecondaryFromStorage,
   readActiveCliAgentFromStorage,
   readCliAgentsSettingsFromStorage,
   readCliPreferenceFromStorage,
+  readLocalAgentTransportFromStorage,
+  readPreferredProviderFromStorage,
   writeCliAgentsSettingsToStorage,
+  type AiProviderPreference,
   type CliAgentConfig,
   type CliAgentsSettings,
+  type LocalAgentTransport,
 } from "./settings/cliAgentConfig.ts";
 export {
   readAndSyncAppSettingsFile,
@@ -101,8 +106,12 @@ export {
 } from "./desktopIntegration.ts";
 export {
   testAnthropicApiConnection,
-  testCliAgentConnection,
+  testLocalAgentConnection,
 } from "./integrationConnection.ts";
+export {
+  clearLocalAgentSessions,
+  runLocalAgentPrompt,
+} from "./localAgentRuntime.ts";
 export {
   startLatencyTrace,
   type LatencyTrace,

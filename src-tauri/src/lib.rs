@@ -1,13 +1,21 @@
+use agent_client_protocol::{self as acp, Agent as _};
+use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use serde::Serialize;
+use std::cell::RefCell;
+use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs::OpenOptions, io::Write};
 use tauri::Manager;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::LocalSet;
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 const COMMIT_FIELD_DELIMITER: &str = "\u{001f}";
 const WORKTREE_COMMIT_REFERENCE: &str = "WORKTREE";
@@ -125,6 +133,447 @@ pub struct LaunchRequest {
 #[derive(Default)]
 struct LaunchRequestState {
     launch_request: Mutex<Option<LaunchRequest>>,
+}
+
+#[derive(Clone)]
+struct AcpSessionHandle {
+    sender: mpsc::UnboundedSender<AcpPromptJob>,
+}
+
+struct AcpPromptJob {
+    prompt: String,
+    response_tx: oneshot::Sender<Result<String, String>>,
+}
+
+#[derive(Default)]
+struct AcpSessionManagerState {
+    sessions: Mutex<HashMap<String, AcpSessionHandle>>,
+}
+
+#[derive(Clone)]
+struct AcpInvocationConfig {
+    command: String,
+    args: Vec<String>,
+    cwd: PathBuf,
+    session_key: String,
+}
+
+#[derive(Default)]
+struct AcpTurnBuffer {
+    active_session_id: Option<String>,
+    output: String,
+}
+
+impl AcpTurnBuffer {
+    fn begin_turn(&mut self, session_id: &acp::SessionId) {
+        self.active_session_id = Some(session_id.to_string());
+        self.output.clear();
+    }
+
+    fn append_text(&mut self, session_id: &acp::SessionId, value: &str) {
+        let session_id_text = session_id.to_string();
+        if self.active_session_id.as_deref() != Some(session_id_text.as_str()) {
+            return;
+        }
+
+        if self.output.is_empty() {
+            self.output.push_str(value);
+            return;
+        }
+
+        if self.output.ends_with(char::is_whitespace) || value.starts_with(char::is_whitespace) {
+            self.output.push_str(value);
+            return;
+        }
+
+        self.output.push('\n');
+        self.output.push_str(value);
+    }
+
+    fn finish_turn(&mut self) -> String {
+        self.active_session_id = None;
+        std::mem::take(&mut self.output).trim().to_string()
+    }
+}
+
+#[derive(Clone)]
+struct AcpClientHandler {
+    turn_buffer: Rc<RefCell<AcpTurnBuffer>>,
+}
+
+#[async_trait(?Send)]
+impl acp::Client for AcpClientHandler {
+    async fn request_permission(
+        &self,
+        args: acp::RequestPermissionRequest,
+    ) -> acp::Result<acp::RequestPermissionResponse> {
+        if let Some(option) = args
+            .options
+            .iter()
+            .find(|option| option.kind == acp::PermissionOptionKind::AllowOnce)
+        {
+            return Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    option.option_id.clone(),
+                )),
+            ));
+        }
+
+        if let Some(option) = args
+            .options
+            .iter()
+            .find(|option| option.kind == acp::PermissionOptionKind::RejectOnce)
+        {
+            return Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    option.option_id.clone(),
+                )),
+            ));
+        }
+
+        Ok(acp::RequestPermissionResponse::new(
+            acp::RequestPermissionOutcome::Cancelled,
+        ))
+    }
+
+    async fn session_notification(&self, args: acp::SessionNotification) -> acp::Result<()> {
+        let mut turn_buffer = self.turn_buffer.borrow_mut();
+        match args.update {
+            acp::SessionUpdate::AgentMessageChunk(chunk)
+            | acp::SessionUpdate::AgentThoughtChunk(chunk)
+            | acp::SessionUpdate::UserMessageChunk(chunk) => {
+                if let Some(text) = acp_content_block_text(&chunk.content) {
+                    turn_buffer.append_text(&args.session_id, &text);
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+}
+
+struct AcpWorkerSession {
+    connection: acp::ClientSideConnection,
+    _child: tokio::process::Child,
+    session_id: acp::SessionId,
+    turn_buffer: Rc<RefCell<AcpTurnBuffer>>,
+}
+
+impl AcpSessionHandle {
+    fn spawn(config: AcpInvocationConfig) -> Self {
+        let (sender, mut receiver) = mpsc::unbounded_channel::<AcpPromptJob>();
+
+        std::thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    while let Some(job) = receiver.blocking_recv() {
+                        let _ = job
+                            .response_tx
+                            .send(Err(format!("Failed to start ACP runtime: {}", error)));
+                    }
+                    return;
+                }
+            };
+
+            let local_set = LocalSet::new();
+            local_set.block_on(&runtime, async move {
+                let mut session: Option<AcpWorkerSession> = None;
+
+                while let Some(job) = receiver.recv().await {
+                    if session.is_none() {
+                        match connect_acp_session(&config).await {
+                            Ok(connected) => {
+                                session = Some(connected);
+                            }
+                            Err(error) => {
+                                let _ = job.response_tx.send(Err(error));
+                                break;
+                            }
+                        }
+                    }
+
+                    let result = if let Some(active_session) = session.as_ref() {
+                        run_acp_worker_prompt(active_session, &job.prompt).await
+                    } else {
+                        Err("ACP session is unavailable.".to_string())
+                    };
+
+                    if result.is_err() {
+                        session = None;
+                    }
+
+                    let _ = job.response_tx.send(result);
+                }
+            });
+        });
+
+        Self { sender }
+    }
+
+    async fn prompt(&self, prompt: String) -> Result<String, String> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.sender
+            .send(AcpPromptJob {
+                prompt,
+                response_tx,
+            })
+            .map_err(|_| "ACP session is no longer available.".to_string())?;
+
+        response_rx
+            .await
+            .map_err(|_| "ACP session closed before producing a response.".to_string())?
+    }
+}
+
+impl AcpSessionManagerState {
+    fn get_or_create(&self, config: &AcpInvocationConfig) -> AcpSessionHandle {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .expect("ACP session manager lock poisoned");
+        if let Some(existing) = sessions.get(&config.session_key) {
+            return existing.clone();
+        }
+
+        let handle = AcpSessionHandle::spawn(config.clone());
+        sessions.insert(config.session_key.clone(), handle.clone());
+        handle
+    }
+
+    fn remove(&self, session_key: &str) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .expect("ACP session manager lock poisoned");
+        sessions.remove(session_key);
+    }
+
+    fn clear(&self) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .expect("ACP session manager lock poisoned");
+        sessions.clear();
+    }
+}
+
+fn acp_content_block_text(content: &acp::ContentBlock) -> Option<String> {
+    match content {
+        acp::ContentBlock::Text(text) => Some(text.text.clone()),
+        acp::ContentBlock::ResourceLink(resource_link) => Some(resource_link.uri.clone()),
+        _ => None,
+    }
+}
+
+fn pick_safe_session_mode(modes: &acp::SessionModeState) -> Option<acp::SessionModeId> {
+    let preferred_fragments = ["plan", "read", "review", "ask"];
+
+    preferred_fragments.iter().find_map(|fragment| {
+        modes.available_modes.iter().find_map(|mode| {
+            let id = mode.id.to_string().to_ascii_lowercase();
+            let name = mode.name.to_ascii_lowercase();
+            if id.contains(fragment) || name.contains(fragment) {
+                Some(mode.id.clone())
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn validate_acp_cwd(cwd: Option<String>) -> Result<PathBuf, String> {
+    let path = if let Some(value) = cwd {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            std::env::current_dir()
+                .map_err(|error| format!("Failed to resolve current directory: {}", error))?
+        } else {
+            PathBuf::from(trimmed)
+        }
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("Failed to resolve current directory: {}", error))?
+    };
+
+    if !path.is_absolute() {
+        return Err("ACP working directory must be an absolute path.".to_string());
+    }
+
+    if !path.exists() || !path.is_dir() {
+        return Err(format!(
+            "ACP working directory does not exist or is not a directory: {}",
+            path.display()
+        ));
+    }
+
+    Ok(path)
+}
+
+fn normalize_acp_invocation(
+    command: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+) -> Result<AcpInvocationConfig, String> {
+    let normalized_command = command.trim().to_string();
+    if normalized_command.is_empty() {
+        return Err("ACP agent command cannot be empty.".to_string());
+    }
+
+    let normalized_args = args
+        .into_iter()
+        .map(|arg| arg.trim().to_string())
+        .filter(|arg| !arg.is_empty())
+        .collect::<Vec<_>>();
+    let cwd = validate_acp_cwd(cwd)?;
+    let session_key = format!(
+        "{}\u{001f}{}\u{001f}{}",
+        normalized_command,
+        normalized_args.join("\u{001f}"),
+        cwd.display()
+    );
+
+    Ok(AcpInvocationConfig {
+        command: normalized_command,
+        args: normalized_args,
+        cwd,
+        session_key,
+    })
+}
+
+async fn connect_acp_session(config: &AcpInvocationConfig) -> Result<AcpWorkerSession, String> {
+    let mut child = tokio::process::Command::new(&config.command)
+        .args(&config.args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "Failed to start ACP agent '{}': {}. Ensure it is installed and on your PATH.",
+                config.command, error
+            )
+        })?;
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to capture ACP agent stdin.".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture ACP agent stdout.".to_string())?;
+
+    let turn_buffer = Rc::new(RefCell::new(AcpTurnBuffer::default()));
+    let (connection, io_task) = acp::ClientSideConnection::new(
+        AcpClientHandler {
+            turn_buffer: turn_buffer.clone(),
+        },
+        stdin.compat_write(),
+        stdout.compat(),
+        |future| {
+            tokio::task::spawn_local(future);
+        },
+    );
+
+    tokio::task::spawn_local(async move {
+        let _ = io_task.await;
+    });
+
+    let initialize_response = connection
+        .initialize(
+            acp::InitializeRequest::new(acp::ProtocolVersion::V1)
+                .client_capabilities(
+                    acp::ClientCapabilities::new()
+                        .fs(acp::FileSystemCapabilities::new())
+                        .terminal(false),
+                )
+                .client_info(
+                    acp::Implementation::new("checkmate-desktop", env!("CARGO_PKG_VERSION"))
+                        .title("checkmate.sh"),
+                ),
+        )
+        .await
+        .map_err(|error| format!("Failed to initialize ACP session: {}", error))?;
+
+    if initialize_response.protocol_version != acp::ProtocolVersion::V1 {
+        return Err(format!(
+            "Unsupported ACP protocol version returned by agent: {:?}",
+            initialize_response.protocol_version
+        ));
+    }
+
+    let new_session_response = connection
+        .new_session(acp::NewSessionRequest::new(config.cwd.clone()))
+        .await
+        .map_err(|error| format!("Failed to create ACP session: {}", error))?;
+
+    if let Some(modes) = new_session_response.modes.as_ref() {
+        if let Some(mode_id) = pick_safe_session_mode(modes) {
+            let _ = connection
+                .set_session_mode(acp::SetSessionModeRequest::new(
+                    new_session_response.session_id.clone(),
+                    mode_id,
+                ))
+                .await;
+        }
+    }
+
+    Ok(AcpWorkerSession {
+        connection,
+        _child: child,
+        session_id: new_session_response.session_id,
+        turn_buffer,
+    })
+}
+
+async fn run_acp_worker_prompt(session: &AcpWorkerSession, prompt: &str) -> Result<String, String> {
+    session
+        .turn_buffer
+        .borrow_mut()
+        .begin_turn(&session.session_id);
+
+    let response = session
+        .connection
+        .prompt(acp::PromptRequest::new(
+            session.session_id.clone(),
+            vec![prompt.to_string().into()],
+        ))
+        .await
+        .map_err(|error| format!("ACP prompt failed: {}", error))?;
+
+    let output = session.turn_buffer.borrow_mut().finish_turn();
+
+    match response.stop_reason {
+        acp::StopReason::Cancelled => Err("ACP prompt was cancelled.".to_string()),
+        acp::StopReason::Refusal => {
+            if output.is_empty() {
+                Err("ACP agent refused the request.".to_string())
+            } else {
+                Err(format!("ACP agent refused the request: {}", output))
+            }
+        }
+        acp::StopReason::EndTurn
+        | acp::StopReason::MaxTokens
+        | acp::StopReason::MaxTurnRequests => {
+            if output.is_empty() {
+                Err("ACP agent returned no text output.".to_string())
+            } else {
+                Ok(output)
+            }
+        }
+        _ => {
+            if output.is_empty() {
+                Err("ACP prompt ended without usable text output.".to_string())
+            } else {
+                Ok(output)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1964,15 +2413,20 @@ fn read_clipboard_text() -> Result<String, String> {
 
     #[cfg(target_os = "windows")]
     {
-        return read_clipboard_text_with_command("powershell", &["-NoProfile", "-Command", "Get-Clipboard -Raw"]);
+        return read_clipboard_text_with_command(
+            "powershell",
+            &["-NoProfile", "-Command", "Get-Clipboard -Raw"],
+        );
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         match read_clipboard_text_with_command("wl-paste", &["--no-newline"]) {
             Ok(value) => return Ok(value),
-            Err(wl_error) => match read_clipboard_text_with_command("xclip", &["-selection", "clipboard", "-out"])
-            {
+            Err(wl_error) => match read_clipboard_text_with_command(
+                "xclip",
+                &["-selection", "clipboard", "-out"],
+            ) {
                 Ok(value) => return Ok(value),
                 Err(xclip_error) => {
                     return Err(format!(
@@ -2078,9 +2532,7 @@ async fn run_cli_agent_prompt(
                 "run_cli_agent_prompt_error",
                 &format!(
                     "command={} elapsed_ms={} error={}",
-                    command_name_for_log,
-                    elapsed_ms,
-                    error_message
+                    command_name_for_log, elapsed_ms, error_message
                 ),
                 None,
             );
@@ -2091,6 +2543,94 @@ async fn run_cli_agent_prompt(
 }
 
 #[tauri::command]
+async fn run_acp_agent_prompt(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AcpSessionManagerState>,
+    command: String,
+    args: Vec<String>,
+    prompt: String,
+    cwd: Option<String>,
+) -> Result<String, String> {
+    let trimmed_prompt = prompt.trim();
+    if trimmed_prompt.is_empty() {
+        return Err("ACP agent prompt cannot be empty.".to_string());
+    }
+
+    let config = normalize_acp_invocation(command, args, cwd)?;
+    let prompt_arg = trimmed_prompt.to_string();
+    let started_at = SystemTime::now();
+    let _ = append_application_log_line(
+        &app,
+        "backend_acp",
+        "run_acp_agent_prompt_start",
+        &format!(
+            "command={} args_count={} prompt_len={} cwd={}",
+            config.command,
+            config.args.len(),
+            prompt_arg.len(),
+            config.cwd.display()
+        ),
+        None,
+    );
+
+    let handle = state.get_or_create(&config);
+    let first_attempt = handle.prompt(prompt_arg.clone()).await;
+    let result = match first_attempt {
+        Ok(output) => Ok(output),
+        Err(first_error) => {
+            state.remove(&config.session_key);
+            let retry_handle = state.get_or_create(&config);
+            match retry_handle.prompt(prompt_arg).await {
+                Ok(output) => Ok(output),
+                Err(retry_error) => Err(format!("{} Retry failed: {}", first_error, retry_error)),
+            }
+        }
+    };
+
+    let elapsed_ms = SystemTime::now()
+        .duration_since(started_at)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+
+    match &result {
+        Ok(output) => {
+            let _ = append_application_log_line(
+                &app,
+                "backend_acp",
+                "run_acp_agent_prompt_success",
+                &format!(
+                    "command={} elapsed_ms={} output_len={}",
+                    config.command,
+                    elapsed_ms,
+                    output.len()
+                ),
+                None,
+            );
+        }
+        Err(error_message) => {
+            let _ = append_application_log_line(
+                &app,
+                "backend_acp",
+                "run_acp_agent_prompt_error",
+                &format!(
+                    "command={} elapsed_ms={} error={}",
+                    config.command, elapsed_ms, error_message
+                ),
+                None,
+            );
+            state.remove(&config.session_key);
+        }
+    }
+
+    result
+}
+
+#[tauri::command]
+fn clear_acp_agent_sessions(state: tauri::State<'_, AcpSessionManagerState>) {
+    state.clear();
+}
+
+#[tauri::command]
 fn append_application_log(
     app: tauri::AppHandle,
     source: String,
@@ -2098,13 +2638,7 @@ fn append_application_log(
     message: String,
     fields_json: Option<String>,
 ) -> Result<(), String> {
-    append_application_log_line(
-        &app,
-        &source,
-        &event,
-        &message,
-        fields_json.as_deref(),
-    )
+    append_application_log_line(&app, &source, &event, &message, fields_json.as_deref())
 }
 
 #[tauri::command]
@@ -2200,7 +2734,9 @@ fn remove_agent_tracking(repo_path: String) -> Result<AgentTrackingRemovalResult
             changes.push("removed tracking block from AGENT.md".to_string());
         }
         if agent_reference_removed {
-            changes.push("removed @AGENT.md reference from agent reference file (CLAUDE.md)".to_string());
+            changes.push(
+                "removed @AGENT.md reference from agent reference file (CLAUDE.md)".to_string(),
+            );
         }
         if schema_removed {
             changes.push(format!("removed {}", AGENT_TRACKING_SCHEMA_RELATIVE_PATH));
@@ -2230,11 +2766,16 @@ fn store_comment_image(
         &app,
         "backend_storage",
         "store_comment_image_start",
-        &format!("mime_type={} base64_len={}", mime_type.trim(), base64_data.trim().len()),
+        &format!(
+            "mime_type={} base64_len={}",
+            mime_type.trim(),
+            base64_data.trim().len()
+        ),
         None,
     );
-    let extension = extension_for_mime_type(&mime_type)
-        .ok_or_else(|| "Only PNG, JPG, WEBP, GIF, and TIFF clipboard images are supported.".to_string())?;
+    let extension = extension_for_mime_type(&mime_type).ok_or_else(|| {
+        "Only PNG, JPG, WEBP, GIF, and TIFF clipboard images are supported.".to_string()
+    })?;
     let image_bytes = general_purpose::STANDARD
         .decode(base64_data.trim())
         .map_err(|error| format!("Failed to decode image data: {}", error))?;
@@ -2419,6 +2960,7 @@ pub fn run() {
         .manage(LaunchRequestState {
             launch_request: Mutex::new(launch_request),
         })
+        .manage(AcpSessionManagerState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -2443,6 +2985,8 @@ pub fn run() {
             read_system_username,
             read_clipboard_text,
             run_cli_agent_prompt,
+            run_acp_agent_prompt,
+            clear_acp_agent_sessions,
             append_application_log,
             read_launch_request,
             initialize_agent_tracking,

@@ -4,6 +4,9 @@ import test from "node:test";
 import {
   DEFAULT_CLI_AGENTS,
   readCliAgentsSettingsFromStorage,
+  readFallbackToSecondaryFromStorage,
+  readLocalAgentTransportFromStorage,
+  readPreferredProviderFromStorage,
   type CliAgentsSettings,
 } from "./cliAgentConfig.ts";
 
@@ -48,13 +51,17 @@ test("DEFAULT_CLI_AGENTS configures Codex for non-interactive execution", () => 
 
   assert.ok(codexAgent);
   assert.deepEqual(codexAgent.promptArgs, ["exec"]);
+  assert.equal(codexAgent.acpCommand, "codex-acp");
 });
 
 test("readCliAgentsSettingsFromStorage migrates legacy empty Codex args to exec", () => {
   installMockLocalStorage({
-    agents: [{ id: "codex", name: "Codex CLI", command: "codex", promptArgs: [] }],
+    agents: [{ id: "codex", name: "Codex CLI", command: "codex", promptArgs: [] }] as unknown as
+      readonly CliAgentsSettings["agents"][number][],
     activeAgentId: "codex",
-    preferCliOverApi: true,
+    preferredProvider: "local-agent",
+    fallbackToSecondary: true,
+    localTransport: "acp",
   });
 
   const settings = readCliAgentsSettingsFromStorage();
@@ -62,13 +69,25 @@ test("readCliAgentsSettingsFromStorage migrates legacy empty Codex args to exec"
 
   assert.ok(codexAgent);
   assert.deepEqual(codexAgent.promptArgs, ["exec"]);
+  assert.equal(codexAgent.acpCommand, "codex-acp");
 });
 
 test("readCliAgentsSettingsFromStorage preserves explicit Codex prompt args", () => {
   installMockLocalStorage({
-    agents: [{ id: "codex", name: "Codex CLI", command: "codex", promptArgs: ["review"] }],
+    agents: [
+      {
+        id: "codex",
+        name: "Codex CLI",
+        command: "codex",
+        promptArgs: ["review"],
+        acpCommand: "custom-codex-acp",
+        acpArgs: ["--stdio"],
+      },
+    ],
     activeAgentId: "codex",
-    preferCliOverApi: true,
+    preferredProvider: "local-agent",
+    fallbackToSecondary: true,
+    localTransport: "acp",
   });
 
   const settings = readCliAgentsSettingsFromStorage();
@@ -76,4 +95,18 @@ test("readCliAgentsSettingsFromStorage preserves explicit Codex prompt args", ()
 
   assert.ok(codexAgent);
   assert.deepEqual(codexAgent.promptArgs, ["review"]);
+  assert.equal(codexAgent.acpCommand, "custom-codex-acp");
+  assert.deepEqual(codexAgent.acpArgs, ["--stdio"]);
+});
+
+test("readCliAgentsSettingsFromStorage migrates legacy preferCliOverApi to local provider with cli transport", () => {
+  installMockLocalStorage({
+    agents: [{ id: "codex", name: "Codex CLI", command: "codex", promptArgs: [] }],
+    activeAgentId: "codex",
+    preferCliOverApi: true,
+  } as unknown as CliAgentsSettings);
+
+  assert.equal(readPreferredProviderFromStorage(), "local-agent");
+  assert.equal(readLocalAgentTransportFromStorage(), "cli");
+  assert.equal(readFallbackToSecondaryFromStorage(), true);
 });

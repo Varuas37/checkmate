@@ -6,10 +6,12 @@ import type {
   AgentTrackingInitializationResult,
   AgentTrackingRemovalResult,
   AgentTrackingStatus,
+  AiProviderPreference,
   CliAgentConfig,
   CliAgentsSettings,
   CmCliInstallResult,
   CmCliStatus,
+  LocalAgentTransport,
 } from "../../../shared/index.ts";
 
 export interface SettingsPanelProps {
@@ -34,11 +36,15 @@ export interface SettingsPanelProps {
   readonly onSaveAutoRunOnCommitChange: (enabled: boolean) => void;
   readonly onSaveProjectStandardsPath: (standardsPath: string) => void;
   readonly onSaveCliAgents: (settings: CliAgentsSettings) => void;
-  readonly onTestCliConnection: (agent: CliAgentConfig) => Promise<string>;
+  readonly onTestCliConnection: (
+    agent: CliAgentConfig,
+    transport: LocalAgentTransport,
+    repositoryPath?: string,
+  ) => Promise<string>;
   readonly onClose: () => void;
 }
 
-type SettingsSectionId = "projects" | "appearance" | "analysis" | "integrations" | "cli-agents";
+type SettingsSectionId = "projects" | "appearance" | "providers" | "analysis";
 
 interface SettingsSection {
   readonly id: SettingsSectionId;
@@ -58,19 +64,14 @@ const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     detail: "Theme preferences",
   },
   {
+    id: "providers",
+    label: "AI Providers",
+    detail: "API and local agents",
+  },
+  {
     id: "analysis",
     label: "AI Analysis",
-    detail: "Generation limits",
-  },
-  {
-    id: "integrations",
-    label: "Integrations",
-    detail: "API credentials",
-  },
-  {
-    id: "cli-agents",
-    label: "CLI Agents",
-    detail: "Command-line AI tools",
+    detail: "Limits and standards",
   },
 ];
 
@@ -92,6 +93,8 @@ function maskApiKey(value: string): string {
 
 interface AgentEditDraft {
   readonly name: string;
+  readonly acpCommand: string;
+  readonly acpArgs: string;
   readonly command: string;
   readonly promptArgs: string;
 }
@@ -280,7 +283,7 @@ export function SettingsPanel({
     const agent = agentOverride ?? activeCliAgent;
     if (!agent) {
       setCliConnectionStatus("failed");
-      setCliConnectionMessage("Select an active CLI agent before running a connection test.");
+      setCliConnectionMessage("Select an active local agent before running a connection test.");
       setTestedCliAgentId(null);
       return;
     }
@@ -290,13 +293,17 @@ export function SettingsPanel({
     setTestedCliAgentId(agent.id);
 
     try {
-      const response = await onTestCliConnection(agent);
+      const response = await onTestCliConnection(
+        agent,
+        draftCliAgents.localTransport,
+        activeRepositoryPath,
+      );
       const summary = toConnectionSummary(response);
       setCliConnectionStatus("connected");
       setCliConnectionMessage(
         summary.length > 0
-          ? `Connected via ${agent.name}. Agent response: ${summary}`
-          : `Connected via ${agent.name}.`,
+          ? `Connected via ${agent.name} (${draftCliAgents.localTransport.toUpperCase()}). Agent response: ${summary}`
+          : `Connected via ${agent.name} (${draftCliAgents.localTransport.toUpperCase()}).`,
       );
     } catch (error) {
       setCliConnectionStatus("failed");
@@ -385,19 +392,47 @@ export function SettingsPanel({
     setTestedCliAgentId(null);
   };
 
-  const togglePreferCli = () => {
+  const setPreferredProvider = (preferredProvider: AiProviderPreference) => {
     const next: CliAgentsSettings = {
       ...draftCliAgents,
-      preferCliOverApi: !draftCliAgents.preferCliOverApi,
+      preferredProvider,
     };
     setDraftCliAgents(next);
     onSaveCliAgents(next);
+  };
+
+  const toggleFallbackToSecondary = () => {
+    const next: CliAgentsSettings = {
+      ...draftCliAgents,
+      fallbackToSecondary: !draftCliAgents.fallbackToSecondary,
+    };
+    setDraftCliAgents(next);
+    onSaveCliAgents(next);
+  };
+
+  const setLocalTransport = (localTransport: LocalAgentTransport) => {
+    const next: CliAgentsSettings = {
+      ...draftCliAgents,
+      localTransport,
+    };
+    setDraftCliAgents(next);
+    onSaveCliAgents(next);
+
+    if (activeCliAgent) {
+      void runCliConnectionTest(activeCliAgent);
+    } else {
+      setCliConnectionStatus("idle");
+      setCliConnectionMessage(null);
+      setTestedCliAgentId(null);
+    }
   };
 
   const startEditingAgent = (agent: CliAgentConfig) => {
     setEditingAgentId(agent.id);
     setAgentEditDraft({
       name: agent.name,
+      acpCommand: agent.acpCommand,
+      acpArgs: agent.acpArgs.join(" "),
       command: agent.command,
       promptArgs: agent.promptArgs.join(" "),
     });
@@ -413,6 +448,11 @@ export function SettingsPanel({
         ? {
             ...agent,
             name: agentEditDraft.name.trim() || agent.name,
+            acpCommand: agentEditDraft.acpCommand.trim(),
+            acpArgs: agentEditDraft.acpArgs
+              .trim()
+              .split(/\s+/)
+              .filter((arg) => arg.length > 0),
             command: agentEditDraft.command.trim() || agent.command,
             promptArgs: agentEditDraft.promptArgs
               .trim()
@@ -442,24 +482,38 @@ export function SettingsPanel({
   const currentBackendLabel = useMemo(() => {
     const hasApiKey = draft.trim().length > 0;
     const activeAgent = activeCliAgent;
+    const localLabel = activeAgent
+      ? `${activeAgent.name} via ${draftCliAgents.localTransport.toUpperCase()}`
+      : `Local agent via ${draftCliAgents.localTransport.toUpperCase()} (not selected)`;
+    const apiLabel = hasApiKey ? "Anthropic API" : "Anthropic API (no key)";
 
-    if (draftCliAgents.preferCliOverApi && activeAgent) {
-      return `${activeAgent.name} CLI (preferred over API)`;
+    if (draftCliAgents.preferredProvider === "local-agent") {
+      if (draftCliAgents.fallbackToSecondary && hasApiKey) {
+        return `${localLabel} -> ${apiLabel}`;
+      }
+
+      return localLabel;
     }
 
     if (hasApiKey) {
-      if (activeAgent) {
-        return `Anthropic SDK API (${activeAgent.name} as fallback)`;
+      if (draftCliAgents.fallbackToSecondary && activeAgent) {
+        return `${apiLabel} -> ${localLabel}`;
       }
-      return "Anthropic SDK API";
+      return apiLabel;
     }
 
     if (activeAgent) {
-      return `${activeAgent.name} CLI (no API key set)`;
+      return localLabel;
     }
 
-    return "Claude CLI hardcoded fallback (no API key, no agent configured)";
-  }, [activeCliAgent, draft, draftCliAgents.preferCliOverApi]);
+    return "No API key or local agent configured";
+  }, [
+    activeCliAgent,
+    draft,
+    draftCliAgents.fallbackToSecondary,
+    draftCliAgents.localTransport,
+    draftCliAgents.preferredProvider,
+  ]);
 
   const activeCliConnectionStatus: ConnectionStatus =
     activeCliAgent && testedCliAgentId === activeCliAgent.id ? cliConnectionStatus : "idle";
@@ -792,400 +846,486 @@ export function SettingsPanel({
             </section>
           )}
 
-          {activeSection === "integrations" && (
-            <section className="space-y-3">
-              <header>
-                <h3 className="text-base font-semibold text-text">Integrations</h3>
-                <p className="text-sm text-muted">Manage provider credentials used for AI requests.</p>
-              </header>
-              <div className="space-y-2 border-y border-border/60 py-3">
-                <label className="block text-[11px] uppercase tracking-[0.08em] text-muted">
-                  Anthropic API Key
-                </label>
-                {isApiKeyEditing ? (
-                  <div className="flex items-center gap-2">
-                    <Input
-                      autoFocus
-                      value={draft}
-                      onChange={(event) => {
-                        setDraft(event.target.value);
-                      }}
-                      onKeyDown={(event) => {
-                        if (
-                          (event.metaKey || event.ctrlKey)
-                          && !event.shiftKey
-                          && !event.altKey
-                          && event.key.toLowerCase() === "v"
-                        ) {
-                          event.preventDefault();
-                          void pasteApiKeyFromClipboard();
-                          return;
-                        }
-
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          saveApiKeyDraft();
-                          return;
-                        }
-
-                        if (event.key === "Escape") {
-                          setDraft(initialApiKey);
-                          setIsApiKeyEditing(false);
-                        }
-                      }}
-                      onPaste={(event) => {
-                        const pasted = event.clipboardData.getData("text");
-                        if (!pasted || pasted.trim().length === 0) {
-                          return;
-                        }
-                        event.preventDefault();
-                        stageApiKeyDraft(pasted);
-                      }}
-                      placeholder="sk-ant-..."
-                      aria-label="Anthropic API key"
-                      className="font-mono text-xs"
-                    />
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        void pasteApiKeyFromClipboard();
-                      }}
-                    >
-                      Paste
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={saveApiKeyDraft}>
-                      Save
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setDraft(initialApiKey);
-                        setIsApiKeyEditing(false);
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (draft.trim().length === 0) {
-                          setIsApiKeyEditing(true);
-                          return;
-                        }
-                        setIsApiKeyVisible((current) => !current);
-                      }}
-                      onPaste={(event) => {
-                        const pasted = event.clipboardData.getData("text");
-                        if (!pasted || pasted.trim().length === 0) {
-                          return;
-                        }
-                        event.preventDefault();
-                        stageApiKeyDraft(pasted);
-                      }}
-                      className={cn(
-                        "flex h-9 min-w-0 flex-1 items-center rounded-md border border-border bg-canvas px-3 text-left font-mono text-xs text-text transition-colors",
-                        "hover:border-border-strong",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
-                      )}
-                      aria-label={isApiKeyVisible ? "Hide API key" : "Show API key"}
-                      title={draft.trim().length > 0 ? "Click to toggle visibility" : "No API key set"}
-                    >
-                      <span className="truncate">
-                        {isApiKeyVisible ? draft.trim() || "No API key set" : maskApiKey(draft)}
-                      </span>
-                    </button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-9 w-9 shrink-0 px-0"
-                      onClick={() => {
-                        setIsApiKeyEditing(true);
-                        setIsApiKeyVisible(false);
-                      }}
-                      aria-label="Edit API key"
-                      title="Edit API key"
-                    >
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="14"
-                        height="14"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="M12 20h9" />
-                        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                      </svg>
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        void pasteApiKeyFromClipboard();
-                      }}
-                    >
-                      Paste
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-9 w-9 shrink-0 px-0 text-danger hover:text-danger"
-                      onClick={() => {
-                        setDraft("");
-                        setIsApiKeyVisible(false);
-                        onSave("");
-                        setApiConnectionStatus("idle");
-                        setApiConnectionMessage(null);
-                      }}
-                      aria-label="Delete API key"
-                      title="Delete API key"
-                    >
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="14"
-                        height="14"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="M3 6h18" />
-                        <path d="M8 6V4h8v2" />
-                        <path d="M19 6l-1 14H6L5 6" />
-                        <path d="M10 11v6" />
-                        <path d="M14 11v6" />
-                      </svg>
-                    </Button>
-                  </div>
-                )}
-                <p className="text-xs text-muted">
-                  Stored in localStorage. Click the key to toggle visibility.
-                </p>
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <div className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-canvas px-2 py-1">
-                    <span
-                      className={cn("h-2.5 w-2.5 rounded-full", connectionStatusDotClass(apiConnectionStatus))}
-                      aria-hidden="true"
-                    />
-                    <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-text">
-                      {connectionStatusLabel(apiConnectionStatus)}
-                    </span>
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={apiConnectionStatus === "testing" || draft.trim().length === 0}
-                    onClick={() => {
-                      void runApiConnectionTest();
-                    }}
-                  >
-                    {apiConnectionStatus === "testing" ? "Testing..." : "Test Connection"}
-                  </Button>
-                </div>
-                {apiConnectionMessage && (
-                  <p className={cn("text-xs", apiConnectionStatus === "failed" ? "text-danger" : "text-muted")}>
-                    {apiConnectionMessage}
-                  </p>
-                )}
-              </div>
-            </section>
-          )}
-
-          {activeSection === "cli-agents" && (
+          {activeSection === "providers" && (
             <section className="space-y-4">
               <header>
-                <h3 className="text-base font-semibold text-text">CLI Agents</h3>
+                <h3 className="text-base font-semibold text-text">AI Providers</h3>
                 <p className="text-sm text-muted">
-                  Configure command-line AI tools for analysis and review.
+                  Choose between the Anthropic API and a local agent. Local agents use ACP by
+                  default for lower startup overhead and reusable sessions.
                 </p>
               </header>
 
-              <div className="border-y border-border/60 py-2.5">
-                <p className="pb-1 text-[11px] uppercase tracking-[0.08em] text-muted">
-                  Current backend
-                </p>
-                <p className="font-mono text-xs text-text">{currentBackendLabel}</p>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <div className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-canvas px-2 py-1">
-                    <span
-                      className={cn(
-                        "h-2.5 w-2.5 rounded-full",
-                        connectionStatusDotClass(activeCliConnectionStatus),
-                      )}
-                      aria-hidden="true"
-                    />
-                    <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-text">
-                      {connectionStatusLabel(activeCliConnectionStatus)}
-                    </span>
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={!activeCliAgent || activeCliConnectionStatus === "testing"}
-                    onClick={() => {
-                      void runCliConnectionTest();
-                    }}
-                  >
-                    {activeCliConnectionStatus === "testing" ? "Testing..." : "Test Connection"}
-                  </Button>
+              <div className="space-y-3 border-y border-border/60 py-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.08em] text-muted">Current Route</p>
+                  <p className="font-mono text-xs text-text">{currentBackendLabel}</p>
                 </div>
-                {!activeCliAgent && (
-                  <p className="mt-1 text-xs text-muted">
-                    Select an active CLI agent before running a connection test.
-                  </p>
-                )}
-                {activeCliConnectionMessage && (
-                  <p
+
+                <div className="grid gap-2 md:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => setPreferredProvider("local-agent")}
                     className={cn(
-                      "mt-1 text-xs",
-                      activeCliConnectionStatus === "failed" ? "text-danger" : "text-muted",
+                      "rounded-sm border px-3 py-2 text-left transition-colors",
+                      draftCliAgents.preferredProvider === "local-agent"
+                        ? "border-accent/55 bg-accent/10"
+                        : "border-border/60 bg-surface-subtle/30 hover:bg-surface-subtle/45",
                     )}
                   >
-                    {activeCliConnectionMessage}
-                  </p>
-                )}
-              </div>
+                    <p className="text-sm font-medium text-text">Prefer Local Agent</p>
+                    <p className="mt-0.5 text-xs text-muted">
+                      Use the selected local agent first, then fall back to the API if enabled.
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreferredProvider("api")}
+                    className={cn(
+                      "rounded-sm border px-3 py-2 text-left transition-colors",
+                      draftCliAgents.preferredProvider === "api"
+                        ? "border-accent/55 bg-accent/10"
+                        : "border-border/60 bg-surface-subtle/30 hover:bg-surface-subtle/45",
+                    )}
+                  >
+                    <p className="text-sm font-medium text-text">Prefer Anthropic API</p>
+                    <p className="mt-0.5 text-xs text-muted">
+                      Use the API first, then fall back to the configured local agent if enabled.
+                    </p>
+                  </button>
+                </div>
 
-              <div className="space-y-1">
-                <p className="text-[11px] uppercase tracking-[0.08em] text-muted">Available agents</p>
-                {draftCliAgents.agents.map((agent) => {
-                  const isActive = agent.id === draftCliAgents.activeAgentId;
-                  const isEditing = agent.id === editingAgentId;
-
-                  return (
-                    <div
-                      key={agent.id}
-                      className="rounded-sm border border-border/60 bg-surface-subtle/30 px-2.5 py-2"
-                    >
-                      {isEditing && agentEditDraft ? (
-                        <div className="space-y-2">
-                          <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1.5">
-                            <label className="text-xs text-muted">Name</label>
-                            <Input
-                              value={agentEditDraft.name}
-                              onChange={(event) => {
-                                setAgentEditDraft({ ...agentEditDraft, name: event.target.value });
-                              }}
-                              className="h-7 font-mono text-xs"
-                              placeholder="e.g. Claude Code"
-                            />
-                            <label className="text-xs text-muted">Command</label>
-                            <Input
-                              value={agentEditDraft.command}
-                              onChange={(event) => {
-                                setAgentEditDraft({ ...agentEditDraft, command: event.target.value });
-                              }}
-                              className="h-7 font-mono text-xs"
-                              placeholder="e.g. claude"
-                            />
-                            <label className="text-xs text-muted">Args</label>
-                            <Input
-                              value={agentEditDraft.promptArgs}
-                              onChange={(event) => {
-                                setAgentEditDraft({
-                                  ...agentEditDraft,
-                                  promptArgs: event.target.value,
-                                });
-                              }}
-                              className="h-7 font-mono text-xs"
-                              placeholder="-p  (space-separated, placed before the prompt)"
-                            />
-                          </div>
-                          <div className="flex gap-2">
-                            <Button variant="secondary" size="sm" onClick={saveAgentEdit}>
-                              Save
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                setEditingAgentId(null);
-                                setAgentEditDraft(null);
-                              }}
-                            >
-                              Cancel
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex flex-wrap items-start gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-sm font-medium text-text">{agent.name}</span>
-                              {isActive && (
-                                <span className="rounded-sm border border-accent/40 bg-accent/12 px-1.5 py-0.5 font-mono text-[10px] tracking-wide text-accent">
-                                  active
-                                </span>
-                              )}
-                            </div>
-                            <p className="truncate font-mono text-xs text-muted">
-                              {agent.command}
-                              {agent.promptArgs.length > 0
-                                ? ` ${agent.promptArgs.join(" ")}`
-                                : ""}
-                              {" <prompt>"}
-                            </p>
-                          </div>
-                          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                            {!isActive && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 px-2 font-mono text-[11px] uppercase tracking-[0.06em]"
-                                onClick={() => {
-                                  setActiveCliAgent(agent.id);
-                                }}
-                              >
-                                Set active
-                              </Button>
-                            )}
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 px-2 font-mono text-[11px] uppercase tracking-[0.06em]"
-                              onClick={() => {
-                                startEditingAgent(agent);
-                              }}
-                            >
-                              Edit
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="border-t border-border/60 pt-3">
-                <p className="pb-2 text-[11px] uppercase tracking-[0.08em] text-muted">Preferences</p>
                 <label className="flex cursor-pointer items-start gap-2.5">
                   <input
                     type="checkbox"
-                    checked={draftCliAgents.preferCliOverApi}
-                    onChange={togglePreferCli}
+                    checked={draftCliAgents.fallbackToSecondary}
+                    onChange={toggleFallbackToSecondary}
                     className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
                   />
                   <div>
-                    <p className="text-sm font-medium text-text">Prefer CLI over Anthropic API</p>
+                    <p className="text-sm font-medium text-text">Fall back to the secondary provider</p>
                     <p className="mt-0.5 text-xs text-muted">
-                      When enabled, the active CLI agent is tried first before the API key.
-                      Falls back to the API if the CLI fails.
+                      Keeps analysis running if the preferred path is unavailable or the SDK is not installed.
                     </p>
                   </div>
                 </label>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                <section className="space-y-3 rounded-sm border border-border/60 bg-surface-subtle/20 p-3">
+                  <header className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <h4 className="text-sm font-semibold text-text">Local Agent</h4>
+                      <div className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-canvas px-2 py-1">
+                        <span
+                          className={cn(
+                            "h-2.5 w-2.5 rounded-full",
+                            connectionStatusDotClass(activeCliConnectionStatus),
+                          )}
+                          aria-hidden="true"
+                        />
+                        <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-text">
+                          {connectionStatusLabel(activeCliConnectionStatus)}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted">
+                      ACP keeps a warm adapter process alive for repeated prompts. Switch to legacy CLI only if the ACP adapter is unavailable.
+                    </p>
+                  </header>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant={draftCliAgents.localTransport === "acp" ? "secondary" : "ghost"}
+                      size="sm"
+                      onClick={() => setLocalTransport("acp")}
+                    >
+                      ACP
+                    </Button>
+                    <Button
+                      variant={draftCliAgents.localTransport === "cli" ? "secondary" : "ghost"}
+                      size="sm"
+                      onClick={() => setLocalTransport("cli")}
+                    >
+                      Legacy CLI
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={!activeCliAgent || activeCliConnectionStatus === "testing"}
+                      onClick={() => {
+                        void runCliConnectionTest();
+                      }}
+                    >
+                      {activeCliConnectionStatus === "testing" ? "Testing..." : "Test Local Agent"}
+                    </Button>
+                  </div>
+                  {!activeCliAgent && (
+                    <p className="text-xs text-muted">
+                      Select an active local agent before running a connection test.
+                    </p>
+                  )}
+                  {activeCliConnectionMessage && (
+                    <p
+                      className={cn(
+                        "text-xs",
+                        activeCliConnectionStatus === "failed" ? "text-danger" : "text-muted",
+                      )}
+                    >
+                      {activeCliConnectionMessage}
+                    </p>
+                  )}
+
+                  <div className="space-y-2">
+                    <p className="text-[11px] uppercase tracking-[0.08em] text-muted">Available Agents</p>
+                    {draftCliAgents.agents.map((agent) => {
+                      const isActive = agent.id === draftCliAgents.activeAgentId;
+                      const isEditing = agent.id === editingAgentId;
+
+                      return (
+                        <div
+                          key={agent.id}
+                          className="rounded-sm border border-border/60 bg-canvas/60 px-2.5 py-2"
+                        >
+                          {isEditing && agentEditDraft ? (
+                            <div className="space-y-2">
+                              <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1.5">
+                                <label className="text-xs text-muted">Name</label>
+                                <Input
+                                  value={agentEditDraft.name}
+                                  onChange={(event) => {
+                                    setAgentEditDraft({ ...agentEditDraft, name: event.target.value });
+                                  }}
+                                  className="h-7 font-mono text-xs"
+                                  placeholder="e.g. Claude Code"
+                                />
+                                <label className="text-xs text-muted">ACP</label>
+                                <Input
+                                  value={agentEditDraft.acpCommand}
+                                  onChange={(event) => {
+                                    setAgentEditDraft({
+                                      ...agentEditDraft,
+                                      acpCommand: event.target.value,
+                                    });
+                                  }}
+                                  className="h-7 font-mono text-xs"
+                                  placeholder="e.g. claude-code-acp"
+                                />
+                                <label className="text-xs text-muted">ACP args</label>
+                                <Input
+                                  value={agentEditDraft.acpArgs}
+                                  onChange={(event) => {
+                                    setAgentEditDraft({
+                                      ...agentEditDraft,
+                                      acpArgs: event.target.value,
+                                    });
+                                  }}
+                                  className="h-7 font-mono text-xs"
+                                  placeholder="Optional ACP adapter arguments"
+                                />
+                                <label className="text-xs text-muted">CLI</label>
+                                <Input
+                                  value={agentEditDraft.command}
+                                  onChange={(event) => {
+                                    setAgentEditDraft({ ...agentEditDraft, command: event.target.value });
+                                  }}
+                                  className="h-7 font-mono text-xs"
+                                  placeholder="e.g. codex"
+                                />
+                                <label className="text-xs text-muted">CLI args</label>
+                                <Input
+                                  value={agentEditDraft.promptArgs}
+                                  onChange={(event) => {
+                                    setAgentEditDraft({
+                                      ...agentEditDraft,
+                                      promptArgs: event.target.value,
+                                    });
+                                  }}
+                                  className="h-7 font-mono text-xs"
+                                  placeholder="exec  (space-separated, placed before the prompt)"
+                                />
+                              </div>
+                              <div className="flex gap-2">
+                                <Button variant="secondary" size="sm" onClick={saveAgentEdit}>
+                                  Save
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => {
+                                    setEditingAgentId(null);
+                                    setAgentEditDraft(null);
+                                  }}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap items-start gap-2">
+                              <div className="min-w-0 flex-1 space-y-1">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-sm font-medium text-text">{agent.name}</span>
+                                  {isActive && (
+                                    <span className="rounded-sm border border-accent/40 bg-accent/12 px-1.5 py-0.5 font-mono text-[10px] tracking-wide text-accent">
+                                      active
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="truncate font-mono text-xs text-muted">
+                                  ACP: {agent.acpCommand || "not configured"}
+                                  {agent.acpArgs.length > 0 ? ` ${agent.acpArgs.join(" ")}` : ""}
+                                </p>
+                                <p className="truncate font-mono text-xs text-muted">
+                                  CLI: {agent.command}
+                                  {agent.promptArgs.length > 0 ? ` ${agent.promptArgs.join(" ")}` : ""}
+                                  {" <prompt>"}
+                                </p>
+                              </div>
+                              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                                {!isActive && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 px-2 font-mono text-[11px] uppercase tracking-[0.06em]"
+                                    onClick={() => {
+                                      setActiveCliAgent(agent.id);
+                                    }}
+                                  >
+                                    Set active
+                                  </Button>
+                                )}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 px-2 font-mono text-[11px] uppercase tracking-[0.06em]"
+                                  onClick={() => {
+                                    startEditingAgent(agent);
+                                  }}
+                                >
+                                  Edit
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="space-y-3 rounded-sm border border-border/60 bg-surface-subtle/20 p-3">
+                  <header className="space-y-1">
+                    <h4 className="text-sm font-semibold text-text">Anthropic API</h4>
+                    <p className="text-xs text-muted">
+                      Use the API as a primary provider or as the secondary path behind the local agent.
+                    </p>
+                  </header>
+
+                  <div className="space-y-2">
+                    <label className="block text-[11px] uppercase tracking-[0.08em] text-muted">
+                      Anthropic API Key
+                    </label>
+                    {isApiKeyEditing ? (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          autoFocus
+                          value={draft}
+                          onChange={(event) => {
+                            setDraft(event.target.value);
+                          }}
+                          onKeyDown={(event) => {
+                            if (
+                              (event.metaKey || event.ctrlKey)
+                              && !event.shiftKey
+                              && !event.altKey
+                              && event.key.toLowerCase() === "v"
+                            ) {
+                              event.preventDefault();
+                              void pasteApiKeyFromClipboard();
+                              return;
+                            }
+
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              saveApiKeyDraft();
+                              return;
+                            }
+
+                            if (event.key === "Escape") {
+                              setDraft(initialApiKey);
+                              setIsApiKeyEditing(false);
+                            }
+                          }}
+                          onPaste={(event) => {
+                            const pasted = event.clipboardData.getData("text");
+                            if (!pasted || pasted.trim().length === 0) {
+                              return;
+                            }
+                            event.preventDefault();
+                            stageApiKeyDraft(pasted);
+                          }}
+                          placeholder="sk-ant-..."
+                          aria-label="Anthropic API key"
+                          className="font-mono text-xs"
+                        />
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            void pasteApiKeyFromClipboard();
+                          }}
+                        >
+                          Paste
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={saveApiKeyDraft}>
+                          Save
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setDraft(initialApiKey);
+                            setIsApiKeyEditing(false);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (draft.trim().length === 0) {
+                              setIsApiKeyEditing(true);
+                              return;
+                            }
+                            setIsApiKeyVisible((current) => !current);
+                          }}
+                          onPaste={(event) => {
+                            const pasted = event.clipboardData.getData("text");
+                            if (!pasted || pasted.trim().length === 0) {
+                              return;
+                            }
+                            event.preventDefault();
+                            stageApiKeyDraft(pasted);
+                          }}
+                          className={cn(
+                            "flex h-9 min-w-0 flex-1 items-center rounded-md border border-border bg-canvas px-3 text-left font-mono text-xs text-text transition-colors",
+                            "hover:border-border-strong",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
+                          )}
+                          aria-label={isApiKeyVisible ? "Hide API key" : "Show API key"}
+                          title={draft.trim().length > 0 ? "Click to toggle visibility" : "No API key set"}
+                        >
+                          <span className="truncate">
+                            {isApiKeyVisible ? draft.trim() || "No API key set" : maskApiKey(draft)}
+                          </span>
+                        </button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-9 w-9 shrink-0 px-0"
+                          onClick={() => {
+                            setIsApiKeyEditing(true);
+                            setIsApiKeyVisible(false);
+                          }}
+                          aria-label="Edit API key"
+                          title="Edit API key"
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M12 20h9" />
+                            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                          </svg>
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            void pasteApiKeyFromClipboard();
+                          }}
+                        >
+                          Paste
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-9 w-9 shrink-0 px-0 text-danger hover:text-danger"
+                          onClick={() => {
+                            setDraft("");
+                            setIsApiKeyVisible(false);
+                            onSave("");
+                            setApiConnectionStatus("idle");
+                            setApiConnectionMessage(null);
+                          }}
+                          aria-label="Delete API key"
+                          title="Delete API key"
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M3 6h18" />
+                            <path d="M8 6V4h8v2" />
+                            <path d="M19 6l-1 14H6L5 6" />
+                            <path d="M10 11v6" />
+                            <path d="M14 11v6" />
+                          </svg>
+                        </Button>
+                      </div>
+                    )}
+
+                    <p className="text-xs text-muted">
+                      Stored in localStorage for now. Click the key to toggle visibility.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <div className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-canvas px-2 py-1">
+                        <span
+                          className={cn("h-2.5 w-2.5 rounded-full", connectionStatusDotClass(apiConnectionStatus))}
+                          aria-hidden="true"
+                        />
+                        <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-text">
+                          {connectionStatusLabel(apiConnectionStatus)}
+                        </span>
+                      </div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={apiConnectionStatus === "testing" || draft.trim().length === 0}
+                        onClick={() => {
+                          void runApiConnectionTest();
+                        }}
+                      >
+                        {apiConnectionStatus === "testing" ? "Testing..." : "Test API"}
+                      </Button>
+                    </div>
+                    {apiConnectionMessage && (
+                      <p className={cn("text-xs", apiConnectionStatus === "failed" ? "text-danger" : "text-muted")}>
+                        {apiConnectionMessage}
+                      </p>
+                    )}
+                  </div>
+                </section>
               </div>
             </section>
           )}

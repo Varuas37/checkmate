@@ -1,4 +1,5 @@
-import type { CliAgentConfig } from "./settings/cliAgentConfig.ts";
+import { runLocalAgentPrompt } from "./localAgentRuntime.ts";
+import type { CliAgentConfig, LocalAgentTransport } from "./settings/cliAgentConfig.ts";
 
 interface ClaudeSdkClient {
   readonly messages: {
@@ -18,7 +19,7 @@ const DEFAULT_CONNECTION_TEST_MODEL = "claude-haiku-4-5-20251001";
 const API_CONNECTION_TEST_SYSTEM_PROMPT =
   "You are a connection check endpoint. Respond with a short plain-text hello.";
 const API_CONNECTION_TEST_PROMPT = "Say hello from the API connection test.";
-const CLI_CONNECTION_TEST_PROMPT = "Say hello from the CLI connection test.";
+const LOCAL_AGENT_CONNECTION_TEST_PROMPT = "Say hello from the local-agent connection test.";
 
 function trimToNull(value: string | null | undefined): string | null {
   if (!value) {
@@ -43,11 +44,6 @@ function isTauriRuntime(): boolean {
   }
 
   return /tauri/i.test(navigator.userAgent);
-}
-
-async function invokeTauri<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(command, args);
 }
 
 async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
@@ -108,12 +104,6 @@ function extractTextFromResponse(response: unknown): string {
     .trim();
 }
 
-function normalizeCliPromptArgs(promptArgs: readonly string[]): string[] {
-  return promptArgs
-    .map((arg) => arg.trim())
-    .filter((arg) => arg.length > 0);
-}
-
 export async function testAnthropicApiConnection(apiKey: string): Promise<string> {
   const normalizedApiKey = trimToNull(apiKey);
   if (!normalizedApiKey) {
@@ -134,20 +124,29 @@ export async function testAnthropicApiConnection(apiKey: string): Promise<string
   );
 }
 
-export async function testCliAgentConnection(agent: CliAgentConfig): Promise<string> {
-  const normalizedCommand = trimToNull(agent.command);
-  if (!normalizedCommand) {
+export async function testLocalAgentConnection(
+  agent: CliAgentConfig,
+  transport: LocalAgentTransport,
+  repositoryPath?: string,
+): Promise<string> {
+  if (transport === "acp") {
+    if (!trimToNull(agent.acpCommand)) {
+      throw new Error("Set an ACP command before running a connection test.");
+    }
+  } else if (!trimToNull(agent.command)) {
     throw new Error("Set a CLI command before running a connection test.");
   }
 
   if (!isTauriRuntime()) {
-    throw new Error("CLI connection tests are available only in the desktop app.");
+    throw new Error("Local-agent connection tests are available only in the desktop app.");
   }
 
-  const output = await invokeTauri<string>("run_cli_agent_prompt", {
-    command: normalizedCommand,
-    args: normalizeCliPromptArgs(agent.promptArgs),
-    prompt: CLI_CONNECTION_TEST_PROMPT,
+  const normalizedRepositoryPath = trimToNull(repositoryPath);
+  const output = await runLocalAgentPrompt({
+    prompt: LOCAL_AGENT_CONNECTION_TEST_PROMPT,
+    agent,
+    transport,
+    ...(normalizedRepositoryPath ? { repositoryPath: normalizedRepositoryPath } : {}),
   });
 
   return trimToNull(output) ?? "Connection test command completed successfully.";

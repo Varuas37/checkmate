@@ -4,11 +4,16 @@ import type {
   SequenceDiagramGenerator,
 } from "../../domain/review/index.ts";
 import {
-  readActiveCliAgentFromStorage,
   readApiKeyFromStorage,
-  readCliPreferenceFromStorage,
   startLatencyTrace,
 } from "../../shared/index.ts";
+import {
+  canUseApiProvider,
+  resolveAiProviderState,
+  resolveSecondaryProvider,
+  runPreferredLocalAgentPrompt,
+  shouldPreferLocalAgent,
+} from "./providerRouting.ts";
 
 interface SdkClient {
   readonly messages: {
@@ -35,10 +40,6 @@ const MAX_LINES_PER_HUNK = 10;
 const MAX_STEPS = 10;
 const CUSTOM_SEQUENCE_SYSTEM_PROMPT =
   "You are a specialized sub-agent that produces structured sequence-step JSON for a custom React sequence renderer. Return only valid JSON.";
-
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
 
 function trimToNull(value: string | null | undefined): string | null {
   if (!value) {
@@ -417,28 +418,6 @@ async function createSdkClient(apiKey: string): Promise<SdkClient> {
   return client;
 }
 
-async function runFallbackPromptViaTauri(prompt: string): Promise<string> {
-  if (!isTauriRuntime()) {
-    throw new Error("Fallback CLI is available only in Tauri runtime.");
-  }
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("run_claude_prompt", { prompt });
-}
-
-async function runCliAgentPromptViaTauri(
-  command: string,
-  args: readonly string[],
-  prompt: string,
-): Promise<string> {
-  if (!isTauriRuntime()) {
-    throw new Error("CLI agent is available only in Tauri runtime.");
-  }
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("run_cli_agent_prompt", { command, args: [...args], prompt });
-}
-
 export interface AgentSequenceDiagramGeneratorOptions {
   readonly apiKey?: string;
   readonly model?: string;
@@ -466,64 +445,30 @@ export class AgentSequenceDiagramGenerator implements SequenceDiagramGenerator {
     return this.#apiKeyOverride ?? readApiKeyFromStorage() ?? resolveDefaultApiKey();
   }
 
-  async #runPrompt(prompt: string, apiKey: string | null): Promise<string> {
-    const preferCli = readCliPreferenceFromStorage();
-    const activeCliAgent = readActiveCliAgentFromStorage();
-
-    const runViaCli = async (): Promise<string> => {
-      if (activeCliAgent && isTauriRuntime()) {
-        try {
-          return await runCliAgentPromptViaTauri(
-            activeCliAgent.command,
-            activeCliAgent.promptArgs,
-            prompt,
-          );
-        } catch (activeCliError) {
-          const normalizedCommand = activeCliAgent.command.trim().toLowerCase();
-          if (normalizedCommand === "claude") {
-            throw activeCliError;
-          }
-
-          try {
-            return await runFallbackPromptViaTauri(prompt);
-          } catch (fallbackCliError) {
-            const activeMessage =
-              activeCliError instanceof Error ? activeCliError.message : "CLI execution failed.";
-            const fallbackMessage =
-              fallbackCliError instanceof Error
-                ? fallbackCliError.message
-                : "Fallback CLI failed.";
-            throw new Error(
-              `Primary CLI agent "${activeCliAgent.name}" failed (${activeMessage}) and fallback CLI failed (${fallbackMessage}).`,
-            );
-          }
-        }
-      }
-
-      return runFallbackPromptViaTauri(prompt);
-    };
-
-    // Prefer CLI over API: try configured CLI first, fall back to SDK.
-    if (preferCli && activeCliAgent && isTauriRuntime()) {
+  async #runPrompt(
+    prompt: string,
+    providerState: ReturnType<typeof resolveAiProviderState>,
+    repositoryPath?: string,
+  ): Promise<string> {
+    if (shouldPreferLocalAgent(providerState)) {
       try {
-        return await runViaCli();
+        return await runPreferredLocalAgentPrompt(prompt, repositoryPath, providerState);
       } catch (error) {
-        if (!apiKey) {
-          const message = error instanceof Error ? error.message : "CLI execution failed.";
+        if (resolveSecondaryProvider(providerState) !== "api" || !canUseApiProvider(providerState)) {
+          const message = error instanceof Error ? error.message : "Local-agent execution failed.";
           throw new Error(
-            `Primary CLI agent "${activeCliAgent.name}" failed and no API key is available for SDK fallback (${message}).`,
+            `Local-agent sequence generation failed and no API fallback is available (${message}).`,
           );
         }
-        // Fall through to SDK.
       }
     }
 
-    if (!apiKey) {
-      return runViaCli();
+    if (!canUseApiProvider(providerState)) {
+      return runPreferredLocalAgentPrompt(prompt, repositoryPath, providerState);
     }
 
     try {
-      const client = await this.#createClient(apiKey);
+      const client = await this.#createClient(providerState.apiKey as string);
       const response = await client.messages.create({
         model: this.#model,
         max_tokens: this.#maxOutputTokens,
@@ -533,11 +478,11 @@ export class AgentSequenceDiagramGenerator implements SequenceDiagramGenerator {
 
       return extractTextFromResponse(response);
     } catch (error) {
-      if (!isTauriRuntime() || !isMissingSdkClientError(error)) {
+      if (resolveSecondaryProvider(providerState) !== "local-agent" || !isMissingSdkClientError(error)) {
         throw error;
       }
 
-      return runViaCli();
+      return runPreferredLocalAgentPrompt(prompt, repositoryPath, providerState);
     }
   }
 
@@ -559,11 +504,12 @@ export class AgentSequenceDiagramGenerator implements SequenceDiagramGenerator {
 
     const allowedFilePaths = new Set(input.files.map((file) => file.path));
     const resolvedApiKey = this.#resolveApiKey();
-    const preferCli = readCliPreferenceFromStorage();
-    const activeCliAgent = readActiveCliAgentFromStorage();
+    const providerState = resolveAiProviderState(resolvedApiKey);
     trace.mark("sequence-generator-provider-selection", {
-      preferCliSetting: preferCli,
-      activeCliAgentId: activeCliAgent?.id ?? null,
+      preferredProvider: providerState.preferredProvider,
+      fallbackToSecondary: providerState.fallbackToSecondary,
+      activeLocalAgentId: providerState.localAgent?.id ?? null,
+      localTransport: providerState.localTransport,
       hasApiKey: Boolean(resolvedApiKey),
     });
     const basePrompt = buildBasePrompt(input);
@@ -579,7 +525,7 @@ export class AgentSequenceDiagramGenerator implements SequenceDiagramGenerator {
           promptLength: nextPrompt.length,
         });
         try {
-          const raw = await this.#runPrompt(nextPrompt, resolvedApiKey);
+          const raw = await this.#runPrompt(nextPrompt, providerState, input.commit.repositoryPath);
           previousResponse = raw;
           const parsed = parseSequenceResponse(raw, allowedFilePaths);
 

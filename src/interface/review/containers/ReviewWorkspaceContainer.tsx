@@ -10,6 +10,7 @@ import {
 } from "../../../design-system/index.ts";
 import {
   clearApiKeyFromStorage,
+  clearLocalAgentSessions,
   type AgentTrackingRemovalResult,
   type AgentTrackingStatus,
   initializeAgentTracking,
@@ -36,7 +37,7 @@ import {
   projectLabelFromPath,
   selectRepositoryFolder,
   testAnthropicApiConnection,
-  testCliAgentConnection,
+  testLocalAgentConnection,
   writeAiAnalysisConfigToStorage,
   writeApiKeyToStorage,
   writeAppSettingsFile,
@@ -2795,8 +2796,9 @@ export function ReviewWorkspaceContainer() {
             writeCliAgentsSettingsToStorage(settings);
             setCliAgentsSettings(settings);
             void writeAppSettingsFile({ cliAgents: settings });
+            void clearLocalAgentSessions();
           }}
-          onTestCliConnection={testCliAgentConnection}
+          onTestCliConnection={testLocalAgentConnection}
           onClose={() => setShowSettings(false)}
         />
       </>
@@ -2881,8 +2883,9 @@ export function ReviewWorkspaceContainer() {
           writeCliAgentsSettingsToStorage(settings);
           setCliAgentsSettings(settings);
           void writeAppSettingsFile({ cliAgents: settings });
+          void clearLocalAgentSessions();
         }}
-        onTestCliConnection={testCliAgentConnection}
+        onTestCliConnection={testLocalAgentConnection}
         onClose={() => setShowSettings(false)}
       />
       <UserCommentsModal

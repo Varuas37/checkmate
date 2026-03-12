@@ -885,7 +885,7 @@ export function createReviewListenerMiddleware(
         });
 
         const commitAnalysisStartedAt = nowForTrace();
-        const output = await deps.commitAnalyser.analyseCommit({
+        const commitAnalysisPromise = deps.commitAnalyser.analyseCommit({
           commitId: action.payload.commitId,
           commit: context.commit,
           files: context.files,
@@ -894,6 +894,54 @@ export function createReviewListenerMiddleware(
           standardsSourcePath: standardsSource.sourcePath,
           abortSignal: listenerApi.signal,
         });
+        const standardsAnalysisPromise = (async () => {
+          try {
+            const standardsAnalyserStartedAt = nowForTrace();
+            const standardsEvaluation = await deps.standardsAnalyser.analyseStandards({
+              commitId: action.payload.commitId,
+              commit: context.commit,
+              files: context.files,
+              hunks: context.hunks,
+              ruleText: standardsSource.ruleText,
+              standardsSourcePath: standardsSource.sourcePath,
+            });
+            trace.mark("ai-analysis-standards-analyser-complete", {
+              elapsedMs: durationMsSince(standardsAnalyserStartedAt),
+              ruleCount: standardsEvaluation.rules.length,
+              resultCount: standardsEvaluation.results.length,
+            });
+
+            return {
+              provider: "standards-analyser" as const,
+              rules: standardsEvaluation.rules,
+              results: standardsEvaluation.results,
+            };
+          } catch {
+            const standardsEvaluatorStartedAt = nowForTrace();
+            const standardsEvaluation = deps.standardsEvaluator.evaluate({
+              commitId: action.payload.commitId,
+              ruleText: standardsSource.ruleText,
+              files: context.files,
+              hunks: context.hunks,
+            });
+            trace.mark("ai-analysis-standards-evaluator-complete", {
+              elapsedMs: durationMsSince(standardsEvaluatorStartedAt),
+              ruleCount: standardsEvaluation.rules.length,
+              resultCount: standardsEvaluation.results.length,
+            });
+
+            return {
+              provider: "standards-evaluator" as const,
+              rules: standardsEvaluation.rules,
+              results: standardsEvaluation.results,
+            };
+          }
+        })();
+
+        const [output, parallelStandardsEvaluation] = await Promise.all([
+          commitAnalysisPromise,
+          standardsAnalysisPromise,
+        ]);
         trace.mark("ai-analysis-commit-analyser-complete", {
           elapsedMs: durationMsSince(commitAnalysisStartedAt),
           overviewCardCount: output.overviewCards.length,
@@ -913,41 +961,9 @@ export function createReviewListenerMiddleware(
           "commit-analyser";
 
         if (standardsRules.length === 0 || standardsResults.length === 0) {
-          try {
-            const standardsAnalyserStartedAt = nowForTrace();
-            const standardsEvaluation = await deps.standardsAnalyser.analyseStandards({
-              commitId: action.payload.commitId,
-              commit: context.commit,
-              files: context.files,
-              hunks: context.hunks,
-              ruleText: standardsSource.ruleText,
-              standardsSourcePath: standardsSource.sourcePath,
-            });
-            standardsRules = standardsEvaluation.rules;
-            standardsResults = standardsEvaluation.results;
-            standardsProvider = "standards-analyser";
-            trace.mark("ai-analysis-standards-analyser-complete", {
-              elapsedMs: durationMsSince(standardsAnalyserStartedAt),
-              ruleCount: standardsRules.length,
-              resultCount: standardsResults.length,
-            });
-          } catch {
-            const standardsEvaluatorStartedAt = nowForTrace();
-            const standardsEvaluation = deps.standardsEvaluator.evaluate({
-              commitId: action.payload.commitId,
-              ruleText: standardsSource.ruleText,
-              files: context.files,
-              hunks: context.hunks,
-            });
-            standardsRules = standardsEvaluation.rules;
-            standardsResults = standardsEvaluation.results;
-            standardsProvider = "standards-evaluator";
-            trace.mark("ai-analysis-standards-evaluator-complete", {
-              elapsedMs: durationMsSince(standardsEvaluatorStartedAt),
-              ruleCount: standardsRules.length,
-              resultCount: standardsResults.length,
-            });
-          }
+          standardsRules = parallelStandardsEvaluation.rules;
+          standardsResults = parallelStandardsEvaluation.results;
+          standardsProvider = parallelStandardsEvaluation.provider;
         } else {
           trace.mark("ai-analysis-standards-from-commit-analysis", {
             ruleCount: standardsRules.length,

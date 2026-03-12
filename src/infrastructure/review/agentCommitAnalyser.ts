@@ -9,12 +9,17 @@ import type {
 } from "../../domain/review/index.ts";
 import type { ReviewCardKind } from "../../domain/review/index.ts";
 import {
-  readActiveCliAgentFromStorage,
   readAiAnalysisConfigFromStorage,
   readApiKeyFromStorage,
-  readCliPreferenceFromStorage,
   startLatencyTrace,
 } from "../../shared/index.ts";
+import {
+  canUseApiProvider,
+  resolveAiProviderState,
+  resolveSecondaryProvider,
+  runPreferredLocalAgentPrompt,
+  shouldPreferLocalAgent,
+} from "./providerRouting.ts";
 
 // ---------------------------------------------------------------------------
 // SDK client interface + factory
@@ -351,32 +356,6 @@ function isMissingSdkClientError(error: unknown): boolean {
     message.includes("@anthropic-ai/sdk") ||
     message.includes("anthropic constructor")
   );
-}
-
-async function runFallbackPromptViaTauri(prompt: string): Promise<string> {
-  if (!isTauriRuntime()) {
-    throw new Error("Fallback CLI is available only in Tauri runtime.");
-  }
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("run_claude_prompt", { prompt });
-}
-
-async function runCliAgentPromptViaTauri(
-  command: string,
-  args: readonly string[],
-  prompt: string,
-): Promise<string> {
-  if (!isTauriRuntime()) {
-    throw new Error("CLI agent is available only in Tauri runtime.");
-  }
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("run_cli_agent_prompt", {
-    command,
-    args: [...args],
-    prompt,
-  });
 }
 
 function extractTextFromResponse(response: unknown): string {
@@ -1042,73 +1021,44 @@ export class AgentCommitAnalyser implements CommitAnalyser {
     };
 
     const resolvedApiKey = this.#resolveApiKey();
-    const preferCli = readCliPreferenceFromStorage();
-    const activeCliAgent = readActiveCliAgentFromStorage();
-
-    /** Runs the configured CLI agent, with a default CLI fallback if the active agent fails. */
-    const runViaCli = async (prompt: string): Promise<string> => {
-      if (activeCliAgent && isTauriRuntime()) {
-        try {
-          return await runCliAgentPromptViaTauri(
-            activeCliAgent.command,
-            activeCliAgent.promptArgs,
-            prompt,
-          );
-        } catch (activeCliError) {
-          const normalizedCommand = activeCliAgent.command.trim().toLowerCase();
-          if (normalizedCommand === "claude") {
-            throw activeCliError;
-          }
-
-          try {
-            return await runFallbackPromptViaTauri(prompt);
-          } catch (fallbackCliError) {
-            const activeMessage =
-              activeCliError instanceof Error
-                ? activeCliError.message
-                : "CLI execution failed.";
-            const fallbackMessage =
-              fallbackCliError instanceof Error
-                ? fallbackCliError.message
-                : "Fallback CLI failed.";
-            throw new Error(
-              `Primary CLI agent "${activeCliAgent.name}" failed (${activeMessage}) and fallback CLI failed (${fallbackMessage}).`,
-            );
-          }
-        }
-      }
-
-      return runFallbackPromptViaTauri(prompt);
-    };
+    const providerState = resolveAiProviderState(resolvedApiKey);
+    const secondaryProvider = resolveSecondaryProvider(providerState);
+    const runViaLocalAgent = async (prompt: string): Promise<string> =>
+      runPreferredLocalAgentPrompt(prompt, input.commit.repositoryPath, providerState);
 
     trace.mark("commit-analysis-provider-selection", {
-      preferCliSetting: preferCli,
-      activeCliAgentId: activeCliAgent?.id ?? null,
+      preferredProvider: providerState.preferredProvider,
+      fallbackToSecondary: providerState.fallbackToSecondary,
+      secondaryProvider,
+      activeLocalAgentId: providerState.localAgent?.id ?? null,
+      localTransport: providerState.localTransport,
       hasApiKey: Boolean(resolvedApiKey),
     });
 
     // -----------------------------------------------------------------------
-    // CLI-preferred path: use active CLI when configured, with SDK fallback.
+    // Local-agent preferred path: use the configured local agent first, with
+    // API fallback only when explicitly enabled and available.
     // -----------------------------------------------------------------------
-    if (preferCli && activeCliAgent && isTauriRuntime()) {
-      trace.mark("commit-analysis-cli-preferred", {
-        cliAgent: activeCliAgent.id,
+    if (shouldPreferLocalAgent(providerState)) {
+      trace.mark("commit-analysis-local-preferred", {
+        localAgent: providerState.localAgent?.id ?? null,
+        transport: providerState.localTransport,
       });
       const legacyPrompt = buildLegacyPrompt(input);
-      trace.mark("commit-analysis-cli-request", {
+      trace.mark("commit-analysis-local-request", {
         promptLength: legacyPrompt.length,
       });
       try {
         const startedAt = nowForTrace();
-        const cliResponse = await runViaCli(legacyPrompt);
-        trace.mark("commit-analysis-cli-response", {
+        const localResponse = await runViaLocalAgent(legacyPrompt);
+        trace.mark("commit-analysis-local-response", {
           elapsedMs: durationMsSince(startedAt),
-          responseLength: cliResponse.length,
+          responseLength: localResponse.length,
         });
-        const parsed = parseLegacyResponse(cliResponse, input.commitId);
+        const parsed = parseLegacyResponse(localResponse, input.commitId);
         if (parsed) {
           traceSummaryFields = {
-            provider: "cli",
+            provider: providerState.localTransport,
             path: "preferred",
             flowComparisonCount: parsed.flowComparisons.length,
             fileSummaryCount: parsed.fileSummaries.length,
@@ -1118,43 +1068,53 @@ export class AgentCommitAnalyser implements CommitAnalyser {
         }
         if (!resolvedApiKey) {
           throw new Error(
-            "CLI response could not be parsed as valid analysis JSON.",
+            "Local-agent response could not be parsed as valid analysis JSON.",
           );
         }
       } catch (error) {
-        // CLI failed — fall through to SDK if key is available, else throw below.
-        if (!resolvedApiKey) {
+        if (secondaryProvider !== "api" || !canUseApiProvider(providerState)) {
           trace.fail(error);
           finishTrace(traceSummaryFields);
           const message =
-            error instanceof Error ? error.message : "CLI execution failed.";
+            error instanceof Error ? error.message : "Local-agent execution failed.";
           throw new Error(
-            `Primary CLI agent "${activeCliAgent.name}" failed and no API key is available for SDK fallback (${message}).`,
+            `Local-agent analysis failed and no API fallback is available (${message}).`,
           );
         }
       }
     }
 
     // -----------------------------------------------------------------------
-    // No API key → Tauri CLI fallback (single-call, legacy prompt)
+    // No API key -> local-agent required path (single-call, legacy prompt)
     // -----------------------------------------------------------------------
-    if (!resolvedApiKey) {
-      trace.mark("commit-analysis-cli-required");
+    if (!canUseApiProvider(providerState)) {
+      if (!providerState.localAgent) {
+        trace.fail(new Error("No local agent or API key is configured."));
+        finishTrace(traceSummaryFields);
+        throw new Error(
+          "Commit analysis requires either an Anthropic API key or a configured local agent.",
+        );
+      }
+
+      trace.mark("commit-analysis-local-required", {
+        localAgent: providerState.localAgent.id,
+        transport: providerState.localTransport,
+      });
       const legacyPrompt = buildLegacyPrompt(input);
       try {
         const startedAt = nowForTrace();
-        const cliResponse = await runViaCli(legacyPrompt);
-        trace.mark("commit-analysis-cli-response", {
+        const localResponse = await runViaLocalAgent(legacyPrompt);
+        trace.mark("commit-analysis-local-response", {
           elapsedMs: durationMsSince(startedAt),
         });
-        const parsed = parseLegacyResponse(cliResponse, input.commitId);
+        const parsed = parseLegacyResponse(localResponse, input.commitId);
         if (!parsed) {
           throw new Error(
-            "CLI response could not be parsed as valid analysis JSON.",
+            "Local-agent response could not be parsed as valid analysis JSON.",
           );
         }
         traceSummaryFields = {
-          provider: "cli",
+          provider: providerState.localTransport,
           path: "required",
           flowComparisonCount: parsed.flowComparisons.length,
           fileSummaryCount: parsed.fileSummaries.length,
@@ -1165,9 +1125,9 @@ export class AgentCommitAnalyser implements CommitAnalyser {
         trace.fail(error);
         finishTrace(traceSummaryFields);
         const message =
-          error instanceof Error ? error.message : "CLI fallback failed.";
+          error instanceof Error ? error.message : "Local-agent execution failed.";
         throw new Error(
-          `Commit analysis requires ANTHROPIC_API_KEY or a configured CLI agent (${message}).`,
+          `Commit analysis requires a working Anthropic API key or configured local agent (${message}).`,
         );
       }
     }
@@ -1177,11 +1137,15 @@ export class AgentCommitAnalyser implements CommitAnalyser {
     // -----------------------------------------------------------------------
     try {
       throwIfAborted(input.abortSignal);
+      const apiKey = providerState.apiKey;
+      if (!apiKey) {
+        throw new Error("Commit analysis requires an Anthropic API key for SDK execution.");
+      }
       const clientCreateStartedAt = nowForTrace();
       trace.mark("commit-analysis-sdk-client-create-start", {
         model: this.#model,
       });
-      const client = await this.#createClient(resolvedApiKey);
+      const client = await this.#createClient(apiKey);
       trace.mark("commit-analysis-sdk-client-create-complete", {
         elapsedMs: durationMsSince(clientCreateStartedAt),
       });
@@ -1359,31 +1323,32 @@ export class AgentCommitAnalyser implements CommitAnalyser {
         throw error;
       }
 
-      // In Tauri, fall back to CLI if the SDK module itself isn't available.
-      if (isTauriRuntime() && isMissingSdkClientError(error)) {
+      // Fall back to the configured local agent when the API path is unavailable
+      // and local fallback has been explicitly enabled.
+      if (secondaryProvider === "local-agent" && isMissingSdkClientError(error)) {
         try {
-          trace.mark("commit-analysis-sdk-missing-cli-fallback");
+          trace.mark("commit-analysis-sdk-missing-local-fallback");
           const legacyPrompt = buildLegacyPrompt(input);
           const fallbackStartedAt = nowForTrace();
-          const cliResponse = await runViaCli(legacyPrompt);
-          trace.mark("commit-analysis-cli-fallback-response", {
+          const localResponse = await runViaLocalAgent(legacyPrompt);
+          trace.mark("commit-analysis-local-fallback-response", {
             elapsedMs: durationMsSince(fallbackStartedAt),
           });
-          const parsed = parseLegacyResponse(cliResponse, input.commitId);
+          const parsed = parseLegacyResponse(localResponse, input.commitId);
           if (!parsed) {
             throw new Error(
-              "CLI response could not be parsed as valid analysis JSON.",
+              "Local-agent response could not be parsed as valid analysis JSON.",
             );
           }
           traceSummaryFields = {
-            provider: "cli-fallback",
+            provider: `${providerState.localTransport}-fallback`,
             flowComparisonCount: parsed.flowComparisons.length,
             fileSummaryCount: parsed.fileSummaries.length,
           };
           return parsed;
         } catch (fallbackError) {
           trace.fail(fallbackError, {
-            phase: "cli-fallback",
+            phase: "local-fallback",
           });
           throw fallbackError;
         }
