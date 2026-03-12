@@ -234,6 +234,26 @@ export function createReviewListenerMiddleware(
     };
   };
 
+  const writeCurrentAiAnalysisToStorage = (
+    state: ReviewRootState,
+    commit: {
+      readonly id: string;
+      readonly repositoryPath: string;
+      readonly commitSha: string;
+    },
+  ): void => {
+    const aiAnalysis = state.reviewUi.aiAnalysis;
+    if (!aiAnalysis || aiAnalysis.commitId !== commit.id) {
+      return;
+    }
+
+    writeAiAnalysisToStorage({
+      repositoryPath: commit.repositoryPath,
+      commitSha: commit.commitSha,
+      analysis: toCachedAnalysisData(aiAnalysis),
+    });
+  };
+
   const hunkPreview = (
     hunk: NonNullable<ReviewRootState["reviewEntities"]["hunksById"][string]>,
     maxLines = 40,
@@ -406,7 +426,6 @@ export function createReviewListenerMiddleware(
             );
             listenerApi.dispatch(reviewUiActions.standardsAnalysisSucceeded());
           } else {
-            listenerApi.dispatch(reviewUiActions.standardsAnalysisStarted());
             queueCommitAnalysis();
           }
 
@@ -872,76 +891,59 @@ export function createReviewListenerMiddleware(
         },
       });
       let traceSummaryFields: Readonly<Record<string, unknown>> | undefined;
+      let sequenceRegenerationQueued = false;
+      const queueSequenceRegeneration = (eventName: string) => {
+        if (sequenceRegenerationQueued) {
+          return;
+        }
 
-      listenerApi.dispatch(reviewUiActions.aiAnalysisStarted());
-      listenerApi.dispatch(reviewUiActions.standardsAnalysisStarted());
+        sequenceRegenerationQueued = true;
+        trace.mark(eventName);
+        listenerApi.dispatch(regenerateSequenceRequested({ commitId: action.payload.commitId }));
+      };
+
+      listenerApi.dispatch(
+        reviewUiActions.aiAnalysisStarted({
+          commitId: action.payload.commitId,
+        }),
+      );
 
       try {
-        const standardsSourceStartedAt = nowForTrace();
-        const standardsSource = await resolveStandardsSource(context.commit.repositoryPath);
-        trace.mark("ai-analysis-standards-source-resolved", {
-          elapsedMs: durationMsSince(standardsSourceStartedAt),
-          standardsSourcePath: standardsSource.sourcePath,
-        });
-
         const commitAnalysisStartedAt = nowForTrace();
-        const commitAnalysisPromise = deps.commitAnalyser.analyseCommit({
+        const output = await deps.commitAnalyser.analyseCommit({
           commitId: action.payload.commitId,
           commit: context.commit,
           files: context.files,
           hunks: context.hunks,
-          standardsRuleText: standardsSource.ruleText,
-          standardsSourcePath: standardsSource.sourcePath,
           abortSignal: listenerApi.signal,
+          onFileSummary: async (summary, index, total) => {
+            if (listenerApi.signal.aborted) {
+              return;
+            }
+
+            listenerApi.dispatch(
+              reviewUiActions.aiFileSummaryReceived({
+                commitId: action.payload.commitId,
+                summary,
+              }),
+            );
+            trace.mark("ai-analysis-file-summary-published", {
+              index: index + 1,
+              total,
+              filePath: summary.filePath,
+            });
+          },
+          onFileSummariesReady: async (fileSummaries) => {
+            if (listenerApi.signal.aborted) {
+              return;
+            }
+
+            trace.mark("ai-analysis-file-summaries-ready", {
+              fileSummaryCount: fileSummaries.length,
+            });
+            queueSequenceRegeneration("ai-analysis-sequence-regeneration-requested");
+          },
         });
-        const standardsAnalysisPromise = (async () => {
-          try {
-            const standardsAnalyserStartedAt = nowForTrace();
-            const standardsEvaluation = await deps.standardsAnalyser.analyseStandards({
-              commitId: action.payload.commitId,
-              commit: context.commit,
-              files: context.files,
-              hunks: context.hunks,
-              ruleText: standardsSource.ruleText,
-              standardsSourcePath: standardsSource.sourcePath,
-            });
-            trace.mark("ai-analysis-standards-analyser-complete", {
-              elapsedMs: durationMsSince(standardsAnalyserStartedAt),
-              ruleCount: standardsEvaluation.rules.length,
-              resultCount: standardsEvaluation.results.length,
-            });
-
-            return {
-              provider: "standards-analyser" as const,
-              rules: standardsEvaluation.rules,
-              results: standardsEvaluation.results,
-            };
-          } catch {
-            const standardsEvaluatorStartedAt = nowForTrace();
-            const standardsEvaluation = deps.standardsEvaluator.evaluate({
-              commitId: action.payload.commitId,
-              ruleText: standardsSource.ruleText,
-              files: context.files,
-              hunks: context.hunks,
-            });
-            trace.mark("ai-analysis-standards-evaluator-complete", {
-              elapsedMs: durationMsSince(standardsEvaluatorStartedAt),
-              ruleCount: standardsEvaluation.rules.length,
-              resultCount: standardsEvaluation.results.length,
-            });
-
-            return {
-              provider: "standards-evaluator" as const,
-              rules: standardsEvaluation.rules,
-              results: standardsEvaluation.results,
-            };
-          }
-        })();
-
-        const [output, parallelStandardsEvaluation] = await Promise.all([
-          commitAnalysisPromise,
-          standardsAnalysisPromise,
-        ]);
         trace.mark("ai-analysis-commit-analyser-complete", {
           elapsedMs: durationMsSince(commitAnalysisStartedAt),
           overviewCardCount: output.overviewCards.length,
@@ -955,35 +957,101 @@ export function createReviewListenerMiddleware(
           return;
         }
 
+        listenerApi.dispatch(reviewUiActions.aiAnalysisSucceeded({ output }));
+        writeCurrentAiAnalysisToStorage(listenerApi.getState(), context.commit);
+
+        if (output.sequenceSteps.length === 0) {
+          queueSequenceRegeneration("ai-analysis-sequence-regeneration-requested-post-summary");
+        }
+
         let standardsRules = output.standardsRules;
         let standardsResults = output.standardsResults;
         let standardsProvider: "commit-analyser" | "standards-analyser" | "standards-evaluator" =
           "commit-analyser";
 
-        if (standardsRules.length === 0 || standardsResults.length === 0) {
-          standardsRules = parallelStandardsEvaluation.rules;
-          standardsResults = parallelStandardsEvaluation.results;
-          standardsProvider = parallelStandardsEvaluation.provider;
-        } else {
+        if (standardsRules.length > 0 || standardsResults.length > 0) {
           trace.mark("ai-analysis-standards-from-commit-analysis", {
             ruleCount: standardsRules.length,
             resultCount: standardsResults.length,
           });
+        } else {
+          listenerApi.dispatch(reviewUiActions.standardsAnalysisStarted());
+
+          try {
+            const standardsSourceStartedAt = nowForTrace();
+            const standardsSource = await resolveStandardsSource(context.commit.repositoryPath);
+            trace.mark("ai-analysis-standards-source-resolved", {
+              elapsedMs: durationMsSince(standardsSourceStartedAt),
+              standardsSourcePath: standardsSource.sourcePath,
+            });
+
+            try {
+              const standardsAnalyserStartedAt = nowForTrace();
+              const standardsEvaluation = await deps.standardsAnalyser.analyseStandards({
+                commitId: action.payload.commitId,
+                commit: context.commit,
+                files: context.files,
+                hunks: context.hunks,
+                ruleText: standardsSource.ruleText,
+                standardsSourcePath: standardsSource.sourcePath,
+              });
+              trace.mark("ai-analysis-standards-analyser-complete", {
+                elapsedMs: durationMsSince(standardsAnalyserStartedAt),
+                ruleCount: standardsEvaluation.rules.length,
+                resultCount: standardsEvaluation.results.length,
+              });
+
+              standardsRules = standardsEvaluation.rules;
+              standardsResults = standardsEvaluation.results;
+              standardsProvider = "standards-analyser";
+            } catch {
+              const standardsEvaluatorStartedAt = nowForTrace();
+              const standardsEvaluation = deps.standardsEvaluator.evaluate({
+                commitId: action.payload.commitId,
+                ruleText: standardsSource.ruleText,
+                files: context.files,
+                hunks: context.hunks,
+              });
+              trace.mark("ai-analysis-standards-evaluator-complete", {
+                elapsedMs: durationMsSince(standardsEvaluatorStartedAt),
+                ruleCount: standardsEvaluation.rules.length,
+                resultCount: standardsEvaluation.results.length,
+              });
+
+              standardsRules = standardsEvaluation.rules;
+              standardsResults = standardsEvaluation.results;
+              standardsProvider = "standards-evaluator";
+            }
+          } catch (error) {
+            if (error instanceof Error && error.name === "AbortError") {
+              trace.mark("ai-analysis-aborted");
+              return;
+            }
+
+            const message =
+              error instanceof Error ? error.message : "Failed to analyse coding standards.";
+            listenerApi.dispatch(
+              reviewUiActions.standardsAnalysisFailed({
+                errorMessage: message,
+              }),
+            );
+            trace.fail(error, {
+              phase: "standards",
+            });
+            traceSummaryFields = {
+              success: true,
+              standardsProvider: "failed",
+              overviewCardCount: output.overviewCards.length,
+              flowComparisonCount: output.flowComparisons.length,
+              sequenceStepCount: listenerApi.getState().reviewUi.aiAnalysis?.sequenceSteps.length ?? 0,
+              fileSummaryCount: output.fileSummaries.length,
+              standardsRuleCount: 0,
+              standardsResultCount: 0,
+            };
+            return;
+          }
         }
 
-        const enrichedOutput = {
-          ...output,
-          standardsRules,
-          standardsResults,
-        };
-
-        writeAiAnalysisToStorage({
-          repositoryPath: context.commit.repositoryPath,
-          commitSha: context.commit.commitSha,
-          analysis: toCachedAnalysisData(enrichedOutput),
-        });
-
-        listenerApi.dispatch(reviewUiActions.aiAnalysisSucceeded({ output: enrichedOutput }));
         listenerApi.dispatch(
           reviewEntitiesActions.standardsEvaluated({
             commitId: action.payload.commitId,
@@ -991,20 +1059,23 @@ export function createReviewListenerMiddleware(
             results: standardsResults,
           }),
         );
+        listenerApi.dispatch(
+          reviewUiActions.aiAnalysisStandardsApplied({
+            commitId: action.payload.commitId,
+            standardsRules,
+            standardsResults,
+          }),
+        );
         listenerApi.dispatch(reviewUiActions.standardsAnalysisSucceeded());
-
-        if (enrichedOutput.sequenceSteps.length === 0) {
-          trace.mark("ai-analysis-sequence-regeneration-requested");
-          listenerApi.dispatch(regenerateSequenceRequested({ commitId: action.payload.commitId }));
-        }
+        writeCurrentAiAnalysisToStorage(listenerApi.getState(), context.commit);
 
         traceSummaryFields = {
           success: true,
           standardsProvider,
-          overviewCardCount: enrichedOutput.overviewCards.length,
-          flowComparisonCount: enrichedOutput.flowComparisons.length,
-          sequenceStepCount: enrichedOutput.sequenceSteps.length,
-          fileSummaryCount: enrichedOutput.fileSummaries.length,
+          overviewCardCount: output.overviewCards.length,
+          flowComparisonCount: output.flowComparisons.length,
+          sequenceStepCount: listenerApi.getState().reviewUi.aiAnalysis?.sequenceSteps.length ?? output.sequenceSteps.length,
+          fileSummaryCount: output.fileSummaries.length,
           standardsRuleCount: standardsRules.length,
           standardsResultCount: standardsResults.length,
         };

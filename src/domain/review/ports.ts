@@ -109,6 +109,14 @@ export interface AnalyseCommitInput {
   readonly standardsRuleText?: string;
   readonly standardsSourcePath?: string;
   readonly abortSignal?: AbortSignal;
+  readonly onFileSummary?: (
+    summary: AiFileSummary,
+    index: number,
+    total: number,
+  ) => void | Promise<void>;
+  readonly onFileSummariesReady?: (
+    fileSummaries: readonly AiFileSummary[],
+  ) => void | Promise<void>;
 }
 
 export interface AiOverviewCard {

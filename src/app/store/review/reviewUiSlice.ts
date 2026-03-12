@@ -1,4 +1,5 @@
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
+import { castDraft } from "immer";
 
 import {
   createDefaultFileFilter,
@@ -10,12 +11,17 @@ import {
   type PublishReviewPackage,
 } from "../../../application/review/index.ts";
 import type {
+  AiFileSummary,
+  AiFlowComparison,
+  AiOverviewCard,
   AiSequenceStep,
   AnalyseCommitOutput,
   CommitFileVersions,
   DiffOrientation,
   PublishReviewResult,
   RepositoryCommitSummary,
+  StandardsResult,
+  StandardsRule,
 } from "../../../domain/review/index.ts";
 
 export interface HydrateUiForCommitPayload {
@@ -57,6 +63,21 @@ export interface FileVersionsLoadFailedPayload {
 export interface SequenceGenerationSucceededPayload {
   readonly commitId: string;
   readonly sequenceSteps: readonly AiSequenceStep[];
+}
+
+export interface AiAnalysisStartedPayload {
+  readonly commitId: string;
+}
+
+export interface AiFileSummaryReceivedPayload {
+  readonly commitId: string;
+  readonly summary: AiFileSummary;
+}
+
+export interface AiAnalysisStandardsAppliedPayload {
+  readonly commitId: string;
+  readonly standardsRules: readonly StandardsRule[];
+  readonly standardsResults: readonly StandardsResult[];
 }
 
 function cloneFileFilter(filter: FileFilter) {
@@ -137,6 +158,100 @@ function cloneRepositoryCommits(
     authorEmail: commit.authorEmail,
     authoredAtIso: commit.authoredAtIso,
   }));
+}
+
+function cloneAiOverviewCard(card: AiOverviewCard): AiOverviewCard {
+  return {
+    kind: card.kind,
+    title: card.title,
+    body: card.body,
+  };
+}
+
+function cloneAiFlowComparison(pair: AiFlowComparison): AiFlowComparison {
+  return {
+    beforeTitle: pair.beforeTitle,
+    beforeBody: pair.beforeBody,
+    afterTitle: pair.afterTitle,
+    afterBody: pair.afterBody,
+    ...(pair.technicalDetails
+      ? {
+          technicalDetails: pair.technicalDetails,
+        }
+      : {}),
+    ...(pair.hunkHeadersByFile && pair.hunkHeadersByFile.length > 0
+      ? {
+          hunkHeadersByFile: pair.hunkHeadersByFile.map((entry) => ({
+            filePath: entry.filePath,
+            hunkHeaders: [...entry.hunkHeaders],
+          })),
+        }
+      : {}),
+    filePaths: [...pair.filePaths],
+  };
+}
+
+function cloneAiSequenceStep(step: AiSequenceStep): AiSequenceStep {
+  return {
+    ...(step.token ? { token: step.token } : {}),
+    ...(step.sourceId ? { sourceId: step.sourceId } : {}),
+    sourceLabel: step.sourceLabel,
+    ...(step.targetId ? { targetId: step.targetId } : {}),
+    targetLabel: step.targetLabel,
+    message: step.message,
+    filePath: step.filePath,
+  };
+}
+
+function cloneAiFileSummary(summary: AiFileSummary): AiFileSummary {
+  return {
+    filePath: summary.filePath,
+    summary: summary.summary,
+    riskNote: summary.riskNote,
+    ...(summary.technicalDetails
+      ? {
+          technicalDetails: summary.technicalDetails,
+        }
+      : {}),
+  };
+}
+
+function cloneStandardsRule(rule: StandardsRule): StandardsRule {
+  return {
+    id: rule.id,
+    title: rule.title,
+    description: rule.description,
+    severity: rule.severity,
+  };
+}
+
+function cloneStandardsResult(result: StandardsResult): StandardsResult {
+  return {
+    id: result.id,
+    commitId: result.commitId,
+    ruleId: result.ruleId,
+    status: result.status,
+    summary: result.summary,
+    evidence: result.evidence.map((item) => ({
+      ...(item.fileId ? { fileId: item.fileId } : {}),
+      ...(item.filePath ? { filePath: item.filePath } : {}),
+      ...(item.hunkId ? { hunkId: item.hunkId } : {}),
+      ...(item.lineNumber ? { lineNumber: item.lineNumber } : {}),
+      note: item.note,
+    })),
+  };
+}
+
+function createEmptyAiAnalysis(commitId: string): AnalyseCommitOutput {
+  return {
+    commitId,
+    overviewCards: [],
+    flowComparisons: [],
+    sequenceSteps: [],
+    fileSummaries: [],
+    standardsRules: [],
+    standardsResults: [],
+  };
 }
 
 const initialState = createInitialReviewUiState();
@@ -258,11 +373,39 @@ export const reviewUiSlice = createSlice({
       state.publishResult = null;
       state.publishError = action.payload.errorMessage;
     },
-    aiAnalysisStarted(state): void {
+    aiAnalysisStarted(state, action: PayloadAction<AiAnalysisStartedPayload>): void {
       state.aiAnalysisStatus = "analysing";
       state.aiAnalysisError = null;
       state.aiSequenceStatus = "idle";
       state.aiSequenceError = null;
+
+      if (!state.aiAnalysis || state.aiAnalysis.commitId !== action.payload.commitId) {
+        state.aiAnalysis = castDraft(createEmptyAiAnalysis(action.payload.commitId));
+      }
+    },
+    aiFileSummaryReceived(
+      state,
+      action: PayloadAction<AiFileSummaryReceivedPayload>,
+    ): void {
+      const currentAnalysis =
+        state.aiAnalysis && state.aiAnalysis.commitId === action.payload.commitId
+          ? state.aiAnalysis
+          : createEmptyAiAnalysis(action.payload.commitId);
+      const nextSummary = cloneAiFileSummary(action.payload.summary);
+      const existingIndex = currentAnalysis.fileSummaries.findIndex(
+        (summary) => summary.filePath === nextSummary.filePath,
+      );
+      const nextFileSummaries =
+        existingIndex >= 0
+          ? currentAnalysis.fileSummaries.map((summary, index) =>
+              index === existingIndex ? nextSummary : summary
+            )
+          : [...currentAnalysis.fileSummaries, nextSummary];
+
+      state.aiAnalysis = castDraft({
+        ...currentAnalysis,
+        fileSummaries: nextFileSummaries,
+      });
     },
     aiAnalysisSucceeded(
       state,
@@ -270,72 +413,40 @@ export const reviewUiSlice = createSlice({
     ): void {
       state.aiAnalysisStatus = "analysed";
       const output = action.payload.output;
-      state.aiAnalysis = {
+      const existingAnalysis =
+        state.aiAnalysis && state.aiAnalysis.commitId === output.commitId
+          ? state.aiAnalysis
+          : null;
+      const nextSequenceSteps =
+        output.sequenceSteps.length > 0
+          ? output.sequenceSteps.map(cloneAiSequenceStep)
+          : existingAnalysis?.sequenceSteps ?? [];
+      const nextStandardsRules =
+        output.standardsRules.length > 0
+          ? output.standardsRules.map(cloneStandardsRule)
+          : existingAnalysis?.standardsRules ?? [];
+      const nextStandardsResults =
+        output.standardsResults.length > 0
+          ? output.standardsResults.map(cloneStandardsResult)
+          : existingAnalysis?.standardsResults ?? [];
+
+      state.aiAnalysis = castDraft({
         commitId: output.commitId,
-        overviewCards: output.overviewCards.map((c) => ({ kind: c.kind, title: c.title, body: c.body })),
-        flowComparisons: output.flowComparisons.map((pair) => ({
-          beforeTitle: pair.beforeTitle,
-          beforeBody: pair.beforeBody,
-          afterTitle: pair.afterTitle,
-          afterBody: pair.afterBody,
-          ...(pair.technicalDetails
-            ? {
-              technicalDetails: pair.technicalDetails,
-            }
-          : {}),
-          ...(pair.hunkHeadersByFile && pair.hunkHeadersByFile.length > 0
-            ? {
-                hunkHeadersByFile: pair.hunkHeadersByFile.map((entry) => ({
-                  filePath: entry.filePath,
-                  hunkHeaders: [...entry.hunkHeaders],
-                })),
-              }
-            : {}),
-          filePaths: [...pair.filePaths],
-        })),
-        sequenceSteps: output.sequenceSteps.map((s) => ({
-          ...(s.token ? { token: s.token } : {}),
-          ...(s.sourceId ? { sourceId: s.sourceId } : {}),
-          sourceLabel: s.sourceLabel,
-          ...(s.targetId ? { targetId: s.targetId } : {}),
-          targetLabel: s.targetLabel,
-          message: s.message,
-          filePath: s.filePath,
-        })),
-        fileSummaries: output.fileSummaries.map((f) => ({
-          filePath: f.filePath,
-          summary: f.summary,
-          riskNote: f.riskNote,
-          ...(f.technicalDetails
-            ? {
-                technicalDetails: f.technicalDetails,
-              }
-            : {}),
-        })),
-        standardsRules: output.standardsRules.map((rule) => ({
-          id: rule.id,
-          title: rule.title,
-          description: rule.description,
-          severity: rule.severity,
-        })),
-        standardsResults: output.standardsResults.map((result) => ({
-          id: result.id,
-          commitId: result.commitId,
-          ruleId: result.ruleId,
-          status: result.status,
-          summary: result.summary,
-          evidence: result.evidence.map((item) => ({
-            ...(item.fileId ? { fileId: item.fileId } : {}),
-            ...(item.filePath ? { filePath: item.filePath } : {}),
-            ...(item.hunkId ? { hunkId: item.hunkId } : {}),
-            ...(item.lineNumber ? { lineNumber: item.lineNumber } : {}),
-            note: item.note,
-          })),
-        })),
-      };
+        overviewCards: output.overviewCards.map(cloneAiOverviewCard),
+        flowComparisons: output.flowComparisons.map(cloneAiFlowComparison),
+        sequenceSteps: nextSequenceSteps,
+        fileSummaries: output.fileSummaries.map(cloneAiFileSummary),
+        standardsRules: nextStandardsRules,
+        standardsResults: nextStandardsResults,
+      });
       state.aiAnalysisError = null;
-      state.aiSequenceStatus = output.sequenceSteps.length > 0 ? "ready" : "idle";
-      state.aiSequenceError = null;
+      if (nextSequenceSteps.length > 0) {
+        state.aiSequenceStatus = "ready";
+        state.aiSequenceError = null;
+      } else if (state.aiSequenceStatus === "idle") {
+        state.aiSequenceStatus = "idle";
+        state.aiSequenceError = null;
+      }
     },
     aiAnalysisFailed(state, action: PayloadAction<{ readonly errorMessage: string }>): void {
       state.aiAnalysisStatus = "error";
@@ -353,10 +464,10 @@ export const reviewUiSlice = createSlice({
 
       state.aiSequenceStatus = "generating";
       state.aiSequenceError = null;
-      state.aiAnalysis = {
+      state.aiAnalysis = castDraft({
         ...state.aiAnalysis,
         sequenceSteps: [],
-      };
+      });
     },
     sequenceGenerationSucceeded(
       state,
@@ -366,7 +477,7 @@ export const reviewUiSlice = createSlice({
         return;
       }
 
-      state.aiAnalysis = {
+      state.aiAnalysis = castDraft({
         ...state.aiAnalysis,
         sequenceSteps: action.payload.sequenceSteps.map((step) => ({
           ...(step.token ? { token: step.token } : {}),
@@ -377,7 +488,7 @@ export const reviewUiSlice = createSlice({
           message: step.message,
           filePath: step.filePath,
         })),
-      };
+      });
       state.aiSequenceStatus = "ready";
       state.aiSequenceError = null;
     },
@@ -399,6 +510,20 @@ export const reviewUiSlice = createSlice({
     standardsAnalysisSucceeded(state): void {
       state.standardsAnalysisStatus = "ready";
       state.standardsAnalysisError = null;
+    },
+    aiAnalysisStandardsApplied(
+      state,
+      action: PayloadAction<AiAnalysisStandardsAppliedPayload>,
+    ): void {
+      if (!state.aiAnalysis || state.aiAnalysis.commitId !== action.payload.commitId) {
+        return;
+      }
+
+      state.aiAnalysis = castDraft({
+        ...state.aiAnalysis,
+        standardsRules: action.payload.standardsRules.map(cloneStandardsRule),
+        standardsResults: action.payload.standardsResults.map(cloneStandardsResult),
+      });
     },
     standardsAnalysisFailed(state, action: PayloadAction<{ readonly errorMessage: string }>): void {
       state.standardsAnalysisStatus = "error";

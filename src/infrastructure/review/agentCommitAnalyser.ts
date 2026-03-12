@@ -12,6 +12,7 @@ import {
   readAiAnalysisConfigFromStorage,
   readApiKeyFromStorage,
   startLatencyTrace,
+  type LatencyTrace,
 } from "../../shared/index.ts";
 import {
   canUseApiProvider,
@@ -80,6 +81,8 @@ const MAX_LINES_PER_HUNK = 25;
 const MAX_FILES_IN_PROMPT = 20;
 /** Max parallel file summary calls for SDK path. */
 const FILE_SUMMARY_CONCURRENCY = 4;
+/** ACP sessions are single-turn and queue prompts internally, so keep staging serial. */
+const ACP_FILE_SUMMARY_CONCURRENCY = 1;
 /** CLI mode prompt budgets to keep end-to-end latency lower. */
 const CLI_MAX_HUNKS_IN_PROMPT = 6;
 const CLI_MAX_LINES_PER_HUNK = 12;
@@ -999,6 +1002,227 @@ export class AgentCommitAnalyser implements CommitAnalyser {
     return parseOverviewResponse(raw);
   }
 
+  async #analyseFileLocal(
+    runPrompt: (prompt: string) => Promise<string>,
+    commit: CommitEntity,
+    file: ChangedFile,
+    fileHunks: readonly DiffHunk[],
+  ): Promise<AiFileSummary> {
+    const raw = await runPrompt(buildFilePrompt(commit, file, fileHunks));
+    return (
+      parseFileSummaryResponse(raw, file.path) ?? {
+        filePath: file.path,
+        summary: `${file.status} — ${file.additions} additions, ${file.deletions} deletions.`,
+        riskNote: "Summary unavailable.",
+      }
+    );
+  }
+
+  async #generateOverviewLocal(
+    runPrompt: (prompt: string) => Promise<string>,
+    commit: CommitEntity,
+    fileSummaries: readonly AiFileSummary[],
+    hunkHeadersByFilePath: readonly {
+      readonly filePath: string;
+      readonly hunkHeaders: readonly string[];
+    }[],
+  ): Promise<{
+    overviewCards: readonly AiOverviewCard[];
+    flowComparisons: readonly AiFlowComparison[];
+  }> {
+    const raw = await runPrompt(
+      buildOverviewPrompt(commit, fileSummaries, hunkHeadersByFilePath),
+    );
+    return parseOverviewResponse(raw);
+  }
+
+  async #runPromptDrivenAnalysis(
+    input: AnalyseCommitInput,
+    trace: LatencyTrace,
+    options: {
+      readonly fileSummaryConcurrency: number;
+      readonly analyseFile: (
+        file: ChangedFile,
+        fileHunks: readonly DiffHunk[],
+      ) => Promise<AiFileSummary>;
+      readonly generateOverview: (
+        fileSummaries: readonly AiFileSummary[],
+        hunkHeadersByFilePath: readonly {
+          readonly filePath: string;
+          readonly hunkHeaders: readonly string[];
+        }[],
+      ) => Promise<{
+        overviewCards: readonly AiOverviewCard[];
+        flowComparisons: readonly AiFlowComparison[];
+      }>;
+    },
+  ): Promise<AnalyseCommitOutput> {
+    const { maxChurnThreshold } = readAiAnalysisConfigFromStorage();
+
+    type FilePartition =
+      | { readonly kind: "analyse"; readonly file: ChangedFile }
+      | { readonly kind: "skip-pattern"; readonly file: ChangedFile }
+      | { readonly kind: "skip-churn"; readonly file: ChangedFile };
+
+    const partitioned: FilePartition[] = input.files.map((file) => {
+      if (isExcludedByPattern(file.path)) {
+        return { kind: "skip-pattern", file };
+      }
+
+      if (isExcludedByChurn(file.additions, file.deletions, maxChurnThreshold)) {
+        return { kind: "skip-churn", file };
+      }
+
+      return { kind: "analyse", file };
+    });
+
+    const analyseCount = partitioned.filter((entry) => entry.kind === "analyse").length;
+    const skippedPatternCount = partitioned.filter(
+      (entry) => entry.kind === "skip-pattern",
+    ).length;
+    const skippedChurnCount = partitioned.filter(
+      (entry) => entry.kind === "skip-churn",
+    ).length;
+    trace.mark("commit-analysis-files-partitioned", {
+      analyseCount,
+      skippedPatternCount,
+      skippedChurnCount,
+      maxChurnThreshold,
+    });
+
+    const hunksByFileId = new Map<string, DiffHunk[]>();
+    for (const hunk of input.hunks) {
+      const existing = hunksByFileId.get(hunk.fileId);
+      if (existing) {
+        existing.push(hunk);
+      } else {
+        hunksByFileId.set(hunk.fileId, [hunk]);
+      }
+    }
+
+    const filePathById = new Map(input.files.map((file) => [file.id, file.path] as const));
+    const hunkHeadersByFilePath = [...hunksByFileId.entries()]
+      .map(([fileId, hunks]) => {
+        const filePath = filePathById.get(fileId) ?? "";
+        if (filePath.length === 0) {
+          return null;
+        }
+
+        const hunkHeaders = hunks
+          .map((hunk) => hunk.header.replaceAll(/\s+/g, " ").trim())
+          .filter((header) => header.length > 0)
+          .slice(0, 8);
+
+        if (hunkHeaders.length === 0) {
+          return null;
+        }
+
+        return {
+          filePath,
+          hunkHeaders,
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+    trace.mark("commit-analysis-file-summaries-start", {
+      concurrency: options.fileSummaryConcurrency,
+    });
+    const totalSummaries = partitioned.length;
+    const fileSummaries = await mapWithConcurrency<FilePartition, AiFileSummary>(partitioned, {
+      concurrency: options.fileSummaryConcurrency,
+      ...(input.abortSignal
+        ? {
+            signal: input.abortSignal,
+          }
+        : {}),
+      mapper: async (partition, index): Promise<AiFileSummary> => {
+        throwIfAborted(input.abortSignal);
+
+        if (partition.kind === "skip-pattern") {
+          const summary = skippedFileSummary(partition.file, "pattern", maxChurnThreshold);
+          await input.onFileSummary?.(summary, index, totalSummaries);
+          return summary;
+        }
+
+        if (partition.kind === "skip-churn") {
+          const summary = skippedFileSummary(partition.file, "churn", maxChurnThreshold);
+          await input.onFileSummary?.(summary, index, totalSummaries);
+          return summary;
+        }
+
+        const startedAt = nowForTrace();
+        trace.mark("commit-analysis-file-summary-start", {
+          index,
+          filePath: partition.file.path,
+        });
+
+        try {
+          const summary = await options.analyseFile(
+            partition.file,
+            hunksByFileId.get(partition.file.id) ?? [],
+          );
+          trace.mark("commit-analysis-file-summary-complete", {
+            index,
+            filePath: partition.file.path,
+            elapsedMs: durationMsSince(startedAt),
+          });
+          await input.onFileSummary?.(summary, index, totalSummaries);
+          return summary;
+        } catch (error) {
+          if (isAbortError(error)) {
+            throw error;
+          }
+
+          trace.mark("commit-analysis-file-summary-failed", {
+            index,
+            filePath: partition.file.path,
+            elapsedMs: durationMsSince(startedAt),
+            message: error instanceof Error ? error.message : String(error),
+          });
+
+          const fallbackSummary = {
+            filePath: partition.file.path,
+            summary: "Summary unavailable.",
+            riskNote: "Summary unavailable.",
+          };
+          await input.onFileSummary?.(fallbackSummary, index, totalSummaries);
+          return fallbackSummary;
+        } finally {
+          await yieldToUiThread();
+        }
+      },
+    });
+    trace.mark("commit-analysis-file-summaries-complete", {
+      fileSummaryCount: fileSummaries.length,
+    });
+    await input.onFileSummariesReady?.(fileSummaries);
+
+    throwIfAborted(input.abortSignal);
+    const overviewStartedAt = nowForTrace();
+    trace.mark("commit-analysis-overview-start");
+    const { overviewCards, flowComparisons } = await options.generateOverview(
+      fileSummaries,
+      hunkHeadersByFilePath,
+    );
+    trace.mark("commit-analysis-overview-complete", {
+      elapsedMs: durationMsSince(overviewStartedAt),
+      overviewCardCount: overviewCards.length,
+      flowComparisonCount: flowComparisons.length,
+    });
+
+    throwIfAborted(input.abortSignal);
+
+    return {
+      commitId: input.commitId,
+      overviewCards,
+      flowComparisons,
+      sequenceSteps: [],
+      fileSummaries,
+      standardsRules: [],
+      standardsResults: [],
+    };
+  }
+
   async analyseCommit(input: AnalyseCommitInput): Promise<AnalyseCommitOutput> {
     const trace = startLatencyTrace({
       scope: "commit-analysis",
@@ -1044,11 +1268,38 @@ export class AgentCommitAnalyser implements CommitAnalyser {
         localAgent: providerState.localAgent?.id ?? null,
         transport: providerState.localTransport,
       });
-      const legacyPrompt = buildLegacyPrompt(input);
-      trace.mark("commit-analysis-local-request", {
-        promptLength: legacyPrompt.length,
-      });
       try {
+        if (providerState.localTransport === "acp") {
+          trace.mark("commit-analysis-local-staged-start", {
+            concurrency: ACP_FILE_SUMMARY_CONCURRENCY,
+          });
+          const parsed = await this.#runPromptDrivenAnalysis(input, trace, {
+            fileSummaryConcurrency: ACP_FILE_SUMMARY_CONCURRENCY,
+            analyseFile: async (file, fileHunks) =>
+              this.#analyseFileLocal(runViaLocalAgent, input.commit, file, fileHunks),
+            generateOverview: async (fileSummaries, hunkHeadersByFilePath) =>
+              this.#generateOverviewLocal(
+                runViaLocalAgent,
+                input.commit,
+                fileSummaries,
+                hunkHeadersByFilePath,
+              ),
+          });
+          traceSummaryFields = {
+            provider: providerState.localTransport,
+            path: "preferred-staged",
+            flowComparisonCount: parsed.flowComparisons.length,
+            fileSummaryCount: parsed.fileSummaries.length,
+            overviewCardCount: parsed.overviewCards.length,
+          };
+          finishTrace(traceSummaryFields);
+          return parsed;
+        }
+
+        const legacyPrompt = buildLegacyPrompt(input);
+        trace.mark("commit-analysis-local-request", {
+          promptLength: legacyPrompt.length,
+        });
         const startedAt = nowForTrace();
         const localResponse = await runViaLocalAgent(legacyPrompt);
         trace.mark("commit-analysis-local-response", {
@@ -1056,7 +1307,13 @@ export class AgentCommitAnalyser implements CommitAnalyser {
           responseLength: localResponse.length,
         });
         const parsed = parseLegacyResponse(localResponse, input.commitId);
-        if (parsed) {
+        if (!parsed) {
+          if (!resolvedApiKey) {
+            throw new Error(
+              "Local-agent response could not be parsed as valid analysis JSON.",
+            );
+          }
+        } else {
           traceSummaryFields = {
             provider: providerState.localTransport,
             path: "preferred",
@@ -1065,11 +1322,6 @@ export class AgentCommitAnalyser implements CommitAnalyser {
           };
           finishTrace(traceSummaryFields);
           return parsed;
-        }
-        if (!resolvedApiKey) {
-          throw new Error(
-            "Local-agent response could not be parsed as valid analysis JSON.",
-          );
         }
       } catch (error) {
         if (secondaryProvider !== "api" || !canUseApiProvider(providerState)) {
@@ -1100,8 +1352,42 @@ export class AgentCommitAnalyser implements CommitAnalyser {
         localAgent: providerState.localAgent.id,
         transport: providerState.localTransport,
       });
-      const legacyPrompt = buildLegacyPrompt(input);
+      if (providerState.localTransport === "acp") {
+        try {
+          const parsed = await this.#runPromptDrivenAnalysis(input, trace, {
+            fileSummaryConcurrency: ACP_FILE_SUMMARY_CONCURRENCY,
+            analyseFile: async (file, fileHunks) =>
+              this.#analyseFileLocal(runViaLocalAgent, input.commit, file, fileHunks),
+            generateOverview: async (fileSummaries, hunkHeadersByFilePath) =>
+              this.#generateOverviewLocal(
+                runViaLocalAgent,
+                input.commit,
+                fileSummaries,
+                hunkHeadersByFilePath,
+              ),
+          });
+          traceSummaryFields = {
+            provider: providerState.localTransport,
+            path: "required-staged",
+            flowComparisonCount: parsed.flowComparisons.length,
+            fileSummaryCount: parsed.fileSummaries.length,
+            overviewCardCount: parsed.overviewCards.length,
+          };
+          finishTrace(traceSummaryFields);
+          return parsed;
+        } catch (error) {
+          trace.fail(error);
+          finishTrace(traceSummaryFields);
+          const message =
+            error instanceof Error ? error.message : "Local-agent execution failed.";
+          throw new Error(
+            `Commit analysis requires a working Anthropic API key or configured local agent (${message}).`,
+          );
+        }
+      }
+
       try {
+        const legacyPrompt = buildLegacyPrompt(input);
         const startedAt = nowForTrace();
         const localResponse = await runViaLocalAgent(legacyPrompt);
         trace.mark("commit-analysis-local-response", {
@@ -1121,11 +1407,13 @@ export class AgentCommitAnalyser implements CommitAnalyser {
         };
         finishTrace(traceSummaryFields);
         return parsed;
-      } catch (error) {
-        trace.fail(error);
+      } catch (legacyError) {
+        trace.fail(legacyError);
         finishTrace(traceSummaryFields);
         const message =
-          error instanceof Error ? error.message : "Local-agent execution failed.";
+          legacyError instanceof Error
+            ? legacyError.message
+            : "Local-agent execution failed.";
         throw new Error(
           `Commit analysis requires a working Anthropic API key or configured local agent (${message}).`,
         );
@@ -1149,174 +1437,26 @@ export class AgentCommitAnalyser implements CommitAnalyser {
       trace.mark("commit-analysis-sdk-client-create-complete", {
         elapsedMs: durationMsSince(clientCreateStartedAt),
       });
-      const { maxChurnThreshold } = readAiAnalysisConfigFromStorage();
-
-      // Partition files: some are skipped (lock files, huge churn) and get
-      // placeholder summaries without any API call.
-      type FilePartition =
-        | { readonly kind: "analyse"; readonly file: ChangedFile }
-        | { readonly kind: "skip-pattern"; readonly file: ChangedFile }
-        | { readonly kind: "skip-churn"; readonly file: ChangedFile };
-
-      const partitioned: FilePartition[] = input.files.map((file) => {
-        if (isExcludedByPattern(file.path))
-          return { kind: "skip-pattern", file };
-        if (
-          isExcludedByChurn(file.additions, file.deletions, maxChurnThreshold)
-        )
-          return { kind: "skip-churn", file };
-        return { kind: "analyse", file };
+      const output = await this.#runPromptDrivenAnalysis(input, trace, {
+        fileSummaryConcurrency: FILE_SUMMARY_CONCURRENCY,
+        analyseFile: async (file, fileHunks) =>
+          this.#analyseFileSdk(client, input.commit, file, fileHunks),
+        generateOverview: async (fileSummaries, hunkHeadersByFilePath) =>
+          this.#generateOverviewSdk(
+            client,
+            input.commit,
+            fileSummaries,
+            hunkHeadersByFilePath,
+          ),
       });
-      const analyseCount = partitioned.filter((entry) => entry.kind === "analyse").length;
-      const skippedPatternCount = partitioned.filter(
-        (entry) => entry.kind === "skip-pattern",
-      ).length;
-      const skippedChurnCount = partitioned.filter(
-        (entry) => entry.kind === "skip-churn",
-      ).length;
-      trace.mark("commit-analysis-files-partitioned", {
-        analyseCount,
-        skippedPatternCount,
-        skippedChurnCount,
-        maxChurnThreshold,
-      });
-
-      // Group hunks by fileId for targeted per-file prompts.
-      const hunksByFileId = new Map<string, DiffHunk[]>();
-      for (const hunk of input.hunks) {
-        const existing = hunksByFileId.get(hunk.fileId);
-        if (existing) {
-          existing.push(hunk);
-        } else {
-          hunksByFileId.set(hunk.fileId, [hunk]);
-        }
-      }
-      const filePathById = new Map(input.files.map((file) => [file.id, file.path] as const));
-      const hunkHeadersByFilePath = [...hunksByFileId.entries()]
-        .map(([fileId, hunks]) => {
-          const filePath = filePathById.get(fileId) ?? "";
-          if (filePath.length === 0) {
-            return null;
-          }
-
-          const hunkHeaders = hunks
-            .map((hunk) => hunk.header.replaceAll(/\s+/g, " ").trim())
-            .filter((header) => header.length > 0)
-            .slice(0, 8);
-
-          if (hunkHeaders.length === 0) {
-            return null;
-          }
-
-          return {
-            filePath,
-            hunkHeaders,
-          };
-        })
-        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
-
-      // Phase 1: analyse files with bounded parallelism while preserving output order.
-      trace.mark("commit-analysis-file-summaries-start", {
-        concurrency: FILE_SUMMARY_CONCURRENCY,
-      });
-      const fileSummaries = await mapWithConcurrency<FilePartition, AiFileSummary>(partitioned, {
-        concurrency: FILE_SUMMARY_CONCURRENCY,
-        ...(input.abortSignal
-          ? {
-              signal: input.abortSignal,
-            }
-          : {}),
-        mapper: async (partition, index): Promise<AiFileSummary> => {
-          throwIfAborted(input.abortSignal);
-
-          if (partition.kind === "skip-pattern") {
-            return skippedFileSummary(partition.file, "pattern", maxChurnThreshold);
-          }
-
-          if (partition.kind === "skip-churn") {
-            return skippedFileSummary(partition.file, "churn", maxChurnThreshold);
-          }
-
-          const startedAt = nowForTrace();
-          trace.mark("commit-analysis-file-summary-start", {
-            index,
-            filePath: partition.file.path,
-          });
-
-          try {
-            const summary = await this.#analyseFileSdk(
-              client,
-              input.commit,
-              partition.file,
-              hunksByFileId.get(partition.file.id) ?? [],
-            );
-            trace.mark("commit-analysis-file-summary-complete", {
-              index,
-              filePath: partition.file.path,
-              elapsedMs: durationMsSince(startedAt),
-            });
-            return summary;
-          } catch (error) {
-            if (isAbortError(error)) {
-              throw error;
-            }
-
-            trace.mark("commit-analysis-file-summary-failed", {
-              index,
-              filePath: partition.file.path,
-              elapsedMs: durationMsSince(startedAt),
-              message: error instanceof Error ? error.message : String(error),
-            });
-
-            return {
-              filePath: partition.file.path,
-              summary: "Summary unavailable.",
-              riskNote: "Summary unavailable.",
-            };
-          } finally {
-            await yieldToUiThread();
-          }
-        },
-      });
-      trace.mark("commit-analysis-file-summaries-complete", {
-        fileSummaryCount: fileSummaries.length,
-      });
-
-      // Phase 2: generate overview from the collected summaries.
-      throwIfAborted(input.abortSignal);
-      const overviewStartedAt = nowForTrace();
-      trace.mark("commit-analysis-overview-start");
-      const { overviewCards, flowComparisons } =
-        await this.#generateOverviewSdk(
-          client,
-          input.commit,
-          fileSummaries,
-          hunkHeadersByFilePath,
-        );
-      trace.mark("commit-analysis-overview-complete", {
-        elapsedMs: durationMsSince(overviewStartedAt),
-        overviewCardCount: overviewCards.length,
-        flowComparisonCount: flowComparisons.length,
-      });
-
-      throwIfAborted(input.abortSignal);
-
       traceSummaryFields = {
         provider: "sdk",
-        flowComparisonCount: flowComparisons.length,
-        fileSummaryCount: fileSummaries.length,
-        overviewCardCount: overviewCards.length,
+        flowComparisonCount: output.flowComparisons.length,
+        fileSummaryCount: output.fileSummaries.length,
+        overviewCardCount: output.overviewCards.length,
       };
 
-      return {
-        commitId: input.commitId,
-        overviewCards,
-        flowComparisons,
-        sequenceSteps: [],
-        fileSummaries,
-        standardsRules: [],
-        standardsResults: [],
-      };
+      return output;
     } catch (error) {
       if (isAbortError(error)) {
         trace.mark("commit-analysis-aborted");

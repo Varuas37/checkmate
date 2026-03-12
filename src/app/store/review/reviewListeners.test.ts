@@ -357,6 +357,117 @@ test("analyse listener regenerates sequence when analysis response has no sequen
   assert.equal(store.getState().reviewUi.aiSequenceStatus, "ready");
 });
 
+test("analyse listener streams file summaries before overview completes and defers standards", async () => {
+  const aggregate = createCommitAggregateFixture();
+  const standards = createStandardsFixture(aggregate.commit.id, aggregate.files[0]?.path ?? "");
+  const summary = {
+    filePath: aggregate.files[0]?.path ?? "",
+    summary: "Streams the generated file summary immediately.",
+    riskNote: "Low risk.",
+    technicalDetails: "Updates the review listener pipeline in stages.",
+  };
+  const commitOutputDeferred = createDeferred<{
+    readonly commitId: string;
+    readonly overviewCards: readonly [];
+    readonly flowComparisons: readonly [];
+    readonly sequenceSteps: readonly [];
+    readonly fileSummaries: readonly [typeof summary];
+    readonly standardsRules: readonly [];
+    readonly standardsResults: readonly [];
+  }>();
+  const sequenceDeferred = createDeferred<
+    readonly [
+      {
+        readonly token: "S1";
+        readonly sourceLabel: "UI";
+        readonly targetLabel: "ReviewStore";
+        readonly message: "DISPATCH regenerateSequenceRequested";
+        readonly filePath: string;
+      },
+    ]
+  >();
+  const standardsDeferred = createDeferred<{
+    readonly rules: typeof standards.standardsRules;
+    readonly results: typeof standards.standardsResults;
+  }>();
+
+  const store = createReviewStore({
+    dependencies: {
+      commitAnalyser: {
+        analyseCommit: async (input) => {
+          await input.onFileSummary?.(summary, 0, 1);
+          await input.onFileSummariesReady?.([summary]);
+          return commitOutputDeferred.promise;
+        },
+      },
+      sequenceDiagramGenerator: {
+        generateSequenceSteps: async () => sequenceDeferred.promise,
+      },
+      standardsAnalyser: {
+        analyseStandards: async () => standardsDeferred.promise,
+      },
+    },
+  });
+
+  hydrateStoreForPublish(store);
+
+  store.dispatch(
+    analyseCommitRequested({
+      commitId: "commit-1",
+    }),
+  );
+
+  await waitForListener();
+  await waitForListener();
+
+  const streamedState = store.getState().reviewUi;
+  assert.equal(streamedState.aiAnalysisStatus, "analysing");
+  assert.equal(streamedState.aiAnalysis?.fileSummaries[0]?.summary, summary.summary);
+  assert.equal(streamedState.standardsAnalysisStatus, "idle");
+
+  commitOutputDeferred.resolve({
+    commitId: aggregate.commit.id,
+    overviewCards: [],
+    flowComparisons: [],
+    sequenceSteps: [],
+    fileSummaries: [summary],
+    standardsRules: [],
+    standardsResults: [],
+  });
+
+  await waitForListener();
+  await waitForListener();
+
+  const postSummaryState = store.getState().reviewUi;
+  assert.equal(postSummaryState.aiAnalysisStatus, "analysed");
+  assert.equal(postSummaryState.aiAnalysis?.fileSummaries[0]?.summary, summary.summary);
+  assert.equal(postSummaryState.aiSequenceStatus, "generating");
+  assert.equal(postSummaryState.standardsAnalysisStatus, "analysing");
+
+  sequenceDeferred.resolve([
+    {
+      token: "S1",
+      sourceLabel: "UI",
+      targetLabel: "ReviewStore",
+      message: "DISPATCH regenerateSequenceRequested",
+      filePath: aggregate.files[0]?.path ?? "",
+    },
+  ]);
+  standardsDeferred.resolve({
+    rules: standards.standardsRules,
+    results: standards.standardsResults,
+  });
+
+  await waitForListener();
+  await waitForListener();
+  await waitForListener();
+
+  const finalState = store.getState().reviewUi;
+  assert.equal(finalState.aiSequenceStatus, "ready");
+  assert.equal(finalState.standardsAnalysisStatus, "ready");
+  assert.equal(store.getState().reviewEntities.standardsResultIdsByCommitId["commit-1"]?.length, 1);
+});
+
 test("load listener analyses once per commit and reuses cached analysis on reload", async () => {
   installMockLocalStorage();
 

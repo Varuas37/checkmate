@@ -214,9 +214,11 @@ export function FileSummaryInspector({
         <div className="border-t border-border/60 pt-2">
           {aiLoading && (
             <div className="space-y-2">
-              <Skeleton height={10} width="48%" />
+              {aiAnalysisStatus === "idle" && <Skeleton height={10} width="48%" />}
               <p className="text-xs text-muted">
-                Generating AI analysis in the background for this commit.
+                {aiAnalysisStatus === "analysing"
+                  ? "File summary is ready. Continuing overview, sequence diagram, and coding standards in the background."
+                  : "Generating AI analysis in the background for this commit."}
               </p>
             </div>
           )}
