@@ -71,8 +71,10 @@ const FALLBACK_MAX_OUTPUT_TOKENS = 4096;
 const DEFAULT_SYSTEM_PROMPT =
   "You are a senior software engineer performing a code review. Return only valid JSON matching the requested schema. No markdown fences, no extra text.";
 
-/** Max hunks to include per individual file call. */
-const MAX_HUNKS_PER_FILE = 5;
+/** Max hunks to include per individual staged file-summary call. */
+const FILE_SUMMARY_MAX_HUNKS = 3;
+/** Max source lines shown per hunk in staged file-summary prompts. */
+const FILE_SUMMARY_MAX_LINES_PER_HUNK = 16;
 /** Max hunks included in the legacy single-call prompt. */
 const MAX_HUNKS_IN_PROMPT = 10;
 /** Max source lines shown per hunk across all prompt types. */
@@ -81,8 +83,8 @@ const MAX_LINES_PER_HUNK = 25;
 const MAX_FILES_IN_PROMPT = 20;
 /** Max parallel file summary calls for SDK path. */
 const FILE_SUMMARY_CONCURRENCY = 4;
-/** ACP sessions are single-turn and queue prompts internally, so keep staging serial. */
-const ACP_FILE_SUMMARY_CONCURRENCY = 1;
+/** ACP uses a pooled warm-session backend, so keep a small bounded fan-out. */
+const ACP_FILE_SUMMARY_CONCURRENCY = 3;
 /** CLI mode prompt budgets to keep end-to-end latency lower. */
 const CLI_MAX_HUNKS_IN_PROMPT = 6;
 const CLI_MAX_LINES_PER_HUNK = 12;
@@ -413,10 +415,16 @@ function buildFilePrompt(
   fileHunks: readonly DiffHunk[],
 ): string {
   const hunkText = fileHunks
-    .slice(0, MAX_HUNKS_PER_FILE)
+    .slice()
+    .sort((left, right) => {
+      const leftChurn = left.lines.filter((line) => line.kind !== "context").length;
+      const rightChurn = right.lines.filter((line) => line.kind !== "context").length;
+      return rightChurn - leftChurn;
+    })
+    .slice(0, FILE_SUMMARY_MAX_HUNKS)
     .map((hunk) => {
       const lines = hunk.lines
-        .slice(0, MAX_LINES_PER_HUNK)
+        .slice(0, FILE_SUMMARY_MAX_LINES_PER_HUNK)
         .map((l) => {
           const prefix =
             l.kind === "add" ? "+" : l.kind === "remove" ? "-" : " ";

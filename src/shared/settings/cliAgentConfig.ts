@@ -10,7 +10,7 @@ export interface CliAgentConfig {
   readonly command: string;
   /** Arguments inserted between the legacy CLI command and the prompt. */
   readonly promptArgs: readonly string[];
-  /** Binary name or full path for the ACP adapter, e.g. "claude-code-acp". */
+  /** Binary name or full path for the ACP adapter, e.g. "claude-agent-acp". */
   readonly acpCommand: string;
   /** Arguments passed to the ACP adapter command. */
   readonly acpArgs: readonly string[];
@@ -24,13 +24,16 @@ export interface CliAgentsSettings {
   readonly localTransport: LocalAgentTransport;
 }
 
+const LEGACY_CLAUDE_ACP_COMMAND = "claude-code-acp";
+const DEFAULT_CLAUDE_ACP_COMMAND = "claude-agent-acp";
+
 export const DEFAULT_CLI_AGENTS: readonly CliAgentConfig[] = [
   {
     id: "claude-code",
     name: "Claude Code",
     command: "claude",
     promptArgs: ["-p"],
-    acpCommand: "claude-code-acp",
+    acpCommand: DEFAULT_CLAUDE_ACP_COMMAND,
     acpArgs: [],
   },
   // `codex exec` is the non-interactive mode suitable for app-driven prompts.
@@ -57,7 +60,7 @@ function defaultAcpCommandForAgent(id: string, command: string): string {
   const normalizedCommand = command.trim().toLowerCase();
 
   if (normalizedId === "claude-code" || normalizedCommand === "claude") {
-    return "claude-code-acp";
+    return DEFAULT_CLAUDE_ACP_COMMAND;
   }
 
   if (normalizedId === "codex" || normalizedCommand === "codex") {
@@ -65,6 +68,28 @@ function defaultAcpCommandForAgent(id: string, command: string): string {
   }
 
   return "";
+}
+
+function normalizeAcpCommand(
+  id: string,
+  command: string,
+  acpCommand: string,
+): string {
+  const normalizedId = id.trim().toLowerCase();
+  const normalizedCommand = command.trim().toLowerCase();
+  const normalizedAcpCommand = acpCommand.trim().toLowerCase();
+  const isClaudeAgent =
+    normalizedId === "claude-code" || normalizedCommand === "claude";
+
+  if (normalizedAcpCommand.length === 0) {
+    return defaultAcpCommandForAgent(id, command);
+  }
+
+  if (isClaudeAgent && normalizedAcpCommand === LEGACY_CLAUDE_ACP_COMMAND) {
+    return DEFAULT_CLAUDE_ACP_COMMAND;
+  }
+
+  return acpCommand;
 }
 
 function normalizeCliAgentConfig(value: unknown): CliAgentConfig | null {
@@ -104,7 +129,7 @@ function normalizeCliAgentConfig(value: unknown): CliAgentConfig | null {
     name: name.length > 0 ? name : id,
     command,
     promptArgs: normalizedPromptArgs,
-    acpCommand: acpCommand.length > 0 ? acpCommand : defaultAcpCommandForAgent(id, command),
+    acpCommand: normalizeAcpCommand(id, command, acpCommand),
     acpArgs,
   };
 }

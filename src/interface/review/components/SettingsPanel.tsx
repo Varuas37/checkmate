@@ -930,7 +930,11 @@ export function SettingsPanel({
                       </div>
                     </div>
                     <p className="text-xs text-muted">
-                      ACP keeps a warm adapter process alive for repeated prompts. Switch to legacy CLI only if the ACP adapter is unavailable.
+                      ACP keeps a warm adapter process alive for repeated prompts. Claude uses
+                      <span className="font-mono"> claude-agent-acp </span>
+                      and falls back to
+                      <span className="font-mono"> npx -y @zed-industries/claude-agent-acp </span>
+                      if the binary is missing.
                     </p>
                   </header>
 
@@ -1009,7 +1013,7 @@ export function SettingsPanel({
                                     });
                                   }}
                                   className="h-7 font-mono text-xs"
-                                  placeholder="e.g. claude-code-acp"
+                                  placeholder="e.g. claude-agent-acp"
                                 />
                                 <label className="text-xs text-muted">ACP args</label>
                                 <Input

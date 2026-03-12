@@ -932,6 +932,9 @@ export function createReviewListenerMiddleware(
               total,
               filePath: summary.filePath,
             });
+            queueSequenceRegeneration(
+              "ai-analysis-sequence-regeneration-requested-after-first-file",
+            );
           },
           onFileSummariesReady: async (fileSummaries) => {
             if (listenerApi.signal.aborted) {

@@ -423,6 +423,7 @@ test("analyse listener streams file summaries before overview completes and defe
   const streamedState = store.getState().reviewUi;
   assert.equal(streamedState.aiAnalysisStatus, "analysing");
   assert.equal(streamedState.aiAnalysis?.fileSummaries[0]?.summary, summary.summary);
+  assert.equal(streamedState.aiSequenceStatus, "generating");
   assert.equal(streamedState.standardsAnalysisStatus, "idle");
 
   commitOutputDeferred.resolve({

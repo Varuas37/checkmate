@@ -51,6 +51,7 @@ import {
 import { DEFAULT_LOAD_REQUEST, DEFAULT_STANDARDS_RULE_TEXT, REVIEW_TABS } from "../constants.ts";
 import {
   ChangedFilesSidebar,
+  AiAnalysisOngoingPanel,
   CodeSequenceDiagramPanel,
   CommitPanel,
   CommandPalette,
@@ -173,6 +174,54 @@ function isEditableKeyboardTarget(target: EventTarget | null): boolean {
   return false;
 }
 
+function canUseSystemNotifications(): boolean {
+  return typeof window !== "undefined" && "Notification" in window;
+}
+
+async function requestReviewReadyNotificationPermission(): Promise<boolean> {
+  if (!canUseSystemNotifications()) {
+    return false;
+  }
+
+  if (Notification.permission === "granted") {
+    return true;
+  }
+
+  if (Notification.permission === "denied") {
+    return false;
+  }
+
+  return (await Notification.requestPermission()) === "granted";
+}
+
+function shouldShowReviewReadyNotification(): boolean {
+  if (typeof document === "undefined") {
+    return true;
+  }
+
+  return document.visibilityState !== "visible" || !document.hasFocus();
+}
+
+function showReviewReadyNotification(title: string, shortSha: string): void {
+  if (!canUseSystemNotifications() || Notification.permission !== "granted") {
+    return;
+  }
+
+  if (!shouldShowReviewReadyNotification()) {
+    return;
+  }
+
+  const notification = new Notification("AI review ready", {
+    body: `${shortSha} · ${title}`,
+    tag: `checkmate-ai-review-${shortSha}`,
+  });
+
+  notification.onclick = () => {
+    window.focus();
+    notification.close();
+  };
+}
+
 function CommentsIcon({ muted }: { readonly muted: boolean }) {
   return (
     <svg
@@ -277,6 +326,7 @@ export function ReviewWorkspaceContainer() {
   const [showInlineComments, setShowInlineComments] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [showUserCommentsModal, setShowUserCommentsModal] = useState(false);
+  const aiReviewReadyNotificationArmedRef = useRef(false);
   const [selectedCommentAuthorKey, setSelectedCommentAuthorKey] = useState<string | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -727,6 +777,58 @@ export function ReviewWorkspaceContainer() {
         || pair.after.fileIds.includes(activeFileId);
     });
   }, [state.activeFileId, state.sequencePairs]);
+
+  const isAiReviewAnalysisInProgress = useMemo(() => {
+    return state.aiAnalysisStatus === "analysing"
+      || state.aiSequenceStatus === "generating"
+      || state.standardsAnalysisStatus === "analysing";
+  }, [
+    state.aiAnalysisStatus,
+    state.aiSequenceStatus,
+    state.standardsAnalysisStatus,
+  ]);
+
+  const handleRefreshAiAnalysis = useCallback(() => {
+    void requestReviewReadyNotificationPermission();
+    actions.refreshAiAnalysis();
+  }, [actions]);
+
+  useEffect(() => {
+    if (!state.commit) {
+      aiReviewReadyNotificationArmedRef.current = false;
+      return;
+    }
+
+    if (state.aiAnalysisStatus === "analysing") {
+      aiReviewReadyNotificationArmedRef.current = true;
+    }
+
+    if (
+      state.aiAnalysisStatus === "error"
+      || state.aiSequenceStatus === "error"
+      || state.standardsAnalysisStatus === "error"
+    ) {
+      aiReviewReadyNotificationArmedRef.current = false;
+      return;
+    }
+
+    if (
+      state.aiAnalysisStatus !== "analysed"
+      || state.aiSequenceStatus !== "ready"
+      || state.standardsAnalysisStatus !== "ready"
+      || !aiReviewReadyNotificationArmedRef.current
+    ) {
+      return;
+    }
+
+    aiReviewReadyNotificationArmedRef.current = false;
+    showReviewReadyNotification(state.commit.title, state.commit.shortSha);
+  }, [
+    state.commit,
+    state.aiAnalysisStatus,
+    state.aiSequenceStatus,
+    state.standardsAnalysisStatus,
+  ]);
 
   const selectedAuthorComments = useMemo(() => {
     if (!selectedCommentAuthorKey) {
@@ -2269,11 +2371,11 @@ export function ReviewWorkspaceContainer() {
             variant="secondary"
             size="sm"
             className="h-8 px-2 text-[11px] font-medium"
-            onClick={actions.refreshAiAnalysis}
-            disabled={!state.commit || state.aiAnalysisStatus === "analysing"}
+            onClick={handleRefreshAiAnalysis}
+            disabled={!state.commit || isAiReviewAnalysisInProgress}
             title="Run AI analysis for the selected commit"
           >
-            {state.aiAnalysisStatus === "analysing" ? "Running AI..." : "Run AI Analysis"}
+            {isAiReviewAnalysisInProgress ? "Running AI..." : "Run AI Analysis"}
           </Button>
           <Button
             variant="ghost"
@@ -2401,6 +2503,17 @@ export function ReviewWorkspaceContainer() {
     }
 
     if (activeTab === "sequence") {
+      if (isAiReviewAnalysisInProgress) {
+        return (
+          <AiAnalysisOngoingPanel
+            className="p-4"
+            title="Sequence diagram is still being prepared"
+            description="The sequence diagram is generated during the review run. This view will unlock once the full AI analysis finishes."
+            showNotificationHint
+          />
+        );
+      }
+
       return (
         <div className="h-full min-h-0 overflow-hidden p-2 xl:p-3">
           <div className="h-full min-h-0 overflow-hidden rounded-md border border-border/50 bg-transparent">
@@ -2512,7 +2625,8 @@ export function ReviewWorkspaceContainer() {
                     fileSummary={activeFileSummary}
                     relatedFeatures={activeFileFeatureSummaries}
                     aiAnalysisStatus={state.aiAnalysisStatus}
-                    onRetryAiAnalysis={actions.refreshAiAnalysis}
+                    analysisInProgress={isAiReviewAnalysisInProgress}
+                    onRetryAiAnalysis={handleRefreshAiAnalysis}
                     onOpenFeatureFiles={(fileIds) => {
                       const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
                       if (uniqueFileIds.length === 0) {
@@ -2560,6 +2674,17 @@ export function ReviewWorkspaceContainer() {
     }
 
     if (activeTab === "summary") {
+      if (isAiReviewAnalysisInProgress) {
+        return (
+          <AiAnalysisOngoingPanel
+            className="p-4"
+            title="Commit summary is still being generated"
+            description="We hide the partial overview until the full review is ready, so this page does not flip between half-finished states."
+            showNotificationHint
+          />
+        );
+      }
+
       return (
         <div className="h-full overflow-auto p-3 xl:p-4">
           <SummaryPanel
@@ -2568,7 +2693,7 @@ export function ReviewWorkspaceContainer() {
             impactClusters={state.architectureClusters}
             featureSummaries={state.sequencePairs}
             aiAnalysisStatus={state.aiAnalysisStatus}
-            onRetryAiAnalysis={actions.refreshAiAnalysis}
+            onRetryAiAnalysis={handleRefreshAiAnalysis}
             onOpenImpactFiles={(fileIds) => {
               const uniqueFileIds = [...new Set(fileIds.filter((fileId) => filesById.has(fileId)))];
               if (uniqueFileIds.length === 0) {
@@ -2625,7 +2750,14 @@ export function ReviewWorkspaceContainer() {
 
     return (
       <div className="h-full overflow-auto p-3 xl:p-4">
-        {(state.standardsAnalysisStatus === "analysing" ||
+        {isAiReviewAnalysisInProgress && (
+          <AiAnalysisOngoingPanel
+            title="Coding-standards review is still pending"
+            description="Standards checks run after the main AI summary and sequence work. This tab will populate when that final pass completes."
+            showNotificationHint
+          />
+        )}
+        {!isAiReviewAnalysisInProgress && (state.standardsAnalysisStatus === "analysing" ||
           (state.standardsAnalysisStatus === "idle" && state.standardsChecks.length === 0)) && (
           <Card>
             <CardBody className="py-5">
@@ -2637,7 +2769,7 @@ export function ReviewWorkspaceContainer() {
             </CardBody>
           </Card>
         )}
-        {state.standardsAnalysisStatus === "error" && (
+        {!isAiReviewAnalysisInProgress && state.standardsAnalysisStatus === "error" && (
           <Card>
             <CardBody className="space-y-3 py-5">
               <p className="text-sm text-danger">
@@ -2649,7 +2781,9 @@ export function ReviewWorkspaceContainer() {
             </CardBody>
           </Card>
         )}
-        {state.standardsAnalysisStatus !== "analysing" && state.standardsAnalysisStatus !== "idle" && (
+        {!isAiReviewAnalysisInProgress
+          && state.standardsAnalysisStatus !== "analysing"
+          && state.standardsAnalysisStatus !== "idle" && (
           <StandardsPanel
             checks={state.standardsChecks}
             fileInsights={state.fileStandardsInsights}
@@ -2704,6 +2838,8 @@ export function ReviewWorkspaceContainer() {
     commitShaInput,
     activeRepositoryPath,
     triggerCommitReload,
+    handleRefreshAiAnalysis,
+    isAiReviewAnalysisInProgress,
     isSidebarCollapsed,
     actions.refreshStandardsAnalysis,
   ]);

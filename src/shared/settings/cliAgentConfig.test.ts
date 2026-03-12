@@ -48,10 +48,38 @@ function installMockLocalStorage(initialSettings: CliAgentsSettings | null): voi
 
 test("DEFAULT_CLI_AGENTS configures Codex for non-interactive execution", () => {
   const codexAgent = DEFAULT_CLI_AGENTS.find((agent) => agent.id === "codex");
+  const claudeAgent = DEFAULT_CLI_AGENTS.find((agent) => agent.id === "claude-code");
 
+  assert.ok(claudeAgent);
   assert.ok(codexAgent);
+  assert.equal(claudeAgent.acpCommand, "claude-agent-acp");
   assert.deepEqual(codexAgent.promptArgs, ["exec"]);
   assert.equal(codexAgent.acpCommand, "codex-acp");
+});
+
+test("readCliAgentsSettingsFromStorage migrates legacy Claude ACP command", () => {
+  installMockLocalStorage({
+    agents: [
+      {
+        id: "claude-code",
+        name: "Claude Code",
+        command: "claude",
+        promptArgs: ["-p"],
+        acpCommand: "claude-code-acp",
+        acpArgs: [],
+      },
+    ],
+    activeAgentId: "claude-code",
+    preferredProvider: "local-agent",
+    fallbackToSecondary: true,
+    localTransport: "acp",
+  });
+
+  const settings = readCliAgentsSettingsFromStorage();
+  const claudeAgent = settings.agents.find((agent) => agent.id === "claude-code");
+
+  assert.ok(claudeAgent);
+  assert.equal(claudeAgent.acpCommand, "claude-agent-acp");
 });
 
 test("readCliAgentsSettingsFromStorage migrates legacy empty Codex args to exec", () => {

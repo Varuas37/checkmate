@@ -9,7 +9,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs::OpenOptions, io::Write};
 use tauri::Manager;
@@ -22,6 +23,7 @@ const WORKTREE_COMMIT_REFERENCE: &str = "WORKTREE";
 const CM_COMMAND_NAME: &str = "cm";
 const CM_APP_BUNDLE_IDENTIFIER: &str = "sh.checkmate.desktop";
 const CM_APP_NAME: &str = "checkmate.sh";
+const ACP_SESSION_POOL_MAX_SIZE: usize = 4;
 const AGENT_TRACKING_BLOCK_START: &str = "<!-- checkmate:tracking:start -->";
 const AGENT_TRACKING_BLOCK_END: &str = "<!-- checkmate:tracking:end -->";
 const AGENT_TRACKING_SCHEMA_RELATIVE_PATH: &str = ".checkmate/commit_context.schema.json";
@@ -138,6 +140,7 @@ struct LaunchRequestState {
 #[derive(Clone)]
 struct AcpSessionHandle {
     sender: mpsc::UnboundedSender<AcpPromptJob>,
+    in_flight: Arc<AtomicUsize>,
 }
 
 struct AcpPromptJob {
@@ -146,8 +149,14 @@ struct AcpPromptJob {
 }
 
 #[derive(Default)]
+struct AcpSessionPool {
+    handles: Vec<AcpSessionHandle>,
+    next_index: usize,
+}
+
+#[derive(Default)]
 struct AcpSessionManagerState {
-    sessions: Mutex<HashMap<String, AcpSessionHandle>>,
+    sessions: Mutex<HashMap<String, AcpSessionPool>>,
 }
 
 #[derive(Clone)]
@@ -263,6 +272,7 @@ struct AcpWorkerSession {
 impl AcpSessionHandle {
     fn spawn(config: AcpInvocationConfig) -> Self {
         let (sender, mut receiver) = mpsc::unbounded_channel::<AcpPromptJob>();
+        let in_flight = Arc::new(AtomicUsize::new(0));
 
         std::thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -312,21 +322,33 @@ impl AcpSessionHandle {
             });
         });
 
-        Self { sender }
+        Self { sender, in_flight }
+    }
+
+    fn load(&self) -> usize {
+        self.in_flight.load(Ordering::Relaxed)
     }
 
     async fn prompt(&self, prompt: String) -> Result<String, String> {
+        self.in_flight.fetch_add(1, Ordering::Relaxed);
         let (response_tx, response_rx) = oneshot::channel();
-        self.sender
+        if self
+            .sender
             .send(AcpPromptJob {
                 prompt,
                 response_tx,
             })
-            .map_err(|_| "ACP session is no longer available.".to_string())?;
+            .is_err()
+        {
+            self.in_flight.fetch_sub(1, Ordering::Relaxed);
+            return Err("ACP session is no longer available.".to_string());
+        }
 
-        response_rx
+        let result = response_rx
             .await
-            .map_err(|_| "ACP session closed before producing a response.".to_string())?
+            .map_err(|_| "ACP session closed before producing a response.".to_string());
+        self.in_flight.fetch_sub(1, Ordering::Relaxed);
+        result?
     }
 }
 
@@ -336,13 +358,40 @@ impl AcpSessionManagerState {
             .sessions
             .lock()
             .expect("ACP session manager lock poisoned");
-        if let Some(existing) = sessions.get(&config.session_key) {
-            return existing.clone();
+
+        let pool = sessions
+            .entry(config.session_key.clone())
+            .or_insert_with(AcpSessionPool::default);
+
+        if pool.handles.is_empty() {
+            let handle = AcpSessionHandle::spawn(config.clone());
+            pool.handles.push(handle.clone());
+            return handle;
         }
 
-        let handle = AcpSessionHandle::spawn(config.clone());
-        sessions.insert(config.session_key.clone(), handle.clone());
-        handle
+        let min_load = pool
+            .handles
+            .iter()
+            .map(AcpSessionHandle::load)
+            .min()
+            .unwrap_or(0);
+
+        if min_load > 0 && pool.handles.len() < ACP_SESSION_POOL_MAX_SIZE {
+            let handle = AcpSessionHandle::spawn(config.clone());
+            pool.handles.push(handle.clone());
+            pool.next_index = 0;
+            return handle;
+        }
+
+        let start_index = pool.next_index % pool.handles.len();
+        let relative_index = (0..pool.handles.len())
+            .find(|offset| {
+                pool.handles[(start_index + *offset) % pool.handles.len()].load() == min_load
+            })
+            .unwrap_or(0);
+        let selected_index = (start_index + relative_index) % pool.handles.len();
+        pool.next_index = (selected_index + 1) % pool.handles.len();
+        pool.handles[selected_index].clone()
     }
 
     fn remove(&self, session_key: &str) {
@@ -445,19 +494,50 @@ fn normalize_acp_invocation(
     })
 }
 
-async fn connect_acp_session(config: &AcpInvocationConfig) -> Result<AcpWorkerSession, String> {
-    let mut child = tokio::process::Command::new(&config.command)
-        .args(&config.args)
+fn is_default_claude_acp_command(command: &str) -> bool {
+    matches!(command.trim(), "claude-code-acp" | "claude-agent-acp")
+}
+
+fn build_acp_child(program: &str, args: &[String]) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| {
-            format!(
-                "Failed to start ACP agent '{}': {}. Ensure it is installed and on your PATH.",
-                config.command, error
-            )
-        })?;
+        .kill_on_drop(true);
+    command
+}
+
+fn spawn_acp_child(config: &AcpInvocationConfig) -> Result<tokio::process::Child, String> {
+    let mut primary_command = build_acp_child(&config.command, &config.args);
+    match primary_command.spawn() {
+        Ok(child) => Ok(child),
+        Err(primary_error)
+            if primary_error.kind() == std::io::ErrorKind::NotFound
+                && is_default_claude_acp_command(&config.command) =>
+        {
+            let mut fallback_args = vec![
+                "-y".to_string(),
+                "@zed-industries/claude-agent-acp".to_string(),
+            ];
+            fallback_args.extend(config.args.iter().cloned());
+            let mut fallback_command = build_acp_child("npx", &fallback_args);
+            fallback_command.spawn().map_err(|fallback_error| {
+                format!(
+                    "Failed to start ACP agent '{}': {}. Tried fallback 'npx -y @zed-industries/claude-agent-acp' and that also failed: {}.",
+                    config.command, primary_error, fallback_error
+                )
+            })
+        }
+        Err(error) => Err(format!(
+            "Failed to start ACP agent '{}': {}. Ensure it is installed and on your PATH.",
+            config.command, error
+        )),
+    }
+}
+
+async fn connect_acp_session(config: &AcpInvocationConfig) -> Result<AcpWorkerSession, String> {
+    let mut child = spawn_acp_child(config)?;
 
     let stdin = child
         .stdin

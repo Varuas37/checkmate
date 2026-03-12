@@ -48,7 +48,7 @@ test("testLocalAgentConnection requires the Tauri desktop runtime", async () => 
         name: "CLI Agent",
         command: "claude",
         promptArgs: ["-p"],
-        acpCommand: "claude-code-acp",
+        acpCommand: "claude-agent-acp",
         acpArgs: [],
       }, "cli"),
     /Local-agent connection tests are available only in the desktop app\./,

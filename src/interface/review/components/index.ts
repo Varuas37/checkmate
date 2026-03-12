@@ -1,3 +1,4 @@
+export { AiAnalysisOngoingPanel, type AiAnalysisOngoingPanelProps } from "./AiAnalysisOngoingPanel.tsx";
 export { ChangedFilesSidebar, type ChangedFilesSidebarProps } from "./ChangedFilesSidebar.tsx";
 export { CommitPanel, type CommitPanelProps } from "./CommitPanel.tsx";
 export { CommandPalette, type CommandPaletteItem, type CommandPaletteProps } from "./CommandPalette.tsx";

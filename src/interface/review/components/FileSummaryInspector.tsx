@@ -2,9 +2,9 @@ import { useState } from "react";
 
 import { Button } from "../../../design-system/index.ts";
 import type { ChangedFile } from "../../../domain/review/index.ts";
-import Skeleton from "react-loading-skeleton";
 
 import type { FileSummary, SequencePair } from "../types.ts";
+import { AiAnalysisOngoingPanel } from "./AiAnalysisOngoingPanel.tsx";
 import { AiRetryIcon } from "./AiRetryIcon.tsx";
 import { MarkdownComment } from "./MarkdownComment.tsx";
 
@@ -13,6 +13,7 @@ export interface FileSummaryInspectorProps {
   readonly fileSummary: FileSummary | null;
   readonly relatedFeatures: readonly SequencePair[];
   readonly aiAnalysisStatus: "idle" | "analysing" | "analysed" | "error";
+  readonly analysisInProgress: boolean;
   readonly onOpenFeatureFiles: (fileIds: readonly string[]) => void;
   readonly onRetryAiAnalysis: () => void;
 }
@@ -48,6 +49,7 @@ export function FileSummaryInspector({
   fileSummary,
   relatedFeatures,
   aiAnalysisStatus,
+  analysisInProgress,
   onOpenFeatureFiles,
   onRetryAiAnalysis,
 }: FileSummaryInspectorProps) {
@@ -62,19 +64,36 @@ export function FileSummaryInspector({
     );
   }
 
+  if (analysisInProgress) {
+    return (
+      <AiAnalysisOngoingPanel
+        className="p-3"
+        title="AI review is still running"
+        description="This file view will populate after the background review finishes. The diff is still available while the rest of the analysis completes."
+        showNotificationHint
+      />
+    );
+  }
+
   const beforeStatements = uniqueStatements(relatedFeatures.map((feature) => feature.before.body)).slice(0, 2);
   const nowStatements = uniqueStatements(relatedFeatures.map((feature) => feature.after.body)).slice(0, 2);
   const beforeNarrative = beforeStatements.length > 0
     ? beforeStatements
     : ["This area had less clear behavior guidance before this update."];
-  const nowNarrative = nowStatements.length > 0
-    ? nowStatements
-    : [fileSummary.summary];
   const overallBehavior = fileSummary.summary.replaceAll(/\s+/g, " ").trim();
   const riskNote = fileSummary.riskNote.replaceAll(/\s+/g, " ").trim();
+  const isUnavailableSummary = overallBehavior.toLowerCase() === "summary unavailable.";
+  const nowNarrative = nowStatements.length > 0
+    ? nowStatements
+    : [isUnavailableSummary
+        ? "AI could not produce a reliable file summary for this file yet. Review the diff directly or rerun the analysis if needed."
+        : fileSummary.summary];
   const fileTechnicalDetails = fileSummary.technicalDetails?.trim() ?? "";
-  const showRiskNote = riskNote.length > 0 && riskNote.toLowerCase() !== "low risk.";
-  const aiLoading = aiAnalysisStatus === "idle" || aiAnalysisStatus === "analysing";
+  const showRiskNote =
+    !isUnavailableSummary
+    && riskNote.length > 0
+    && riskNote.toLowerCase() !== "low risk."
+    && riskNote.toLowerCase() !== "summary unavailable.";
   const beforeSummaryMarkdown = [
     "### What Used To Happen",
     ...beforeNarrative.map((line) => `- ${line}`),
@@ -84,7 +103,9 @@ export function FileSummaryInspector({
     ...nowNarrative.map((line) => `- ${line}`),
     "",
     "### Overall Behavior",
-    overallBehavior,
+    isUnavailableSummary
+      ? "AI could not produce a reliable file summary for this file yet."
+      : overallBehavior,
     ...(showRiskNote ? ["", `**Watch-outs:** ${riskNote}`] : []),
   ].join("\n");
 
@@ -211,18 +232,8 @@ export function FileSummaryInspector({
           )}
         </article>
 
-        <div className="border-t border-border/60 pt-2">
-          {aiLoading && (
-            <div className="space-y-2">
-              {aiAnalysisStatus === "idle" && <Skeleton height={10} width="48%" />}
-              <p className="text-xs text-muted">
-                {aiAnalysisStatus === "analysing"
-                  ? "File summary is ready. Continuing overview, sequence diagram, and coding standards in the background."
-                  : "Generating AI analysis in the background for this commit."}
-              </p>
-            </div>
-          )}
-          {aiAnalysisStatus === "error" && (
+        {aiAnalysisStatus === "error" && (
+          <div className="border-t border-border/60 pt-2">
             <div className="flex items-center gap-1.5 text-danger">
               <p className="text-xs">AI summary failed. Reload the commit or run AI analysis again.</p>
               <Button
@@ -237,8 +248,8 @@ export function FileSummaryInspector({
                 Retry
               </Button>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
