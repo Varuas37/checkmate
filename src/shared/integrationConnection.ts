@@ -1,4 +1,6 @@
 import { runLocalAgentPrompt } from "./localAgentRuntime.ts";
+import { runBedrockConversePrompt } from "./bedrockRuntime.ts";
+import type { ApiBackend } from "./settings/apiBackendStorage.ts";
 import type { CliAgentConfig, LocalAgentTransport } from "./settings/cliAgentConfig.ts";
 
 interface ClaudeSdkClient {
@@ -122,6 +124,45 @@ export async function testAnthropicApiConnection(apiKey: string): Promise<string
     trimToNull(extractTextFromResponse(response)) ??
     "Connection test request completed successfully."
   );
+}
+
+export async function testBedrockApiConnection(
+  input: {
+    readonly region?: string;
+    readonly modelId: string;
+  },
+): Promise<string> {
+  const normalizedModelId = trimToNull(input.modelId);
+  if (!normalizedModelId) {
+    throw new Error("Add a Bedrock model ID before running a connection test.");
+  }
+
+  const normalizedRegion = trimToNull(input.region);
+  const output = await runBedrockConversePrompt({
+    ...(normalizedRegion ? { region: normalizedRegion } : {}),
+    modelId: normalizedModelId,
+    system: API_CONNECTION_TEST_SYSTEM_PROMPT,
+    prompt: API_CONNECTION_TEST_PROMPT,
+    maxTokens: 64,
+  });
+
+  return trimToNull(output) ?? "Connection test request completed successfully.";
+}
+
+export async function testApiConnection(input: {
+  readonly backend: ApiBackend;
+  readonly apiKey: string;
+  readonly bedrockRegion: string;
+  readonly bedrockModelId: string;
+}): Promise<string> {
+  if (input.backend === "bedrock") {
+    return testBedrockApiConnection({
+      region: input.bedrockRegion,
+      modelId: input.bedrockModelId,
+    });
+  }
+
+  return testAnthropicApiConnection(input.apiKey);
 }
 
 export async function testLocalAgentConnection(

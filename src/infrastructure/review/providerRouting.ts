@@ -1,25 +1,41 @@
 import {
   readActiveCliAgentFromStorage,
+  readApiBackendFromStorage,
+  readBedrockConfigFromStorage,
   readFallbackToSecondaryFromStorage,
   readLocalAgentTransportFromStorage,
   readPreferredProviderFromStorage,
   runLocalAgentPrompt,
   type AiProviderPreference,
+  type ApiBackend,
+  type BedrockConfig,
   type CliAgentConfig,
   type LocalAgentTransport,
 } from "../../shared/index.ts";
 
 export interface AiProviderState {
   readonly apiKey: string | null;
+  readonly apiBackend: ApiBackend;
+  readonly bedrock: BedrockConfig;
   readonly preferredProvider: AiProviderPreference;
   readonly fallbackToSecondary: boolean;
   readonly localAgent: CliAgentConfig | null;
   readonly localTransport: LocalAgentTransport;
 }
 
+function isTauriRuntime(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
+}
+
 export function resolveAiProviderState(apiKey: string | null): AiProviderState {
   return {
     apiKey,
+    apiBackend: readApiBackendFromStorage(),
+    bedrock: readBedrockConfigFromStorage(),
     preferredProvider: readPreferredProviderFromStorage(),
     fallbackToSecondary: readFallbackToSecondaryFromStorage(),
     localAgent: readActiveCliAgentFromStorage(),
@@ -32,6 +48,17 @@ export function shouldPreferLocalAgent(state: AiProviderState): boolean {
 }
 
 export function canUseApiProvider(state: AiProviderState): boolean {
+  if (state.apiBackend === "bedrock") {
+    // Bedrock calls run through the desktop backend, so do not report the API path as available
+    // in the browser-only runtime.
+    if (!isTauriRuntime()) {
+      return false;
+    }
+
+    const modelId = state.bedrock.modelId.trim();
+    return modelId.length > 0;
+  }
+
   return Boolean(state.apiKey);
 }
 

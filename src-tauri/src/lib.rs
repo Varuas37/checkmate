@@ -1,5 +1,8 @@
 use agent_client_protocol::{self as acp, Agent as _};
 use async_trait::async_trait;
+use aws_config::BehaviorVersion;
+use aws_sdk_bedrockruntime as bedrockruntime;
+use aws_types::region::Region;
 use base64::{engine::general_purpose, Engine as _};
 use serde::Serialize;
 use std::cell::RefCell;
@@ -157,6 +160,11 @@ struct AcpSessionPool {
 #[derive(Default)]
 struct AcpSessionManagerState {
     sessions: Mutex<HashMap<String, AcpSessionPool>>,
+}
+
+#[derive(Default)]
+struct BedrockRuntimeState {
+    clients: Mutex<HashMap<String, bedrockruntime::Client>>,
 }
 
 #[derive(Clone)]
@@ -498,7 +506,64 @@ fn is_default_claude_acp_command(command: &str) -> bool {
     matches!(command.trim(), "claude-code-acp" | "claude-agent-acp")
 }
 
-fn build_acp_child(program: &str, args: &[String]) -> tokio::process::Command {
+fn is_executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        return std::fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn resolve_executable(program: &str) -> Option<PathBuf> {
+    let trimmed = program.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        let candidate = PathBuf::from(trimmed);
+        return if is_executable_file(&candidate) {
+            Some(candidate)
+        } else {
+            None
+        };
+    }
+
+    let mut candidates = path_entries();
+
+    if let Some(home_value) = std::env::var_os("HOME") {
+        let home_path = PathBuf::from(home_value);
+        for directory in preferred_cm_directories(&home_path) {
+            if candidates.iter().all(|existing| existing != &directory) {
+                candidates.push(directory);
+            }
+        }
+    }
+
+    for directory in candidates {
+        let candidate = directory.join(trimmed);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn build_acp_child(
+    program: impl AsRef<std::ffi::OsStr>,
+    args: &[String],
+) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(program);
     command
         .args(args)
@@ -509,7 +574,9 @@ fn build_acp_child(program: &str, args: &[String]) -> tokio::process::Command {
 }
 
 fn spawn_acp_child(config: &AcpInvocationConfig) -> Result<tokio::process::Child, String> {
-    let mut primary_command = build_acp_child(&config.command, &config.args);
+    let primary_program =
+        resolve_executable(&config.command).unwrap_or_else(|| PathBuf::from(&config.command));
+    let mut primary_command = build_acp_child(&primary_program, &config.args);
     match primary_command.spawn() {
         Ok(child) => Ok(child),
         Err(primary_error)
@@ -521,7 +588,9 @@ fn spawn_acp_child(config: &AcpInvocationConfig) -> Result<tokio::process::Child
                 "@zed-industries/claude-agent-acp".to_string(),
             ];
             fallback_args.extend(config.args.iter().cloned());
-            let mut fallback_command = build_acp_child("npx", &fallback_args);
+            let fallback_program =
+                resolve_executable("npx").unwrap_or_else(|| PathBuf::from("npx"));
+            let mut fallback_command = build_acp_child(&fallback_program, &fallback_args);
             fallback_command.spawn().map_err(|fallback_error| {
                 format!(
                     "Failed to start ACP agent '{}': {}. Tried fallback 'npx -y @zed-industries/claude-agent-acp' and that also failed: {}.",
@@ -2359,7 +2428,9 @@ async fn run_claude_prompt(app: tauri::AppHandle, prompt: String) -> Result<Stri
     );
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let output = Command::new("claude")
+        let resolved_program =
+            resolve_executable("claude").unwrap_or_else(|| PathBuf::from("claude"));
+        let output = Command::new(&resolved_program)
             .arg("-p")
             .arg(prompt_arg)
             .output()
@@ -2559,7 +2630,9 @@ async fn run_cli_agent_prompt(
 
     let command_name_for_log = command_name.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let output = Command::new(&command_name)
+        let resolved_program =
+            resolve_executable(&command_name).unwrap_or_else(|| PathBuf::from(&command_name));
+        let output = Command::new(&resolved_program)
             .args(&args)
             .arg(prompt_arg)
             .output()
@@ -2708,6 +2781,196 @@ async fn run_acp_agent_prompt(
 #[tauri::command]
 fn clear_acp_agent_sessions(state: tauri::State<'_, AcpSessionManagerState>) {
     state.clear();
+}
+
+async fn bedrock_client_for_region(
+    state: &BedrockRuntimeState,
+    region: &str,
+) -> Result<bedrockruntime::Client, String> {
+    let normalized_region = region.trim();
+    if normalized_region.is_empty() {
+        return Err("AWS region is required for Bedrock requests.".to_string());
+    }
+
+    {
+        let cache = state
+            .clients
+            .lock()
+            .map_err(|_| "Bedrock client cache lock poisoned.".to_string())?;
+        if let Some(client) = cache.get(normalized_region) {
+            return Ok(client.clone());
+        }
+    }
+
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .region(Region::new(normalized_region.to_string()))
+        .load()
+        .await;
+    let client = bedrockruntime::Client::new(&config);
+
+    let mut cache = state
+        .clients
+        .lock()
+        .map_err(|_| "Bedrock client cache lock poisoned.".to_string())?;
+    cache.insert(normalized_region.to_string(), client.clone());
+    Ok(client)
+}
+
+fn extract_bedrock_text(value: &serde_json::Value) -> Option<String> {
+    if let Some(content) = value.get("content").and_then(|v| v.as_array()) {
+        let fragments = content
+            .iter()
+            .filter_map(|block| {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+
+                if let Some(text) = block.as_str() {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+
+                None
+            })
+            .collect::<Vec<_>>();
+
+        if !fragments.is_empty() {
+            return Some(fragments.join("\n"));
+        }
+    }
+
+    value
+        .get("completion")
+        .and_then(|completion| completion.as_str())
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+#[tauri::command]
+async fn run_bedrock_converse_prompt(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BedrockRuntimeState>,
+    region: String,
+    model_id: String,
+    system: String,
+    prompt: String,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let normalized_region = region.trim();
+    if normalized_region.is_empty() {
+        return Err("AWS region is required.".to_string());
+    }
+
+    let normalized_model_id = model_id.trim();
+    if normalized_model_id.is_empty() {
+        return Err("Bedrock model ID is required.".to_string());
+    }
+
+    let normalized_prompt = prompt.trim();
+    if normalized_prompt.is_empty() {
+        return Err("Bedrock prompt cannot be empty.".to_string());
+    }
+
+    let normalized_system = system.trim();
+    let started_at = SystemTime::now();
+    let _ = append_application_log_line(
+        &app,
+        "backend_bedrock",
+        "run_bedrock_prompt_start",
+        &format!(
+            "region={} model_id={} prompt_len={} system_len={} max_tokens={}",
+            normalized_region,
+            normalized_model_id,
+            normalized_prompt.len(),
+            normalized_system.len(),
+            max_tokens
+        ),
+        None,
+    );
+
+    let client = bedrock_client_for_region(&state, normalized_region).await?;
+
+    let mut request_json = serde_json::json!({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": normalized_prompt }
+                ]
+            }
+        ]
+    });
+
+    if !normalized_system.is_empty() {
+        request_json["system"] = serde_json::Value::String(normalized_system.to_string());
+    }
+
+    let body = serde_json::to_vec(&request_json)
+        .map_err(|error| format!("Failed to serialize Bedrock request JSON: {}", error))?;
+
+    let result = client
+        .invoke_model()
+        .model_id(normalized_model_id)
+        .content_type("application/json")
+        .accept("application/json")
+        .body(bedrockruntime::primitives::Blob::new(body))
+        .send()
+        .await
+        .map_err(|error| format!("Bedrock request failed: {}", error));
+
+    let elapsed_ms = SystemTime::now()
+        .duration_since(started_at)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+
+    match result {
+        Ok(response) => {
+            let raw_body = response.body().as_ref();
+            let parsed: serde_json::Value = serde_json::from_slice(raw_body)
+                .map_err(|error| format!("Bedrock response was not valid JSON: {}", error))?;
+
+            let output = extract_bedrock_text(&parsed).unwrap_or_default();
+            if output.trim().is_empty() {
+                let _ = append_application_log_line(
+                    &app,
+                    "backend_bedrock",
+                    "run_bedrock_prompt_error",
+                    &format!(
+                        "elapsed_ms={} error=Bedrock response contained no text output.",
+                        elapsed_ms
+                    ),
+                    None,
+                );
+                return Err("Bedrock response contained no text output.".to_string());
+            }
+
+            let _ = append_application_log_line(
+                &app,
+                "backend_bedrock",
+                "run_bedrock_prompt_success",
+                &format!("elapsed_ms={} output_len={}", elapsed_ms, output.len()),
+                None,
+            );
+            Ok(output.trim().to_string())
+        }
+        Err(error_message) => {
+            let _ = append_application_log_line(
+                &app,
+                "backend_bedrock",
+                "run_bedrock_prompt_error",
+                &format!("elapsed_ms={} error={}", elapsed_ms, error_message),
+                None,
+            );
+            Err(error_message)
+        }
+    }
 }
 
 #[tauri::command]
@@ -3041,6 +3304,7 @@ pub fn run() {
             launch_request: Mutex::new(launch_request),
         })
         .manage(AcpSessionManagerState::default())
+        .manage(BedrockRuntimeState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -3067,6 +3331,7 @@ pub fn run() {
             run_cli_agent_prompt,
             run_acp_agent_prompt,
             clear_acp_agent_sessions,
+            run_bedrock_converse_prompt,
             append_application_log,
             read_launch_request,
             initialize_agent_tracking,

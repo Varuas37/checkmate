@@ -9,9 +9,12 @@ import type {
 } from "../../domain/review/index.ts";
 import type { ReviewCardKind } from "../../domain/review/index.ts";
 import {
+  createApiMessagesClient,
+  extractTextFromClaudeResponse,
   readAiAnalysisConfigFromStorage,
   readApiKeyFromStorage,
   startLatencyTrace,
+  type AiMessagesClient,
   type LatencyTrace,
 } from "../../shared/index.ts";
 import {
@@ -21,26 +24,6 @@ import {
   runPreferredLocalAgentPrompt,
   shouldPreferLocalAgent,
 } from "./providerRouting.ts";
-
-// ---------------------------------------------------------------------------
-// SDK client interface + factory
-// ---------------------------------------------------------------------------
-
-interface SdkClient {
-  readonly messages: {
-    create(input: {
-      readonly model: string;
-      readonly max_tokens: number;
-      readonly system: string;
-      readonly messages: readonly {
-        readonly role: "user";
-        readonly content: string;
-      }[];
-    }): Promise<unknown>;
-  };
-}
-
-type SdkClientFactory = (apiKey: string) => Promise<SdkClient>;
 
 // ---------------------------------------------------------------------------
 // Domain-adjacent local types (derived from the port, avoids extra imports)
@@ -317,41 +300,6 @@ function resolveDefaultApiKey(): string | null {
   );
 }
 
-async function createSdkClient(apiKey: string): Promise<SdkClient> {
-  let sdkModule: unknown;
-
-  try {
-    sdkModule = await import("@anthropic-ai/sdk");
-  } catch {
-    throw new Error('AI SDK package "@anthropic-ai/sdk" is not installed.');
-  }
-
-  const candidate =
-    (sdkModule as { readonly default?: unknown }).default ??
-    (sdkModule as { readonly Anthropic?: unknown }).Anthropic;
-
-  if (typeof candidate !== "function") {
-    throw new Error(
-      'Unable to resolve Anthropic constructor from "@anthropic-ai/sdk".',
-    );
-  }
-
-  const ClientConstructor = candidate as new (options: {
-    readonly apiKey: string;
-    readonly dangerouslyAllowBrowser?: boolean;
-  }) => SdkClient;
-  const client = new ClientConstructor({
-    apiKey,
-    dangerouslyAllowBrowser: true,
-  });
-
-  if (!client.messages || typeof client.messages.create !== "function") {
-    throw new Error("AI SDK client is missing messages.create().");
-  }
-
-  return client;
-}
-
 function isMissingSdkClientError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -361,28 +309,6 @@ function isMissingSdkClientError(error: unknown): boolean {
     message.includes("@anthropic-ai/sdk") ||
     message.includes("anthropic constructor")
   );
-}
-
-function extractTextFromResponse(response: unknown): string {
-  if (!response || typeof response !== "object") {
-    return "";
-  }
-
-  const content = (response as { readonly content?: unknown }).content;
-  if (!Array.isArray(content)) {
-    return "";
-  }
-
-  return content
-    .map((block) => {
-      if (typeof block === "string") return block;
-      if (!block || typeof block !== "object") return "";
-      const text = (block as { readonly text?: unknown }).text;
-      return typeof text === "string" ? text : "";
-    })
-    .filter((fragment) => fragment.trim().length > 0)
-    .join("\n")
-    .trim();
 }
 
 function stripJsonFences(raw: string): string {
@@ -946,12 +872,10 @@ export interface AgentCommitAnalyserOptions {
 export class AgentCommitAnalyser implements CommitAnalyser {
   readonly #apiKeyOverride: string | null;
   readonly #model: string;
-  readonly #createClient: SdkClientFactory;
 
   constructor(options: AgentCommitAnalyserOptions = {}) {
     this.#apiKeyOverride = trimToNull(options.apiKey);
     this.#model = trimToNull(options.model) ?? DEFAULT_PROVIDER_MODEL;
-    this.#createClient = createSdkClient;
   }
 
   #resolveApiKey(): string | null {
@@ -962,20 +886,21 @@ export class AgentCommitAnalyser implements CommitAnalyser {
 
   /** Phase 1: summarise a single file. Never throws — returns a placeholder on failure. */
   async #analyseFileSdk(
-    client: SdkClient,
+    client: AiMessagesClient,
+    model: string,
     commit: CommitEntity,
     file: ChangedFile,
     fileHunks: readonly DiffHunk[],
   ): Promise<AiFileSummary> {
     const prompt = buildFilePrompt(commit, file, fileHunks);
     const response = await client.messages.create({
-      model: this.#model,
+      model,
       max_tokens: PER_FILE_MAX_OUTPUT_TOKENS,
       system: DEFAULT_SYSTEM_PROMPT,
       messages: [{ role: "user", content: prompt }],
     });
 
-    const raw = extractTextFromResponse(response);
+    const raw = extractTextFromClaudeResponse(response);
     return (
       parseFileSummaryResponse(raw, file.path) ?? {
         filePath: file.path,
@@ -987,7 +912,8 @@ export class AgentCommitAnalyser implements CommitAnalyser {
 
   /** Phase 2: generate overviewCards + flowComparisons from collected file summaries. */
   async #generateOverviewSdk(
-    client: SdkClient,
+    client: AiMessagesClient,
+    model: string,
     commit: CommitEntity,
     fileSummaries: readonly AiFileSummary[],
     hunkHeadersByFilePath: readonly {
@@ -1000,13 +926,13 @@ export class AgentCommitAnalyser implements CommitAnalyser {
   }> {
     const prompt = buildOverviewPrompt(commit, fileSummaries, hunkHeadersByFilePath);
     const response = await client.messages.create({
-      model: this.#model,
+      model,
       max_tokens: OVERVIEW_MAX_OUTPUT_TOKENS,
       system: DEFAULT_SYSTEM_PROMPT,
       messages: [{ role: "user", content: prompt }],
     });
 
-    const raw = extractTextFromResponse(response);
+    const raw = extractTextFromClaudeResponse(response);
     return parseOverviewResponse(raw);
   }
 
@@ -1345,14 +1271,14 @@ export class AgentCommitAnalyser implements CommitAnalyser {
     }
 
     // -----------------------------------------------------------------------
-    // No API key -> local-agent required path (single-call, legacy prompt)
+    // No API provider -> local-agent required path
     // -----------------------------------------------------------------------
     if (!canUseApiProvider(providerState)) {
       if (!providerState.localAgent) {
-        trace.fail(new Error("No local agent or API key is configured."));
+        trace.fail(new Error("No local agent or API provider is configured."));
         finishTrace(traceSummaryFields);
         throw new Error(
-          "Commit analysis requires either an Anthropic API key or a configured local agent.",
+          "Commit analysis requires either a configured API provider or a configured local agent.",
         );
       }
 
@@ -1389,7 +1315,7 @@ export class AgentCommitAnalyser implements CommitAnalyser {
           const message =
             error instanceof Error ? error.message : "Local-agent execution failed.";
           throw new Error(
-            `Commit analysis requires a working Anthropic API key or configured local agent (${message}).`,
+            `Commit analysis requires a working API provider or configured local agent (${message}).`,
           );
         }
       }
@@ -1423,42 +1349,52 @@ export class AgentCommitAnalyser implements CommitAnalyser {
             ? legacyError.message
             : "Local-agent execution failed.";
         throw new Error(
-          `Commit analysis requires a working Anthropic API key or configured local agent (${message}).`,
+          `Commit analysis requires a working API provider or configured local agent (${message}).`,
         );
       }
     }
 
     // -----------------------------------------------------------------------
-    // SDK path — bounded parallel per-file summaries, then overview call
+    // API path — bounded parallel per-file summaries, then overview call
     // -----------------------------------------------------------------------
     try {
       throwIfAborted(input.abortSignal);
-      const apiKey = providerState.apiKey;
-      if (!apiKey) {
-        throw new Error("Commit analysis requires an Anthropic API key for SDK execution.");
+      if (!canUseApiProvider(providerState)) {
+        throw new Error("Commit analysis requires an API provider configuration.");
       }
+
+      const model =
+        providerState.apiBackend === "bedrock"
+          ? providerState.bedrock.modelId
+          : this.#model;
       const clientCreateStartedAt = nowForTrace();
-      trace.mark("commit-analysis-sdk-client-create-start", {
-        model: this.#model,
+      trace.mark("commit-analysis-api-client-create-start", {
+        backend: providerState.apiBackend,
+        model,
       });
-      const client = await this.#createClient(apiKey);
-      trace.mark("commit-analysis-sdk-client-create-complete", {
+      const client = await createApiMessagesClient({
+        backend: providerState.apiBackend,
+        apiKey: providerState.apiKey,
+        bedrockRegion: providerState.bedrock.region,
+      });
+      trace.mark("commit-analysis-api-client-create-complete", {
         elapsedMs: durationMsSince(clientCreateStartedAt),
       });
       const output = await this.#runPromptDrivenAnalysis(input, trace, {
         fileSummaryConcurrency: FILE_SUMMARY_CONCURRENCY,
         analyseFile: async (file, fileHunks) =>
-          this.#analyseFileSdk(client, input.commit, file, fileHunks),
+          this.#analyseFileSdk(client, model, input.commit, file, fileHunks),
         generateOverview: async (fileSummaries, hunkHeadersByFilePath) =>
           this.#generateOverviewSdk(
             client,
+            model,
             input.commit,
             fileSummaries,
             hunkHeadersByFilePath,
           ),
       });
       traceSummaryFields = {
-        provider: "sdk",
+        provider: `api-${providerState.apiBackend}`,
         flowComparisonCount: output.flowComparisons.length,
         fileSummaryCount: output.fileSummaries.length,
         overviewCardCount: output.overviewCards.length,
@@ -1473,9 +1409,12 @@ export class AgentCommitAnalyser implements CommitAnalyser {
 
       // Fall back to the configured local agent when the API path is unavailable
       // and local fallback has been explicitly enabled.
-      if (secondaryProvider === "local-agent" && isMissingSdkClientError(error)) {
+      if (secondaryProvider === "local-agent") {
         try {
-          trace.mark("commit-analysis-sdk-missing-local-fallback");
+          trace.mark("commit-analysis-api-local-fallback", {
+            backend: providerState.apiBackend,
+            message: error instanceof Error ? error.message : String(error),
+          });
           const legacyPrompt = buildLegacyPrompt(input);
           const fallbackStartedAt = nowForTrace();
           const localResponse = await runViaLocalAgent(legacyPrompt);

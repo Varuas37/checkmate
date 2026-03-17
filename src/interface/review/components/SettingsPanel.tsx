@@ -7,6 +7,7 @@ import type {
   AgentTrackingRemovalResult,
   AgentTrackingStatus,
   AiProviderPreference,
+  ApiBackend,
   CliAgentConfig,
   CliAgentsSettings,
   CmCliInstallResult,
@@ -17,6 +18,9 @@ import type {
 export interface SettingsPanelProps {
   readonly open: boolean;
   readonly initialApiKey: string;
+  readonly initialApiBackend: ApiBackend;
+  readonly initialBedrockRegion: string;
+  readonly initialBedrockModelId: string;
   readonly initialMaxChurn: number;
   readonly initialAutoRunOnCommitChange: boolean;
   readonly initialProjectStandardsPath: string;
@@ -30,8 +34,15 @@ export interface SettingsPanelProps {
   readonly onRemoveTracking: (repositoryPath: string) => Promise<AgentTrackingRemovalResult>;
   readonly onInstallCmCli: () => Promise<CmCliInstallResult>;
   readonly onRefreshCmCliStatus: () => Promise<void>;
-  readonly onSave: (apiKey: string) => void;
-  readonly onTestApiConnection: (apiKey: string) => Promise<string>;
+  readonly onSaveApiKey: (apiKey: string) => void;
+  readonly onSaveApiBackend: (backend: ApiBackend) => void;
+  readonly onSaveBedrockConfig: (config: { readonly region: string; readonly modelId: string }) => void;
+  readonly onTestApiConnection: (input: {
+    readonly backend: ApiBackend;
+    readonly apiKey: string;
+    readonly bedrockRegion: string;
+    readonly bedrockModelId: string;
+  }) => Promise<string>;
   readonly onSaveMaxChurn: (maxChurn: number) => void;
   readonly onSaveAutoRunOnCommitChange: (enabled: boolean) => void;
   readonly onSaveProjectStandardsPath: (standardsPath: string) => void;
@@ -145,6 +156,9 @@ function toConnectionSummary(value: string): string {
 export function SettingsPanel({
   open,
   initialApiKey,
+  initialApiBackend,
+  initialBedrockRegion,
+  initialBedrockModelId,
   initialMaxChurn,
   initialAutoRunOnCommitChange,
   initialProjectStandardsPath,
@@ -156,7 +170,9 @@ export function SettingsPanel({
   onRemoveTracking,
   onInstallCmCli,
   onRefreshCmCliStatus,
-  onSave,
+  onSaveApiKey,
+  onSaveApiBackend,
+  onSaveBedrockConfig,
   onTestApiConnection,
   onSaveMaxChurn,
   onSaveAutoRunOnCommitChange,
@@ -166,6 +182,9 @@ export function SettingsPanel({
   onClose,
 }: SettingsPanelProps) {
   const [draft, setDraft] = useState(initialApiKey);
+  const [apiBackendDraft, setApiBackendDraft] = useState<ApiBackend>(initialApiBackend);
+  const [bedrockRegionDraft, setBedrockRegionDraft] = useState(initialBedrockRegion);
+  const [bedrockModelIdDraft, setBedrockModelIdDraft] = useState(initialBedrockModelId);
   const [isApiKeyVisible, setIsApiKeyVisible] = useState(false);
   const [isApiKeyEditing, setIsApiKeyEditing] = useState(false);
   const [churnDraft, setChurnDraft] = useState(String(initialMaxChurn));
@@ -194,8 +213,11 @@ export function SettingsPanel({
     }
 
     setDraft(initialApiKey);
+    setApiBackendDraft(initialApiBackend);
+    setBedrockRegionDraft(initialBedrockRegion);
+    setBedrockModelIdDraft(initialBedrockModelId);
     setIsApiKeyVisible(false);
-    setIsApiKeyEditing(initialApiKey.trim().length === 0);
+    setIsApiKeyEditing(initialApiBackend === "anthropic" && initialApiKey.trim().length === 0);
     setChurnDraft(String(initialMaxChurn));
     setAutoRunOnCommitChange(initialAutoRunOnCommitChange);
     setProjectStandardsPathDraft(initialProjectStandardsPath);
@@ -255,11 +277,28 @@ export function SettingsPanel({
     return draftCliAgents.agents.find((agent) => agent.id === draftCliAgents.activeAgentId) ?? null;
   }, [draftCliAgents]);
 
-  const runApiConnectionTest = async (apiKeyOverride?: string) => {
-    const apiKeyToTest = (apiKeyOverride ?? draft).trim();
-    if (apiKeyToTest.length === 0) {
+  const runApiConnectionTest = async (
+    overrides?: Partial<{
+      readonly backend: ApiBackend;
+      readonly apiKey: string;
+      readonly bedrockRegion: string;
+      readonly bedrockModelId: string;
+    }>,
+  ) => {
+    const backend = overrides?.backend ?? apiBackendDraft;
+    const apiKeyToTest = (overrides?.apiKey ?? draft).trim();
+    const bedrockRegionToTest = (overrides?.bedrockRegion ?? bedrockRegionDraft).trim();
+    const bedrockModelIdToTest = (overrides?.bedrockModelId ?? bedrockModelIdDraft).trim();
+
+    if (backend === "anthropic") {
+      if (apiKeyToTest.length === 0) {
+        setApiConnectionStatus("failed");
+        setApiConnectionMessage("Add an Anthropic API key before running a connection test.");
+        return;
+      }
+    } else if (bedrockModelIdToTest.length === 0) {
       setApiConnectionStatus("failed");
-      setApiConnectionMessage("Add an API key before running a connection test.");
+      setApiConnectionMessage("Add a Bedrock model ID before running a connection test.");
       return;
     }
 
@@ -267,11 +306,18 @@ export function SettingsPanel({
     setApiConnectionMessage(null);
 
     try {
-      const response = await onTestApiConnection(apiKeyToTest);
+      const response = await onTestApiConnection({
+        backend,
+        apiKey: apiKeyToTest,
+        bedrockRegion: bedrockRegionToTest,
+        bedrockModelId: bedrockModelIdToTest,
+      });
       const summary = toConnectionSummary(response);
       setApiConnectionStatus("connected");
       setApiConnectionMessage(
-        summary.length > 0 ? `Connected. Provider response: ${summary}` : "Connected.",
+        summary.length > 0
+          ? `Connected via ${backend === "bedrock" ? "Bedrock" : "Anthropic"}. Provider response: ${summary}`
+          : `Connected via ${backend === "bedrock" ? "Bedrock" : "Anthropic"}.`,
       );
     } catch (error) {
       setApiConnectionStatus("failed");
@@ -313,12 +359,49 @@ export function SettingsPanel({
 
   const saveApiKeyDraft = () => {
     const normalized = draft.trim();
-    onSave(normalized);
+    onSaveApiKey(normalized);
     setDraft(normalized);
     setIsApiKeyEditing(false);
 
-    if (normalized.length > 0) {
-      void runApiConnectionTest(normalized);
+    if (apiBackendDraft === "anthropic" && normalized.length > 0) {
+      void runApiConnectionTest({ backend: "anthropic", apiKey: normalized });
+    } else {
+      setApiConnectionStatus("idle");
+      setApiConnectionMessage(null);
+    }
+  };
+
+  const setApiBackend = (backend: ApiBackend) => {
+    if (backend === apiBackendDraft) {
+      return;
+    }
+
+    setApiBackendDraft(backend);
+    onSaveApiBackend(backend);
+    setApiConnectionStatus("idle");
+    setApiConnectionMessage(null);
+
+    if (backend === "anthropic") {
+      setIsApiKeyEditing(draft.trim().length === 0);
+    } else {
+      setIsApiKeyEditing(false);
+      setIsApiKeyVisible(false);
+    }
+  };
+
+  const saveBedrockDraft = () => {
+    const normalizedRegion = bedrockRegionDraft.trim();
+    const normalizedModelId = bedrockModelIdDraft.trim();
+    setBedrockRegionDraft(normalizedRegion);
+    setBedrockModelIdDraft(normalizedModelId);
+    onSaveBedrockConfig({ region: normalizedRegion, modelId: normalizedModelId });
+
+    if (apiBackendDraft === "bedrock" && normalizedModelId.length > 0) {
+      void runApiConnectionTest({
+        backend: "bedrock",
+        bedrockRegion: normalizedRegion,
+        bedrockModelId: normalizedModelId,
+      });
     } else {
       setApiConnectionStatus("idle");
       setApiConnectionMessage(null);
@@ -481,21 +564,30 @@ export function SettingsPanel({
 
   const currentBackendLabel = useMemo(() => {
     const hasApiKey = draft.trim().length > 0;
+    const hasBedrockModelId = bedrockModelIdDraft.trim().length > 0;
+    const canUseApi = apiBackendDraft === "bedrock" ? hasBedrockModelId : hasApiKey;
     const activeAgent = activeCliAgent;
     const localLabel = activeAgent
       ? `${activeAgent.name} via ${draftCliAgents.localTransport.toUpperCase()}`
       : `Local agent via ${draftCliAgents.localTransport.toUpperCase()} (not selected)`;
-    const apiLabel = hasApiKey ? "Anthropic API" : "Anthropic API (no key)";
+    const apiLabel =
+      apiBackendDraft === "bedrock"
+        ? hasBedrockModelId
+          ? "API: Bedrock"
+          : "API: Bedrock (no model)"
+        : hasApiKey
+        ? "API: Anthropic"
+        : "API: Anthropic (no key)";
 
     if (draftCliAgents.preferredProvider === "local-agent") {
-      if (draftCliAgents.fallbackToSecondary && hasApiKey) {
+      if (draftCliAgents.fallbackToSecondary && canUseApi) {
         return `${localLabel} -> ${apiLabel}`;
       }
 
       return localLabel;
     }
 
-    if (hasApiKey) {
+    if (canUseApi) {
       if (draftCliAgents.fallbackToSecondary && activeAgent) {
         return `${apiLabel} -> ${localLabel}`;
       }
@@ -506,9 +598,11 @@ export function SettingsPanel({
       return localLabel;
     }
 
-    return "No API key or local agent configured";
+    return "No API provider or local agent configured";
   }, [
     activeCliAgent,
+    apiBackendDraft,
+    bedrockModelIdDraft,
     draft,
     draftCliAgents.fallbackToSecondary,
     draftCliAgents.localTransport,
@@ -851,7 +945,7 @@ export function SettingsPanel({
               <header>
                 <h3 className="text-base font-semibold text-text">AI Providers</h3>
                 <p className="text-sm text-muted">
-                  Choose between the Anthropic API and a local agent. Local agents use ACP by
+                  Choose between an API provider (Anthropic or Bedrock) and a local agent. Local agents use ACP by
                   default for lower startup overhead and reusable sessions.
                 </p>
               </header>
@@ -888,9 +982,9 @@ export function SettingsPanel({
                         : "border-border/60 bg-surface-subtle/30 hover:bg-surface-subtle/45",
                     )}
                   >
-                    <p className="text-sm font-medium text-text">Prefer Anthropic API</p>
+                    <p className="text-sm font-medium text-text">Prefer API</p>
                     <p className="mt-0.5 text-xs text-muted">
-                      Use the API first, then fall back to the configured local agent if enabled.
+                      Use {apiBackendDraft === "bedrock" ? "Bedrock" : "Anthropic"} first, then fall back to the configured local agent if enabled.
                     </p>
                   </button>
                 </div>
@@ -905,7 +999,7 @@ export function SettingsPanel({
                   <div>
                     <p className="text-sm font-medium text-text">Fall back to the secondary provider</p>
                     <p className="mt-0.5 text-xs text-muted">
-                      Keeps analysis running if the preferred path is unavailable or the SDK is not installed.
+                      Keeps analysis running if the preferred path is unavailable.
                     </p>
                   </div>
                 </label>
@@ -1120,192 +1214,265 @@ export function SettingsPanel({
 
                 <section className="space-y-3 rounded-sm border border-border/60 bg-surface-subtle/20 p-3">
                   <header className="space-y-1">
-                    <h4 className="text-sm font-semibold text-text">Anthropic API</h4>
+                    <h4 className="text-sm font-semibold text-text">API Provider</h4>
                     <p className="text-xs text-muted">
                       Use the API as a primary provider or as the secondary path behind the local agent.
                     </p>
                   </header>
 
-                  <div className="space-y-2">
-                    <label className="block text-[11px] uppercase tracking-[0.08em] text-muted">
-                      Anthropic API Key
-                    </label>
-                    {isApiKeyEditing ? (
-                      <div className="flex items-center gap-2">
-                        <Input
-                          autoFocus
-                          value={draft}
-                          onChange={(event) => {
-                            setDraft(event.target.value);
-                          }}
-                          onKeyDown={(event) => {
-                            if (
-                              (event.metaKey || event.ctrlKey)
-                              && !event.shiftKey
-                              && !event.altKey
-                              && event.key.toLowerCase() === "v"
-                            ) {
-                              event.preventDefault();
-                              void pasteApiKeyFromClipboard();
-                              return;
-                            }
-
-                            if (event.key === "Enter") {
-                              event.preventDefault();
-                              saveApiKeyDraft();
-                              return;
-                            }
-
-                            if (event.key === "Escape") {
-                              setDraft(initialApiKey);
-                              setIsApiKeyEditing(false);
-                            }
-                          }}
-                          onPaste={(event) => {
-                            const pasted = event.clipboardData.getData("text");
-                            if (!pasted || pasted.trim().length === 0) {
-                              return;
-                            }
-                            event.preventDefault();
-                            stageApiKeyDraft(pasted);
-                          }}
-                          placeholder="sk-ant-..."
-                          aria-label="Anthropic API key"
-                          className="font-mono text-xs"
-                        />
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <p className="text-[11px] uppercase tracking-[0.08em] text-muted">API Backend</p>
+                      <div className="flex flex-wrap items-center gap-2">
                         <Button
-                          variant="ghost"
+                          variant={apiBackendDraft === "anthropic" ? "secondary" : "ghost"}
                           size="sm"
-                          onClick={() => {
-                            void pasteApiKeyFromClipboard();
-                          }}
+                          onClick={() => setApiBackend("anthropic")}
                         >
-                          Paste
-                        </Button>
-                        <Button variant="secondary" size="sm" onClick={saveApiKeyDraft}>
-                          Save
+                          Anthropic
                         </Button>
                         <Button
-                          variant="ghost"
+                          variant={apiBackendDraft === "bedrock" ? "secondary" : "ghost"}
                           size="sm"
-                          onClick={() => {
-                            setDraft(initialApiKey);
-                            setIsApiKeyEditing(false);
-                          }}
+                          onClick={() => setApiBackend("bedrock")}
                         >
-                          Cancel
+                          AWS Bedrock
                         </Button>
                       </div>
+                      <p className="text-xs text-muted">
+                        Anthropic uses an API key. Bedrock uses the AWS credential chain (env vars, profiles,
+                        SSO) plus region and a model ID (for example{" "}
+                        <code className="font-mono text-[11px]">anthropic.claude-3-haiku-20240307-v1:0</code>).
+                      </p>
+                    </div>
+
+                    {apiBackendDraft === "anthropic" ? (
+                      <div className="space-y-2">
+                        <label className="block text-[11px] uppercase tracking-[0.08em] text-muted">
+                          Anthropic API Key
+                        </label>
+                        {isApiKeyEditing ? (
+                          <div className="flex items-center gap-2">
+                            <Input
+                              autoFocus
+                              value={draft}
+                              onChange={(event) => {
+                                setDraft(event.target.value);
+                              }}
+                              onKeyDown={(event) => {
+                                if (
+                                  (event.metaKey || event.ctrlKey)
+                                  && !event.shiftKey
+                                  && !event.altKey
+                                  && event.key.toLowerCase() === "v"
+                                ) {
+                                  event.preventDefault();
+                                  void pasteApiKeyFromClipboard();
+                                  return;
+                                }
+
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  saveApiKeyDraft();
+                                  return;
+                                }
+
+                                if (event.key === "Escape") {
+                                  setDraft(initialApiKey);
+                                  setIsApiKeyEditing(false);
+                                }
+                              }}
+                              onPaste={(event) => {
+                                const pasted = event.clipboardData.getData("text");
+                                if (!pasted || pasted.trim().length === 0) {
+                                  return;
+                                }
+                                event.preventDefault();
+                                stageApiKeyDraft(pasted);
+                              }}
+                              placeholder="sk-ant-..."
+                              aria-label="Anthropic API key"
+                              className="font-mono text-xs"
+                            />
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                void pasteApiKeyFromClipboard();
+                              }}
+                            >
+                              Paste
+                            </Button>
+                            <Button variant="secondary" size="sm" onClick={saveApiKeyDraft}>
+                              Save
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setDraft(initialApiKey);
+                                setIsApiKeyEditing(false);
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (draft.trim().length === 0) {
+                                  setIsApiKeyEditing(true);
+                                  return;
+                                }
+                                setIsApiKeyVisible((current) => !current);
+                              }}
+                              onPaste={(event) => {
+                                const pasted = event.clipboardData.getData("text");
+                                if (!pasted || pasted.trim().length === 0) {
+                                  return;
+                                }
+                                event.preventDefault();
+                                stageApiKeyDraft(pasted);
+                              }}
+                              className={cn(
+                                "flex h-9 min-w-0 flex-1 items-center rounded-md border border-border bg-canvas px-3 text-left font-mono text-xs text-text transition-colors",
+                                "hover:border-border-strong",
+                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
+                              )}
+                              aria-label={isApiKeyVisible ? "Hide API key" : "Show API key"}
+                              title={draft.trim().length > 0 ? "Click to toggle visibility" : "No API key set"}
+                            >
+                              <span className="truncate">
+                                {isApiKeyVisible ? draft.trim() || "No API key set" : maskApiKey(draft)}
+                              </span>
+                            </button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-9 w-9 shrink-0 px-0"
+                              onClick={() => {
+                                setIsApiKeyEditing(true);
+                                setIsApiKeyVisible(false);
+                              }}
+                              aria-label="Edit API key"
+                              title="Edit API key"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M12 20h9" />
+                                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                              </svg>
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                void pasteApiKeyFromClipboard();
+                              }}
+                            >
+                              Paste
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-9 w-9 shrink-0 px-0 text-danger hover:text-danger"
+                              onClick={() => {
+                                setDraft("");
+                                setIsApiKeyVisible(false);
+                                onSaveApiKey("");
+                                setApiConnectionStatus("idle");
+                                setApiConnectionMessage(null);
+                              }}
+                              aria-label="Delete API key"
+                              title="Delete API key"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M3 6h18" />
+                                <path d="M8 6V4h8v2" />
+                                <path d="M19 6l-1 14H6L5 6" />
+                                <path d="M10 11v6" />
+                                <path d="M14 11v6" />
+                              </svg>
+                            </Button>
+                          </div>
+                        )}
+
+                        <p className="text-xs text-muted">
+                          Stored in localStorage for now. Click the key to toggle visibility.
+                        </p>
+                      </div>
                     ) : (
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (draft.trim().length === 0) {
-                              setIsApiKeyEditing(true);
-                              return;
-                            }
-                            setIsApiKeyVisible((current) => !current);
-                          }}
-                          onPaste={(event) => {
-                            const pasted = event.clipboardData.getData("text");
-                            if (!pasted || pasted.trim().length === 0) {
-                              return;
-                            }
-                            event.preventDefault();
-                            stageApiKeyDraft(pasted);
-                          }}
-                          className={cn(
-                            "flex h-9 min-w-0 flex-1 items-center rounded-md border border-border bg-canvas px-3 text-left font-mono text-xs text-text transition-colors",
-                            "hover:border-border-strong",
-                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-canvas",
-                          )}
-                          aria-label={isApiKeyVisible ? "Hide API key" : "Show API key"}
-                          title={draft.trim().length > 0 ? "Click to toggle visibility" : "No API key set"}
-                        >
-                          <span className="truncate">
-                            {isApiKeyVisible ? draft.trim() || "No API key set" : maskApiKey(draft)}
-                          </span>
-                        </button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-9 w-9 shrink-0 px-0"
-                          onClick={() => {
-                            setIsApiKeyEditing(true);
-                            setIsApiKeyVisible(false);
-                          }}
-                          aria-label="Edit API key"
-                          title="Edit API key"
-                        >
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            width="14"
-                            height="14"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                          >
-                            <path d="M12 20h9" />
-                            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                          </svg>
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            void pasteApiKeyFromClipboard();
-                          }}
-                        >
-                          Paste
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-9 w-9 shrink-0 px-0 text-danger hover:text-danger"
-                          onClick={() => {
-                            setDraft("");
-                            setIsApiKeyVisible(false);
-                            onSave("");
+                      <div className="space-y-2">
+                        <label className="block text-[11px] uppercase tracking-[0.08em] text-muted">
+                          AWS Region
+                        </label>
+                        <Input
+                          value={bedrockRegionDraft}
+                          onChange={(event) => {
+                            setBedrockRegionDraft(event.target.value);
                             setApiConnectionStatus("idle");
                             setApiConnectionMessage(null);
                           }}
-                          aria-label="Delete API key"
-                          title="Delete API key"
-                        >
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            width="14"
-                            height="14"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                          >
-                            <path d="M3 6h18" />
-                            <path d="M8 6V4h8v2" />
-                            <path d="M19 6l-1 14H6L5 6" />
-                            <path d="M10 11v6" />
-                            <path d="M14 11v6" />
-                          </svg>
-                        </Button>
+                          placeholder="us-west-2"
+                          aria-label="AWS region"
+                          className="font-mono text-xs"
+                        />
+                        <label className="block text-[11px] uppercase tracking-[0.08em] text-muted">
+                          Bedrock Model ID
+                        </label>
+                        <Input
+                          value={bedrockModelIdDraft}
+                          onChange={(event) => {
+                            setBedrockModelIdDraft(event.target.value);
+                            setApiConnectionStatus("idle");
+                            setApiConnectionMessage(null);
+                          }}
+                          placeholder="anthropic.claude-3-haiku-20240307-v1:0"
+                          aria-label="Bedrock model ID"
+                          className="font-mono text-xs"
+                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button variant="secondary" size="sm" onClick={saveBedrockDraft}>
+                            Save
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted">
+                          Uses your AWS credentials (no API key stored). Ensure your account is authorised
+                          to use the selected model.
+                        </p>
                       </div>
                     )}
 
-                    <p className="text-xs text-muted">
-                      Stored in localStorage for now. Click the key to toggle visibility.
-                    </p>
                     <div className="flex flex-wrap items-center gap-2 pt-1">
                       <div className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-canvas px-2 py-1">
                         <span
-                          className={cn("h-2.5 w-2.5 rounded-full", connectionStatusDotClass(apiConnectionStatus))}
+                          className={cn(
+                            "h-2.5 w-2.5 rounded-full",
+                            connectionStatusDotClass(apiConnectionStatus),
+                          )}
                           aria-hidden="true"
                         />
                         <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-text">
@@ -1315,7 +1482,12 @@ export function SettingsPanel({
                       <Button
                         variant="secondary"
                         size="sm"
-                        disabled={apiConnectionStatus === "testing" || draft.trim().length === 0}
+                        disabled={
+                          apiConnectionStatus === "testing"
+                          || (apiBackendDraft === "anthropic"
+                            ? draft.trim().length === 0
+                            : bedrockModelIdDraft.trim().length === 0)
+                        }
                         onClick={() => {
                           void runApiConnectionTest();
                         }}
@@ -1324,7 +1496,12 @@ export function SettingsPanel({
                       </Button>
                     </div>
                     {apiConnectionMessage && (
-                      <p className={cn("text-xs", apiConnectionStatus === "failed" ? "text-danger" : "text-muted")}>
+                      <p
+                        className={cn(
+                          "text-xs",
+                          apiConnectionStatus === "failed" ? "text-danger" : "text-muted",
+                        )}
+                      >
                         {apiConnectionMessage}
                       </p>
                     )}

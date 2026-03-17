@@ -4,6 +4,8 @@ import type {
   SequenceDiagramGenerator,
 } from "../../domain/review/index.ts";
 import {
+  createApiMessagesClient,
+  extractTextFromClaudeResponse,
   readApiKeyFromStorage,
   startLatencyTrace,
 } from "../../shared/index.ts";
@@ -14,22 +16,6 @@ import {
   runPreferredLocalAgentPrompt,
   shouldPreferLocalAgent,
 } from "./providerRouting.ts";
-
-interface SdkClient {
-  readonly messages: {
-    create(input: {
-      readonly model: string;
-      readonly max_tokens: number;
-      readonly system: string;
-      readonly messages: readonly {
-        readonly role: "user";
-        readonly content: string;
-      }[];
-    }): Promise<unknown>;
-  };
-}
-
-type SdkClientFactory = (apiKey: string) => Promise<SdkClient>;
 
 const DEFAULT_PROVIDER_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_MAX_OUTPUT_TOKENS = 1200;
@@ -254,32 +240,6 @@ function buildRetryPrompt(basePrompt: string, previousResponse: string, reason: 
   ].join("\n");
 }
 
-function extractTextFromResponse(response: unknown): string {
-  if (!response || typeof response !== "object") {
-    return "";
-  }
-
-  const content = (response as { readonly content?: unknown }).content;
-  if (!Array.isArray(content)) {
-    return "";
-  }
-
-  return content
-    .map((block) => {
-      if (typeof block === "string") {
-        return block;
-      }
-      if (!block || typeof block !== "object") {
-        return "";
-      }
-      const text = (block as { readonly text?: unknown }).text;
-      return typeof text === "string" ? text : "";
-    })
-    .filter((fragment) => fragment.trim().length > 0)
-    .join("\n")
-    .trim();
-}
-
 function parseSequenceResponse(
   raw: string,
   allowedFilePaths: ReadonlySet<string>,
@@ -384,46 +344,11 @@ function isMissingSdkClientError(error: unknown): boolean {
   return message.includes("@anthropic-ai/sdk") || message.includes("anthropic constructor");
 }
 
-async function createSdkClient(apiKey: string): Promise<SdkClient> {
-  let sdkModule: unknown;
-
-  try {
-    sdkModule = await import("@anthropic-ai/sdk");
-  } catch {
-    throw new Error('AI SDK package "@anthropic-ai/sdk" is not installed.');
-  }
-
-  const candidate =
-    (sdkModule as { readonly default?: unknown }).default ??
-    (sdkModule as { readonly Anthropic?: unknown }).Anthropic;
-
-  if (typeof candidate !== "function") {
-    throw new Error('Unable to resolve Anthropic constructor from "@anthropic-ai/sdk".');
-  }
-
-  const ClientConstructor = candidate as new (options: {
-    readonly apiKey: string;
-    readonly dangerouslyAllowBrowser?: boolean;
-  }) => SdkClient;
-
-  const client = new ClientConstructor({
-    apiKey,
-    dangerouslyAllowBrowser: true,
-  });
-
-  if (!client.messages || typeof client.messages.create !== "function") {
-    throw new Error("AI SDK client is missing messages.create().");
-  }
-
-  return client;
-}
-
 export interface AgentSequenceDiagramGeneratorOptions {
   readonly apiKey?: string;
   readonly model?: string;
   readonly maxOutputTokens?: number;
   readonly maxAutoAttempts?: number;
-  readonly createClient?: SdkClientFactory;
 }
 
 export class AgentSequenceDiagramGenerator implements SequenceDiagramGenerator {
@@ -431,14 +356,12 @@ export class AgentSequenceDiagramGenerator implements SequenceDiagramGenerator {
   readonly #model: string;
   readonly #maxOutputTokens: number;
   readonly #maxAutoAttempts: number;
-  readonly #createClient: SdkClientFactory;
 
   constructor(options: AgentSequenceDiagramGeneratorOptions = {}) {
     this.#apiKeyOverride = trimToNull(options.apiKey);
     this.#model = trimToNull(options.model) ?? DEFAULT_PROVIDER_MODEL;
     this.#maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
     this.#maxAutoAttempts = Math.max(1, options.maxAutoAttempts ?? DEFAULT_MAX_AUTO_ATTEMPTS);
-    this.#createClient = options.createClient ?? createSdkClient;
   }
 
   #resolveApiKey(): string | null {
@@ -468,17 +391,25 @@ export class AgentSequenceDiagramGenerator implements SequenceDiagramGenerator {
     }
 
     try {
-      const client = await this.#createClient(providerState.apiKey as string);
+      const model =
+        providerState.apiBackend === "bedrock"
+          ? providerState.bedrock.modelId
+          : this.#model;
+      const client = await createApiMessagesClient({
+        backend: providerState.apiBackend,
+        apiKey: providerState.apiKey,
+        bedrockRegion: providerState.bedrock.region,
+      });
       const response = await client.messages.create({
-        model: this.#model,
+        model,
         max_tokens: this.#maxOutputTokens,
         system: CUSTOM_SEQUENCE_SYSTEM_PROMPT,
         messages: [{ role: "user", content: prompt }],
       });
 
-      return extractTextFromResponse(response);
+      return extractTextFromClaudeResponse(response);
     } catch (error) {
-      if (resolveSecondaryProvider(providerState) !== "local-agent" || !isMissingSdkClientError(error)) {
+      if (resolveSecondaryProvider(providerState) !== "local-agent") {
         throw error;
       }
 
@@ -508,6 +439,7 @@ export class AgentSequenceDiagramGenerator implements SequenceDiagramGenerator {
     trace.mark("sequence-generator-provider-selection", {
       preferredProvider: providerState.preferredProvider,
       fallbackToSecondary: providerState.fallbackToSecondary,
+      apiBackend: providerState.apiBackend,
       activeLocalAgentId: providerState.localAgent?.id ?? null,
       localTransport: providerState.localTransport,
       hasApiKey: Boolean(resolvedApiKey),

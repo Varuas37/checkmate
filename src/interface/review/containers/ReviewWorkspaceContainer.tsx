@@ -26,7 +26,9 @@ import {
   readAiAnalysisConfigFromStorage,
   readAndSyncAppSettingsFile,
   readAgentTrackingStatus,
+  readApiBackendFromStorage,
   readApiKeyFromStorage,
+  readBedrockConfigFromStorage,
   readCliAgentsSettingsFromStorage,
   readProjectStandardsPathFromStorage,
   readRecentProjectsFromStorage,
@@ -36,14 +38,17 @@ import {
   removeAgentTracking,
   projectLabelFromPath,
   selectRepositoryFolder,
-  testAnthropicApiConnection,
+  testApiConnection,
   testLocalAgentConnection,
   writeAiAnalysisConfigToStorage,
+  writeApiBackendToStorage,
   writeApiKeyToStorage,
   writeAppSettingsFile,
+  writeBedrockConfigToStorage,
   writeCliAgentsSettingsToStorage,
   writeProjectStandardsPathToStorage,
   writeReviewerProfileToStorage,
+  type ApiBackend,
   type CmCliInstallResult,
   type CmCliStatus,
   type CliAgentsSettings,
@@ -331,6 +336,13 @@ export function ReviewWorkspaceContainer() {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [storedApiKey, setStoredApiKey] = useState(() => readApiKeyFromStorage() ?? "");
+  const [storedApiBackend, setStoredApiBackend] = useState<ApiBackend>(
+    () => readApiBackendFromStorage(),
+  );
+  const [bedrockRegion, setBedrockRegion] = useState(() => readBedrockConfigFromStorage().region);
+  const [bedrockModelId, setBedrockModelId] = useState(
+    () => readBedrockConfigFromStorage().modelId,
+  );
   const [maxChurnThreshold, setMaxChurnThreshold] = useState(
     () => readAiAnalysisConfigFromStorage().maxChurnThreshold,
   );
@@ -382,6 +394,18 @@ export function ReviewWorkspaceContainer() {
       .then((synced) => {
         if (synced.apiKey !== undefined) {
           setStoredApiKey(synced.apiKey);
+        }
+
+        if (synced.apiBackend !== undefined) {
+          setStoredApiBackend(synced.apiBackend);
+        }
+
+        if (synced.bedrockRegion !== undefined) {
+          setBedrockRegion(synced.bedrockRegion);
+        }
+
+        if (synced.bedrockModelId !== undefined) {
+          setBedrockModelId(synced.bedrockModelId);
         }
 
         if (synced.maxChurnThreshold !== undefined) {
@@ -2892,6 +2916,9 @@ export function ReviewWorkspaceContainer() {
         <SettingsPanel
           open={showSettings}
           initialApiKey={storedApiKey}
+          initialApiBackend={storedApiBackend}
+          initialBedrockRegion={bedrockRegion}
+          initialBedrockModelId={bedrockModelId}
           initialMaxChurn={maxChurnThreshold}
           initialAutoRunOnCommitChange={autoRunOnCommitChange}
           initialProjectStandardsPath={projectStandardsPath}
@@ -2903,7 +2930,7 @@ export function ReviewWorkspaceContainer() {
           onRemoveTracking={removeTrackingFromSettings}
           onInstallCmCli={installCmCliCommand}
           onRefreshCmCliStatus={refreshCmCliStatus}
-          onSave={(key) => {
+          onSaveApiKey={(key) => {
             const trimmed = key.trim();
             if (trimmed.length > 0) {
               writeApiKeyToStorage(trimmed);
@@ -2913,7 +2940,24 @@ export function ReviewWorkspaceContainer() {
             setStoredApiKey(trimmed);
             void writeAppSettingsFile({ apiKey: trimmed });
           }}
-          onTestApiConnection={testAnthropicApiConnection}
+          onSaveApiBackend={(backend) => {
+            writeApiBackendToStorage(backend);
+            setStoredApiBackend(backend);
+            void writeAppSettingsFile({ apiBackend: backend });
+          }}
+          onSaveBedrockConfig={(config) => {
+            const next = writeBedrockConfigToStorage({
+              region: config.region,
+              modelId: config.modelId,
+            });
+            setBedrockRegion(next.region);
+            setBedrockModelId(next.modelId);
+            void writeAppSettingsFile({
+              bedrockRegion: next.region,
+              bedrockModelId: next.modelId,
+            });
+          }}
+          onTestApiConnection={testApiConnection}
           onSaveMaxChurn={(n) => {
             writeAiAnalysisConfigToStorage({ maxChurnThreshold: n });
             setMaxChurnThreshold(n);
@@ -2979,6 +3023,9 @@ export function ReviewWorkspaceContainer() {
       <SettingsPanel
         open={showSettings}
         initialApiKey={storedApiKey}
+        initialApiBackend={storedApiBackend}
+        initialBedrockRegion={bedrockRegion}
+        initialBedrockModelId={bedrockModelId}
         initialMaxChurn={maxChurnThreshold}
         initialAutoRunOnCommitChange={autoRunOnCommitChange}
         initialProjectStandardsPath={projectStandardsPath}
@@ -2990,7 +3037,7 @@ export function ReviewWorkspaceContainer() {
         onRemoveTracking={removeTrackingFromSettings}
         onInstallCmCli={installCmCliCommand}
         onRefreshCmCliStatus={refreshCmCliStatus}
-        onSave={(key) => {
+        onSaveApiKey={(key) => {
           const trimmed = key.trim();
           if (trimmed.length > 0) {
             writeApiKeyToStorage(trimmed);
@@ -3000,7 +3047,24 @@ export function ReviewWorkspaceContainer() {
           setStoredApiKey(trimmed);
           void writeAppSettingsFile({ apiKey: trimmed });
         }}
-        onTestApiConnection={testAnthropicApiConnection}
+        onSaveApiBackend={(backend) => {
+          writeApiBackendToStorage(backend);
+          setStoredApiBackend(backend);
+          void writeAppSettingsFile({ apiBackend: backend });
+        }}
+        onSaveBedrockConfig={(config) => {
+          const next = writeBedrockConfigToStorage({
+            region: config.region,
+            modelId: config.modelId,
+          });
+          setBedrockRegion(next.region);
+          setBedrockModelId(next.modelId);
+          void writeAppSettingsFile({
+            bedrockRegion: next.region,
+            bedrockModelId: next.modelId,
+          });
+        }}
+        onTestApiConnection={testApiConnection}
         onSaveMaxChurn={(n) => {
           writeAiAnalysisConfigToStorage({ maxChurnThreshold: n });
           setMaxChurnThreshold(n);

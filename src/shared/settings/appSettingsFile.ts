@@ -1,5 +1,7 @@
 import { writeApiKeyToStorage } from "./apiKeyStorage.ts";
+import { writeApiBackendToStorage, type ApiBackend } from "./apiBackendStorage.ts";
 import { writeAiAnalysisConfigToStorage } from "./aiAnalysisConfig.ts";
+import { writeBedrockConfigToStorage } from "./bedrockConfigStorage.ts";
 import {
   readCliAgentsSettingsFromStorage,
   writeCliAgentsSettingsToStorage,
@@ -8,6 +10,9 @@ import {
 
 export interface AppSettingsFile {
   readonly apiKey?: string;
+  readonly apiBackend?: ApiBackend;
+  readonly bedrockRegion?: string;
+  readonly bedrockModelId?: string;
   readonly maxChurnThreshold?: number;
   readonly autoRunOnCommitChange?: boolean;
   readonly cliAgents?: CliAgentsSettings;
@@ -32,6 +37,21 @@ function normalizeAppSettingsFile(value: unknown): AppSettingsFile {
 
   if (typeof obj["apiKey"] === "string") {
     result["apiKey"] = obj["apiKey"].trim();
+  }
+
+  if (typeof obj["apiBackend"] === "string") {
+    const backend = obj["apiBackend"].trim();
+    if (backend === "anthropic" || backend === "bedrock") {
+      result["apiBackend"] = backend;
+    }
+  }
+
+  if (typeof obj["bedrockRegion"] === "string") {
+    result["bedrockRegion"] = obj["bedrockRegion"].trim();
+  }
+
+  if (typeof obj["bedrockModelId"] === "string") {
+    result["bedrockModelId"] = obj["bedrockModelId"].trim();
   }
 
   if (typeof obj["maxChurnThreshold"] === "number" && obj["maxChurnThreshold"] >= 0) {
@@ -89,6 +109,18 @@ export async function writeAppSettingsFile(patch: Partial<AppSettingsFile>): Pro
       next["apiKey"] = patch.apiKey;
     }
 
+    if ("apiBackend" in patch) {
+      next["apiBackend"] = patch.apiBackend;
+    }
+
+    if ("bedrockRegion" in patch) {
+      next["bedrockRegion"] = patch.bedrockRegion;
+    }
+
+    if ("bedrockModelId" in patch) {
+      next["bedrockModelId"] = patch.bedrockModelId;
+    }
+
     if ("maxChurnThreshold" in patch) {
       next["maxChurnThreshold"] = patch.maxChurnThreshold;
     }
@@ -113,6 +145,9 @@ export async function writeAppSettingsFile(patch: Partial<AppSettingsFile>): Pro
  */
 export async function readAndSyncAppSettingsFile(): Promise<{
   readonly apiKey?: string;
+  readonly apiBackend?: ApiBackend;
+  readonly bedrockRegion?: string;
+  readonly bedrockModelId?: string;
   readonly maxChurnThreshold?: number;
   readonly autoRunOnCommitChange?: boolean;
   readonly cliAgents?: CliAgentsSettings;
@@ -124,6 +159,9 @@ export async function readAndSyncAppSettingsFile(): Promise<{
 
   const result: {
     apiKey?: string;
+    apiBackend?: ApiBackend;
+    bedrockRegion?: string;
+    bedrockModelId?: string;
     maxChurnThreshold?: number;
     autoRunOnCommitChange?: boolean;
     cliAgents?: CliAgentsSettings;
@@ -135,6 +173,23 @@ export async function readAndSyncAppSettingsFile(): Promise<{
       writeApiKeyToStorage(trimmed);
       result.apiKey = trimmed;
     }
+  }
+
+  if (settings.apiBackend !== undefined) {
+    writeApiBackendToStorage(settings.apiBackend);
+    result.apiBackend = settings.apiBackend;
+  }
+
+  if (settings.bedrockRegion !== undefined) {
+    const trimmed = settings.bedrockRegion.trim();
+    writeBedrockConfigToStorage({ region: trimmed });
+    result.bedrockRegion = trimmed;
+  }
+
+  if (settings.bedrockModelId !== undefined) {
+    const trimmed = settings.bedrockModelId.trim();
+    writeBedrockConfigToStorage({ modelId: trimmed });
+    result.bedrockModelId = trimmed;
   }
 
   if (settings.maxChurnThreshold !== undefined) {

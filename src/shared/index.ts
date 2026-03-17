@@ -10,6 +10,16 @@ export {
   writeApiKeyToStorage,
 } from "./settings/apiKeyStorage.ts";
 export {
+  readApiBackendFromStorage,
+  writeApiBackendToStorage,
+  type ApiBackend,
+} from "./settings/apiBackendStorage.ts";
+export {
+  readBedrockConfigFromStorage,
+  writeBedrockConfigToStorage,
+  type BedrockConfig,
+} from "./settings/bedrockConfigStorage.ts";
+export {
   clearReviewerProfileFromStorage,
   readReviewerProfileFromStorage,
   writeReviewerProfileToStorage,
@@ -105,13 +115,23 @@ export {
   type CmCliStatus,
 } from "./desktopIntegration.ts";
 export {
+  testApiConnection,
   testAnthropicApiConnection,
+  testBedrockApiConnection,
   testLocalAgentConnection,
 } from "./integrationConnection.ts";
 export {
   clearLocalAgentSessions,
   runLocalAgentPrompt,
 } from "./localAgentRuntime.ts";
+export { runBedrockConversePrompt, type RunBedrockPromptInput } from "./bedrockRuntime.ts";
+export {
+  createApiMessagesClient,
+  createAnthropicMessagesClient,
+  createBedrockMessagesClient,
+  extractTextFromClaudeResponse,
+  type AiMessagesClient,
+} from "./aiMessagesClient.ts";
 export {
   startLatencyTrace,
   type LatencyTrace,

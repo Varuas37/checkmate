@@ -4,7 +4,11 @@ import type {
   StandardsEvaluationOutput,
   StandardsResult,
 } from "../../domain/review/index.ts";
-import { readApiKeyFromStorage } from "../../shared/index.ts";
+import {
+  createApiMessagesClient,
+  extractTextFromClaudeResponse,
+  readApiKeyFromStorage,
+} from "../../shared/index.ts";
 import {
   canUseApiProvider,
   resolveAiProviderState,
@@ -13,22 +17,6 @@ import {
   shouldPreferLocalAgent,
 } from "./providerRouting.ts";
 import { parseStandardsRulesFromText } from "./standardsRuleTextEvaluator.ts";
-
-interface ClaudeSdkClient {
-  readonly messages: {
-    create(input: {
-      readonly model: string;
-      readonly max_tokens: number;
-      readonly system: string;
-      readonly messages: readonly {
-        readonly role: "user";
-        readonly content: string;
-      }[];
-    }): Promise<unknown>;
-  };
-}
-
-type ClaudeSdkClientFactory = (apiKey: string) => Promise<ClaudeSdkClient>;
 
 const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
@@ -63,39 +51,6 @@ function resolveDefaultApiKey(): string | null {
   );
 }
 
-async function createClaudeSdkClient(apiKey: string): Promise<ClaudeSdkClient> {
-  let sdkModule: unknown;
-
-  try {
-    sdkModule = await import("@anthropic-ai/sdk");
-  } catch {
-    throw new Error('Claude SDK package "@anthropic-ai/sdk" is not installed.');
-  }
-
-  const candidate =
-    (sdkModule as { readonly default?: unknown }).default ??
-    (sdkModule as { readonly Anthropic?: unknown }).Anthropic;
-
-  if (typeof candidate !== "function") {
-    throw new Error('Unable to resolve Anthropic constructor from "@anthropic-ai/sdk".');
-  }
-
-  const ClientConstructor = candidate as new (options: {
-    readonly apiKey: string;
-    readonly dangerouslyAllowBrowser?: boolean;
-  }) => ClaudeSdkClient;
-  const client = new ClientConstructor({
-    apiKey,
-    dangerouslyAllowBrowser: true,
-  });
-
-  if (!client.messages || typeof client.messages.create !== "function") {
-    throw new Error("Claude SDK client is missing messages.create().");
-  }
-
-  return client;
-}
-
 function isMissingClaudeSdkError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -103,34 +58,6 @@ function isMissingClaudeSdkError(error: unknown): boolean {
 
   const message = error.message.toLowerCase();
   return message.includes("@anthropic-ai/sdk") || message.includes("anthropic constructor");
-}
-
-function extractTextFromResponse(response: unknown): string {
-  if (!response || typeof response !== "object") {
-    return "";
-  }
-
-  const content = (response as { readonly content?: unknown }).content;
-  if (!Array.isArray(content)) {
-    return "";
-  }
-
-  return content
-    .map((block) => {
-      if (typeof block === "string") {
-        return block;
-      }
-
-      if (!block || typeof block !== "object") {
-        return "";
-      }
-
-      const text = (block as { readonly text?: unknown }).text;
-      return typeof text === "string" ? text : "";
-    })
-    .filter((fragment) => fragment.trim().length > 0)
-    .join("\n")
-    .trim();
 }
 
 function stripJsonFences(raw: string): string {
@@ -343,20 +270,17 @@ export interface ClaudeSdkStandardsAnalyserOptions {
   readonly apiKey?: string;
   readonly model?: string;
   readonly maxOutputTokens?: number;
-  readonly createClient?: ClaudeSdkClientFactory;
 }
 
 export class ClaudeSdkStandardsAnalyser implements StandardsAnalyser {
   readonly #apiKeyOverride: string | null;
   readonly #model: string;
   readonly #maxOutputTokens: number;
-  readonly #createClient: ClaudeSdkClientFactory;
 
   constructor(options: ClaudeSdkStandardsAnalyserOptions = {}) {
     this.#apiKeyOverride = trimToNull(options.apiKey);
     this.#model = trimToNull(options.model) ?? DEFAULT_CLAUDE_MODEL;
     this.#maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-    this.#createClient = options.createClient ?? createClaudeSdkClient;
   }
 
   #resolveApiKey(): string | null {
@@ -402,22 +326,30 @@ export class ClaudeSdkStandardsAnalyser implements StandardsAnalyser {
     }
 
     try {
-      const client = await this.#createClient(providerState.apiKey as string);
+      const model =
+        providerState.apiBackend === "bedrock"
+          ? providerState.bedrock.modelId
+          : this.#model;
+      const client = await createApiMessagesClient({
+        backend: providerState.apiBackend,
+        apiKey: providerState.apiKey,
+        bedrockRegion: providerState.bedrock.region,
+      });
       const response = await client.messages.create({
-        model: this.#model,
+        model,
         max_tokens: this.#maxOutputTokens,
         system: DEFAULT_SYSTEM_PROMPT,
         messages: [{ role: "user", content: prompt }],
       });
 
-      const parsed = parseAnalysis(extractTextFromResponse(response), input);
+      const parsed = parseAnalysis(extractTextFromClaudeResponse(response), input);
       if (!parsed) {
         throw new Error("Claude standards response did not match the expected schema.");
       }
 
       return parsed;
     } catch (error) {
-      if (secondaryProvider !== "local-agent" || !isMissingClaudeSdkError(error)) {
+      if (secondaryProvider !== "local-agent") {
         throw error;
       }
 

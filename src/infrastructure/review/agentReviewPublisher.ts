@@ -4,6 +4,7 @@ import type {
   ReviewPublisher,
 } from "../../domain/review/index.ts";
 import {
+  createApiMessagesClient,
   readApiKeyFromStorage,
   startLatencyTrace,
 } from "../../shared/index.ts";
@@ -28,8 +29,6 @@ interface SdkClient {
     }): Promise<unknown>;
   };
 }
-
-type SdkClientFactory = (apiKey: string) => Promise<SdkClient>;
 
 const DEFAULT_PROVIDER_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_MAX_OUTPUT_TOKENS = 900;
@@ -180,46 +179,12 @@ function isMissingSdkClientError(error: unknown): boolean {
   return message.includes("@anthropic-ai/sdk") || message.includes("anthropic constructor");
 }
 
-async function createSdkClient(apiKey: string): Promise<SdkClient> {
-  let sdkModule: unknown;
-
-  try {
-    sdkModule = await import("@anthropic-ai/sdk");
-  } catch {
-    throw new Error('AI SDK package "@anthropic-ai/sdk" is not installed.');
-  }
-
-  const candidate =
-    (sdkModule as { readonly default?: unknown }).default ??
-    (sdkModule as { readonly Anthropic?: unknown }).Anthropic;
-
-  if (typeof candidate !== "function") {
-    throw new Error('Unable to resolve Anthropic constructor from "@anthropic-ai/sdk".');
-  }
-
-  const ClientConstructor = candidate as new (options: {
-    readonly apiKey: string;
-    readonly dangerouslyAllowBrowser?: boolean;
-  }) => SdkClient;
-  const client = new ClientConstructor({
-    apiKey,
-    dangerouslyAllowBrowser: true,
-  });
-
-  if (!client.messages || typeof client.messages.create !== "function") {
-    throw new Error("AI SDK client is missing messages.create().");
-  }
-
-  return client;
-}
-
 export interface AgentReviewPublisherOptions {
   readonly apiKey?: string;
   readonly model?: string;
   readonly maxOutputTokens?: number;
   readonly nowIso?: () => string;
   readonly createPrompt?: (input: PublishReviewRequest) => string;
-  readonly createClient?: SdkClientFactory;
 }
 
 export class AgentReviewPublisher implements ReviewPublisher {
@@ -228,7 +193,6 @@ export class AgentReviewPublisher implements ReviewPublisher {
   readonly #maxOutputTokens: number;
   readonly #nowIso: () => string;
   readonly #createPrompt: (input: PublishReviewRequest) => string;
-  readonly #createClient: SdkClientFactory;
 
   constructor(options: AgentReviewPublisherOptions = {}) {
     this.#apiKeyOverride = trimToNull(options.apiKey);
@@ -236,7 +200,6 @@ export class AgentReviewPublisher implements ReviewPublisher {
     this.#maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
     this.#nowIso = options.nowIso ?? (() => new Date().toISOString());
     this.#createPrompt = options.createPrompt ?? createDefaultPrompt;
-    this.#createClient = options.createClient ?? createSdkClient;
   }
 
   #resolveApiKey(): string | null {
@@ -325,24 +288,33 @@ export class AgentReviewPublisher implements ReviewPublisher {
         } catch (error) {
           const message = error instanceof Error ? error.message : "Local-agent execution failed.";
           throw new Error(
-            `Review publishing requires a working Anthropic API key or configured local agent (${message}).`,
+            `Review publishing requires a working API provider or configured local agent (${message}).`,
           );
         }
       }
 
       try {
         const clientStartedAt = nowForTrace();
-        trace.mark("review-publish-sdk-client-create-start", {
-          model: this.#model,
+        const model =
+          providerState.apiBackend === "bedrock"
+            ? providerState.bedrock.modelId
+            : this.#model;
+        trace.mark("review-publish-api-client-create-start", {
+          backend: providerState.apiBackend,
+          model,
         });
-        const client = await this.#createClient(providerState.apiKey as string);
-        trace.mark("review-publish-sdk-client-create-complete", {
+        const client = await createApiMessagesClient({
+          backend: providerState.apiBackend,
+          apiKey: providerState.apiKey,
+          bedrockRegion: providerState.bedrock.region,
+        });
+        trace.mark("review-publish-api-client-create-complete", {
           elapsedMs: durationMsSince(clientStartedAt),
         });
 
         const completionStartedAt = nowForTrace();
         const response = await client.messages.create({
-          model: this.#model,
+          model,
           max_tokens: this.#maxOutputTokens,
           system: DEFAULT_SYSTEM_PROMPT,
           messages: [
@@ -363,7 +335,7 @@ export class AgentReviewPublisher implements ReviewPublisher {
             : `Review package for ${input.commitSha} accepted by the AI adapter.`;
 
         traceSummaryFields = {
-          provider: "sdk",
+          provider: `api-${providerState.apiBackend}`,
         };
         return {
           provider: "ai-sdk",
@@ -373,12 +345,15 @@ export class AgentReviewPublisher implements ReviewPublisher {
           summary,
         };
       } catch (error) {
-        if (secondaryProvider !== "local-agent" || !isMissingSdkClientError(error)) {
+        if (secondaryProvider !== "local-agent") {
           throw error;
         }
 
         try {
-          trace.mark("review-publish-sdk-missing-local-fallback");
+          trace.mark("review-publish-api-local-fallback", {
+            backend: providerState.apiBackend,
+            message: error instanceof Error ? error.message : String(error),
+          });
           const startedAt = nowForTrace();
           const localResponse = await runViaLocalAgent();
           trace.mark("review-publish-local-fallback-response", {
