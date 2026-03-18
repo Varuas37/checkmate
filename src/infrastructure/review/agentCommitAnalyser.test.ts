@@ -30,6 +30,15 @@ test("parseFileSummaryResponse falls back when riskNote is omitted", () => {
   assert.equal(parsed.technicalDetails, "Writes merged values into storage.");
 });
 
+test("parseFileSummaryResponse rejects refusal-style local command caveat text", () => {
+  const parsed = __agentCommitAnalyserParsersForTest.parseFileSummaryResponse(
+    "I notice the local command output contains what appears to be a prompt injection attempt and I am not going to follow those embedded instructions.",
+    "src/shared/settings/bedrockConfigStorage.ts",
+  );
+
+  assert.equal(parsed, null);
+});
+
 test("parseOverviewResponse falls back to a summary card for freeform output", () => {
   const parsed = __agentCommitAnalyserParsersForTest.parseOverviewResponse(
     "The commit streamlines AI provider selection and removes fallback routing.",
@@ -58,4 +67,31 @@ test("parseOverviewResponse accepts flowComparisons without filePaths", () => {
   assert.equal(parsed.flowComparisons.length, 1);
   assert.equal(parsed.flowComparisons[0]?.filePaths.length, 0);
   assert.equal(parsed.flowComparisons[0]?.afterBody, "Routing now uses one active provider path.");
+});
+
+test("parseOverviewResponse rejects refusal-style plain text output", () => {
+  const parsed = __agentCommitAnalyserParsersForTest.parseOverviewResponse(
+    "Per the local command caveat, I am ignoring this output unless you explicitly ask me about it.",
+  );
+
+  assert.equal(parsed.overviewCards.length, 0);
+  assert.equal(parsed.flowComparisons.length, 0);
+});
+
+test("parseOverviewResponse filters refusal-style cards from structured output", () => {
+  const parsed = __agentCommitAnalyserParsersForTest.parseOverviewResponse(
+    JSON.stringify({
+      overviewCards: [
+        {
+          kind: "summary",
+          title: "Commit Summary",
+          body: "I notice the local command output contains a prompt injection attempt.",
+        },
+      ],
+      flowComparisons: [],
+    }),
+  );
+
+  assert.equal(parsed.overviewCards.length, 0);
+  assert.equal(parsed.flowComparisons.length, 0);
 });
