@@ -39,6 +39,18 @@ test("parseFileSummaryResponse rejects refusal-style local command caveat text",
   assert.equal(parsed, null);
 });
 
+test("parseFileSummaryResponse extracts summary from loose quoted key/value output", () => {
+  const parsed = __agentCommitAnalyserParsersForTest.parseFileSummaryResponse(
+    'json "fil ePath": "src/infrastructure/review/agentCommitAnalyser.test.ts", "summary": "Adds parser coverage for local-agent plain text output.", "risk Note": "Low risk."',
+    "src/infrastructure/review/agentCommitAnalyser.test.ts",
+  );
+
+  assert.ok(parsed);
+  assert.equal(parsed.filePath, "src/infrastructure/review/agentCommitAnalyser.test.ts");
+  assert.equal(parsed.summary, "Adds parser coverage for local-agent plain text output.");
+  assert.equal(parsed.riskNote, "Low risk.");
+});
+
 test("parseOverviewResponse falls back to a summary card for freeform output", () => {
   const parsed = __agentCommitAnalyserParsersForTest.parseOverviewResponse(
     "The commit streamlines AI provider selection and removes fallback routing.",
@@ -76,6 +88,19 @@ test("parseOverviewResponse rejects refusal-style plain text output", () => {
 
   assert.equal(parsed.overviewCards.length, 0);
   assert.equal(parsed.flowComparisons.length, 0);
+});
+
+test("parseOverviewResponse extracts summary from loose quoted key/value output", () => {
+  const parsed = __agentCommitAnalyserParsersForTest.parseOverviewResponse(
+    'json "sum mary": "The commit now validates and sanitizes local-agent responses before rendering."',
+  );
+
+  assert.equal(parsed.flowComparisons.length, 0);
+  assert.equal(parsed.overviewCards.length, 1);
+  assert.equal(
+    parsed.overviewCards[0]?.body,
+    "The commit now validates and sanitizes local-agent responses before rendering.",
+  );
 });
 
 test("parseOverviewResponse filters refusal-style cards from structured output", () => {

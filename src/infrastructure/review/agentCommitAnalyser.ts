@@ -536,12 +536,38 @@ function clipText(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
+function normalizeLooseKey(value: string): string {
+  return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function readObjectValueByLooseKey(
+  obj: Record<string, unknown>,
+  key: string,
+): unknown {
+  if (Object.prototype.hasOwnProperty.call(obj, key)) {
+    return obj[key];
+  }
+
+  const normalizedKey = normalizeLooseKey(key);
+  if (normalizedKey.length === 0) {
+    return undefined;
+  }
+
+  for (const [candidateKey, candidateValue] of Object.entries(obj)) {
+    if (normalizeLooseKey(candidateKey) === normalizedKey) {
+      return candidateValue;
+    }
+  }
+
+  return undefined;
+}
+
 function firstStringByKeys(
   obj: Record<string, unknown>,
   keys: readonly string[],
 ): string | null {
   for (const key of keys) {
-    const value = obj[key];
+    const value = readObjectValueByLooseKey(obj, key);
     if (typeof value === "string" && value.trim().length > 0) {
       return value.trim();
     }
@@ -555,6 +581,57 @@ function firstStringByKeys(
       if (nestedCandidate && nestedCandidate.trim().length > 0) {
         return nestedCandidate.trim();
       }
+    }
+  }
+
+  return null;
+}
+
+function parseLooseQuotedKeyValues(raw: string): {
+  readonly valuesByNormalizedKey: Readonly<Record<string, string>>;
+  readonly pairCount: number;
+} {
+  const valuesByNormalizedKey: Record<string, string> = {};
+  const pairRegex = /"([^"\n]{1,80})"\s*:\s*"([^"]*(?:\\.[^"]*)*)"/g;
+  let pairCount = 0;
+  let match: RegExpExecArray | null = pairRegex.exec(raw);
+
+  while (match) {
+    pairCount += 1;
+    const rawKey = match[1] ?? "";
+    const rawValue = match[2] ?? "";
+    const normalizedKey = normalizeLooseKey(rawKey);
+    const normalizedValue = rawValue
+      .replace(/\\n/g, "\n")
+      .replace(/\\"/g, "\"")
+      .replace(/\\\\/g, "\\")
+      .trim();
+
+    if (
+      normalizedKey.length > 0
+      && normalizedValue.length > 0
+      && valuesByNormalizedKey[normalizedKey] === undefined
+    ) {
+      valuesByNormalizedKey[normalizedKey] = normalizedValue;
+    }
+
+    match = pairRegex.exec(raw);
+  }
+
+  return {
+    valuesByNormalizedKey,
+    pairCount,
+  };
+}
+
+function firstLooseStringFromMap(
+  valuesByNormalizedKey: Readonly<Record<string, string>>,
+  keys: readonly string[],
+): string | null {
+  for (const key of keys) {
+    const value = valuesByNormalizedKey[normalizeLooseKey(key)];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
     }
   }
 
@@ -642,6 +719,7 @@ function parseFileSummaryResponse(
   raw: string,
   expectedPath: string,
 ): AiFileSummary | null {
+  const looseKeyValues = parseLooseQuotedKeyValues(raw);
   const obj = parseJsonObjectFromText(raw);
   if (obj) {
     const candidateFromList = Array.isArray(obj["fileSummaries"])
@@ -681,6 +759,8 @@ function parseFileSummaryResponse(
       "implementationDetails",
     ]);
     if (summaryText && !isRefusalLikeText(summaryText)) {
+      const resolvedFilePath =
+        firstStringByKeys(source, ["filePath", "path", "filename"]) ?? expectedPath;
       const safeRiskText =
         riskText && !isRefusalLikeText(riskText)
           ? riskText
@@ -690,8 +770,7 @@ function parseFileSummaryResponse(
           ? clipText(technicalDetails, 1200)
           : null;
       return {
-        filePath:
-          typeof source["filePath"] === "string" ? source["filePath"] : expectedPath,
+        filePath: resolvedFilePath,
         summary: clipText(summaryText, 360),
         riskNote: clipText(safeRiskText, 220),
         ...(safeTechnicalDetails
@@ -701,6 +780,59 @@ function parseFileSummaryResponse(
           : {}),
       };
     }
+  }
+
+  const looseSummary = firstLooseStringFromMap(looseKeyValues.valuesByNormalizedKey, [
+    "summary",
+    "fileSummary",
+    "analysis",
+    "body",
+    "message",
+    "description",
+    "overview",
+    "afterBody",
+  ]);
+  if (looseSummary && !isRefusalLikeText(looseSummary)) {
+    const looseRiskText = firstLooseStringFromMap(looseKeyValues.valuesByNormalizedKey, [
+      "riskNote",
+      "risk",
+      "watchOuts",
+      "watchouts",
+      "riskSummary",
+    ]);
+    const looseTechnicalDetails = firstLooseStringFromMap(looseKeyValues.valuesByNormalizedKey, [
+      "technicalDetails",
+      "details",
+      "implementationDetails",
+    ]);
+    const looseFilePath =
+      firstLooseStringFromMap(looseKeyValues.valuesByNormalizedKey, [
+        "filePath",
+        "path",
+        "filename",
+      ]) ?? expectedPath;
+    const safeRiskText =
+      looseRiskText && !isRefusalLikeText(looseRiskText)
+        ? looseRiskText
+        : DEFAULT_RISK_NOTE_TEXT;
+    const safeTechnicalDetails =
+      looseTechnicalDetails && !isRefusalLikeText(looseTechnicalDetails)
+        ? clipText(looseTechnicalDetails, 1200)
+        : null;
+    return {
+      filePath: looseFilePath,
+      summary: clipText(looseSummary, 360),
+      riskNote: clipText(safeRiskText, 220),
+      ...(safeTechnicalDetails
+        ? {
+            technicalDetails: safeTechnicalDetails,
+          }
+        : {}),
+    };
+  }
+
+  if (looseKeyValues.pairCount >= 2) {
+    return null;
   }
 
   const plainText = normalizeAgentPlainText(raw);
@@ -811,8 +943,30 @@ function parseOverviewResponse(raw: string): {
   readonly flowComparisons: readonly AiFlowComparison[];
 } {
   const empty = { overviewCards: [], flowComparisons: [] };
+  const looseKeyValues = parseLooseQuotedKeyValues(raw);
+  const looseSummaryText = firstLooseStringFromMap(
+    looseKeyValues.valuesByNormalizedKey,
+    ["summary", "overview", "analysis", "body", "message", "description"],
+  );
   const obj = parseJsonObjectFromText(raw);
   if (!obj) {
+    if (looseSummaryText && !isRefusalLikeText(looseSummaryText)) {
+      return {
+        overviewCards: [
+          {
+            kind: "summary",
+            title: "Commit Summary",
+            body: clipText(looseSummaryText, 600),
+          },
+        ],
+        flowComparisons: [],
+      };
+    }
+
+    if (looseKeyValues.pairCount >= 2) {
+      return empty;
+    }
+
     const plainText = normalizeAgentPlainText(raw);
     if (plainText.length === 0 || isRefusalLikeText(plainText)) {
       return empty;
@@ -957,6 +1111,19 @@ function parseOverviewResponse(raw: string): {
       : [];
 
   if (overviewCards.length === 0 && flowComparisons.length === 0) {
+    if (looseSummaryText && !isRefusalLikeText(looseSummaryText)) {
+      overviewCards.push({
+        kind: "summary",
+        title: "Commit Summary",
+        body: clipText(looseSummaryText, 600),
+      });
+      return { overviewCards, flowComparisons };
+    }
+
+    if (looseKeyValues.pairCount >= 2) {
+      return { overviewCards, flowComparisons };
+    }
+
     const plainText = normalizeAgentPlainText(raw);
     if (plainText.length > 0 && !isRefusalLikeText(plainText)) {
       overviewCards.push({
