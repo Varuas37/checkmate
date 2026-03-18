@@ -7,7 +7,7 @@ export interface BedrockConfig {
 
 const DEFAULT_CONFIG: BedrockConfig = {
   region: "us-west-2",
-  modelId: "",
+  modelId: "anthropic.claude-3-haiku-20240307-v1:0",
 };
 
 function trimString(value: unknown): string {
@@ -25,7 +25,7 @@ function normalizeBedrockConfig(value: unknown): BedrockConfig {
 
   return {
     region: region.length > 0 ? region : DEFAULT_CONFIG.region,
-    modelId,
+    modelId: modelId.length > 0 ? modelId : DEFAULT_CONFIG.modelId,
   };
 }
 
@@ -55,4 +55,3 @@ export function writeBedrockConfigToStorage(patch: Partial<BedrockConfig>): Bedr
 
   return next;
 }
-

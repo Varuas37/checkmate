@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button, Input, Modal, ThemeSwitcher } from "../../../design-system/index.ts";
 import { cn, readClipboardTextFromDesktop } from "../../../shared/index.ts";
@@ -6,7 +6,6 @@ import type {
   AgentTrackingInitializationResult,
   AgentTrackingRemovalResult,
   AgentTrackingStatus,
-  AiProviderPreference,
   ApiBackend,
   CliAgentConfig,
   CliAgentsSettings,
@@ -63,6 +62,14 @@ interface SettingsSection {
   readonly detail: string;
 }
 
+type ProviderRouteMode = "api-only" | "api-then-local" | "local-only" | "local-then-api";
+
+interface ProviderRouteOption {
+  readonly id: ProviderRouteMode;
+  readonly label: string;
+  readonly detail: string;
+}
+
 const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   {
     id: "projects",
@@ -83,6 +90,29 @@ const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     id: "analysis",
     label: "AI Analysis",
     detail: "Limits and standards",
+  },
+];
+
+const PROVIDER_ROUTE_OPTIONS: readonly ProviderRouteOption[] = [
+  {
+    id: "api-only",
+    label: "API only",
+    detail: "Use the selected API backend and stop if it fails.",
+  },
+  {
+    id: "api-then-local",
+    label: "API \u2192 Local",
+    detail: "Try API first, then the active local agent.",
+  },
+  {
+    id: "local-only",
+    label: "Local only",
+    detail: "Use the active local agent and stop if it fails.",
+  },
+  {
+    id: "local-then-api",
+    label: "Local \u2192 API",
+    detail: "Try local agent first, then the selected API backend.",
   },
 ];
 
@@ -153,6 +183,14 @@ function toConnectionSummary(value: string): string {
   return `${normalized.slice(0, 117)}...`;
 }
 
+function resolveProviderRouteMode(settings: CliAgentsSettings): ProviderRouteMode {
+  if (settings.preferredProvider === "local-agent") {
+    return settings.fallbackToSecondary ? "local-then-api" : "local-only";
+  }
+
+  return settings.fallbackToSecondary ? "api-then-local" : "api-only";
+}
+
 export function SettingsPanel({
   open,
   initialApiKey,
@@ -206,6 +244,9 @@ export function SettingsPanel({
   const [testedCliAgentId, setTestedCliAgentId] = useState<string | null>(null);
   const [trackingStatus, setTrackingStatus] = useState<AgentTrackingStatus | null>(null);
   const [isTrackingStatusLoading, setIsTrackingStatusLoading] = useState(false);
+  const providerRoutingRef = useRef<HTMLDivElement | null>(null);
+  const providerLocalAgentRef = useRef<HTMLElement | null>(null);
+  const providerApiRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -475,22 +516,35 @@ export function SettingsPanel({
     setTestedCliAgentId(null);
   };
 
-  const setPreferredProvider = (preferredProvider: AiProviderPreference) => {
+  const setProviderRouteMode = (mode: ProviderRouteMode) => {
+    const preferredProvider = mode === "local-only" || mode === "local-then-api" ? "local-agent" : "api";
+    const fallbackToSecondary = mode === "api-then-local" || mode === "local-then-api";
     const next: CliAgentsSettings = {
       ...draftCliAgents,
       preferredProvider,
+      fallbackToSecondary,
     };
+
+    if (
+      next.preferredProvider === draftCliAgents.preferredProvider
+      && next.fallbackToSecondary === draftCliAgents.fallbackToSecondary
+    ) {
+      return;
+    }
+
     setDraftCliAgents(next);
     onSaveCliAgents(next);
   };
 
-  const toggleFallbackToSecondary = () => {
-    const next: CliAgentsSettings = {
-      ...draftCliAgents,
-      fallbackToSecondary: !draftCliAgents.fallbackToSecondary,
-    };
-    setDraftCliAgents(next);
-    onSaveCliAgents(next);
+  const scrollToProviderSection = (target: "routing" | "local" | "api") => {
+    const section =
+      target === "routing"
+        ? providerRoutingRef.current
+        : target === "local"
+          ? providerLocalAgentRef.current
+          : providerApiRef.current;
+
+    section?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const setLocalTransport = (localTransport: LocalAgentTransport) => {
@@ -561,6 +615,31 @@ export function SettingsPanel({
     setEditingAgentId(null);
     setAgentEditDraft(null);
   };
+
+  const providerRouteMode = useMemo(
+    () => resolveProviderRouteMode(draftCliAgents),
+    [draftCliAgents.fallbackToSecondary, draftCliAgents.preferredProvider],
+  );
+
+  const isApiConfigured = useMemo(() => {
+    if (apiBackendDraft === "bedrock") {
+      return bedrockModelIdDraft.trim().length > 0;
+    }
+
+    return draft.trim().length > 0;
+  }, [apiBackendDraft, bedrockModelIdDraft, draft]);
+
+  const isLocalAgentConfigured = useMemo(() => {
+    if (!activeCliAgent) {
+      return false;
+    }
+
+    if (draftCliAgents.localTransport === "acp") {
+      return activeCliAgent.acpCommand.trim().length > 0;
+    }
+
+    return activeCliAgent.command.trim().length > 0;
+  }, [activeCliAgent, draftCliAgents.localTransport]);
 
   const currentBackendLabel = useMemo(() => {
     const hasApiKey = draft.trim().length > 0;
@@ -950,63 +1029,86 @@ export function SettingsPanel({
                 </p>
               </header>
 
-              <div className="space-y-3 border-y border-border/60 py-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.08em] text-muted">Current Route</p>
-                  <p className="font-mono text-xs text-text">{currentBackendLabel}</p>
+              <div
+                ref={providerRoutingRef}
+                className="space-y-3 border-y border-border/60 py-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="space-y-1">
+                    <p className="text-[11px] uppercase tracking-[0.08em] text-muted">Current Route</p>
+                    <p className="font-mono text-xs text-text">{currentBackendLabel}</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => scrollToProviderSection("local")}
+                    >
+                      Local Agent
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => scrollToProviderSection("api")}
+                    >
+                      API Provider
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="grid gap-2 md:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => setPreferredProvider("local-agent")}
-                    className={cn(
-                      "rounded-sm border px-3 py-2 text-left transition-colors",
-                      draftCliAgents.preferredProvider === "local-agent"
-                        ? "border-accent/55 bg-accent/10"
-                        : "border-border/60 bg-surface-subtle/30 hover:bg-surface-subtle/45",
-                    )}
-                  >
-                    <p className="text-sm font-medium text-text">Prefer Local Agent</p>
-                    <p className="mt-0.5 text-xs text-muted">
-                      Use the selected local agent first, then fall back to the API if enabled.
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPreferredProvider("api")}
-                    className={cn(
-                      "rounded-sm border px-3 py-2 text-left transition-colors",
-                      draftCliAgents.preferredProvider === "api"
-                        ? "border-accent/55 bg-accent/10"
-                        : "border-border/60 bg-surface-subtle/30 hover:bg-surface-subtle/45",
-                    )}
-                  >
-                    <p className="text-sm font-medium text-text">Prefer API</p>
-                    <p className="mt-0.5 text-xs text-muted">
-                      Use {apiBackendDraft === "bedrock" ? "Bedrock" : "Anthropic"} first, then fall back to the configured local agent if enabled.
-                    </p>
-                  </button>
+                  {PROVIDER_ROUTE_OPTIONS.map((routeOption) => {
+                    const isActive = routeOption.id === providerRouteMode;
+                    return (
+                      <button
+                        key={routeOption.id}
+                        type="button"
+                        onClick={() => setProviderRouteMode(routeOption.id)}
+                        className={cn(
+                          "rounded-sm border px-3 py-2 text-left transition-colors",
+                          isActive
+                            ? "border-accent/55 bg-accent/10"
+                            : "border-border/60 bg-surface-subtle/30 hover:bg-surface-subtle/45",
+                        )}
+                      >
+                        <p className="text-sm font-medium text-text">{routeOption.label}</p>
+                        <p className="mt-0.5 text-xs text-muted">{routeOption.detail}</p>
+                      </button>
+                    );
+                  })}
                 </div>
 
-                <label className="flex cursor-pointer items-start gap-2.5">
-                  <input
-                    type="checkbox"
-                    checked={draftCliAgents.fallbackToSecondary}
-                    onChange={toggleFallbackToSecondary}
-                    className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
-                  />
-                  <div>
-                    <p className="text-sm font-medium text-text">Fall back to the secondary provider</p>
-                    <p className="mt-0.5 text-xs text-muted">
-                      Keeps analysis running if the preferred path is unavailable.
-                    </p>
-                  </div>
-                </label>
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <span
+                    className={cn(
+                      "rounded border px-2 py-1 font-mono uppercase tracking-[0.08em]",
+                      isApiConfigured
+                        ? "border-emerald-400/45 bg-emerald-500/10 text-emerald-300"
+                        : "border-border/60 bg-canvas text-muted",
+                    )}
+                  >
+                    API {isApiConfigured ? "ready" : "needs setup"}
+                  </span>
+                  <span
+                    className={cn(
+                      "rounded border px-2 py-1 font-mono uppercase tracking-[0.08em]",
+                      isLocalAgentConfigured
+                        ? "border-emerald-400/45 bg-emerald-500/10 text-emerald-300"
+                        : "border-border/60 bg-canvas text-muted",
+                    )}
+                  >
+                    Local {isLocalAgentConfigured ? "ready" : "needs setup"}
+                  </span>
+                </div>
               </div>
 
               <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-                <section className="space-y-3 rounded-sm border border-border/60 bg-surface-subtle/20 p-3">
+                <section
+                  ref={providerLocalAgentRef}
+                  className="space-y-3 rounded-sm border border-border/60 bg-surface-subtle/20 p-3"
+                >
                   <header className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
                       <h4 className="text-sm font-semibold text-text">Local Agent</h4>
@@ -1212,7 +1314,10 @@ export function SettingsPanel({
                   </div>
                 </section>
 
-                <section className="space-y-3 rounded-sm border border-border/60 bg-surface-subtle/20 p-3">
+                <section
+                  ref={providerApiRef}
+                  className="space-y-3 rounded-sm border border-border/60 bg-surface-subtle/20 p-3"
+                >
                   <header className="space-y-1">
                     <h4 className="text-sm font-semibold text-text">API Provider</h4>
                     <p className="text-xs text-muted">
@@ -1260,17 +1365,6 @@ export function SettingsPanel({
                                 setDraft(event.target.value);
                               }}
                               onKeyDown={(event) => {
-                                if (
-                                  (event.metaKey || event.ctrlKey)
-                                  && !event.shiftKey
-                                  && !event.altKey
-                                  && event.key.toLowerCase() === "v"
-                                ) {
-                                  event.preventDefault();
-                                  void pasteApiKeyFromClipboard();
-                                  return;
-                                }
-
                                 if (event.key === "Enter") {
                                   event.preventDefault();
                                   saveApiKeyDraft();

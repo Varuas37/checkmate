@@ -46,7 +46,7 @@ test("readBedrockConfigFromStorage defaults when storage is empty", () => {
   installMockLocalStorage(null);
   const config = readBedrockConfigFromStorage();
   assert.equal(config.region, "us-west-2");
-  assert.equal(config.modelId, "");
+  assert.equal(config.modelId, "anthropic.claude-3-haiku-20240307-v1:0");
 });
 
 test("readBedrockConfigFromStorage normalizes values", () => {
@@ -73,3 +73,9 @@ test("writeBedrockConfigToStorage merges patches and returns the normalized valu
   assert.equal(stored.modelId, "anthropic.claude-vX");
 });
 
+test("readBedrockConfigFromStorage backfills default model id for legacy empty values", () => {
+  installMockLocalStorage({ region: "us-east-1", modelId: "   " });
+  const config = readBedrockConfigFromStorage();
+  assert.equal(config.region, "us-east-1");
+  assert.equal(config.modelId, "anthropic.claude-3-haiku-20240307-v1:0");
+});
