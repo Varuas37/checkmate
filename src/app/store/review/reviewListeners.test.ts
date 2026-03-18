@@ -357,6 +357,99 @@ test("analyse listener regenerates sequence when analysis response has no sequen
   assert.equal(store.getState().reviewUi.aiSequenceStatus, "ready");
 });
 
+test("analyse listener ignores duplicate requests while analysis is already running", async () => {
+  const aggregate = createCommitAggregateFixture();
+  const standards = createStandardsFixture(aggregate.commit.id, aggregate.files[0]?.path ?? "");
+  const analysisDeferred = createDeferred<{
+    readonly commitId: string;
+    readonly overviewCards: readonly [
+      {
+        readonly kind: "summary";
+        readonly title: "Debounced run";
+        readonly body: "Only one analyser invocation should run.";
+      },
+    ];
+    readonly flowComparisons: readonly [];
+    readonly sequenceSteps: readonly [
+      {
+        readonly token: "S1";
+        readonly sourceLabel: "UI";
+        readonly targetLabel: "ReviewStore";
+        readonly message: "DISPATCH analyseCommitRequested";
+        readonly filePath: string;
+      },
+    ];
+    readonly fileSummaries: readonly [];
+    readonly standardsRules: typeof standards.standardsRules;
+    readonly standardsResults: typeof standards.standardsResults;
+  }>();
+  let analysisCalls = 0;
+
+  const store = createReviewStore({
+    dependencies: {
+      commitAnalyser: {
+        analyseCommit: async () => {
+          analysisCalls += 1;
+          return analysisDeferred.promise;
+        },
+      },
+    },
+  });
+
+  hydrateStoreForPublish(store);
+
+  store.dispatch(
+    analyseCommitRequested({
+      commitId: "commit-1",
+    }),
+  );
+
+  await waitForListener();
+
+  store.dispatch(
+    analyseCommitRequested({
+      commitId: "commit-1",
+    }),
+  );
+
+  await waitForListener();
+
+  assert.equal(analysisCalls, 1);
+  assert.equal(store.getState().reviewUi.aiAnalysisStatus, "analysing");
+
+  analysisDeferred.resolve({
+    commitId: aggregate.commit.id,
+    overviewCards: [
+      {
+        kind: "summary",
+        title: "Debounced run",
+        body: "Only one analyser invocation should run.",
+      },
+    ],
+    flowComparisons: [],
+    sequenceSteps: [
+      {
+        token: "S1",
+        sourceLabel: "UI",
+        targetLabel: "ReviewStore",
+        message: "DISPATCH analyseCommitRequested",
+        filePath: aggregate.files[0]?.path ?? "",
+      },
+    ],
+    fileSummaries: [],
+    standardsRules: standards.standardsRules,
+    standardsResults: standards.standardsResults,
+  });
+
+  await waitForListener();
+  await waitForListener();
+
+  const uiState = store.getState().reviewUi;
+  assert.equal(uiState.aiAnalysisStatus, "analysed");
+  assert.equal(uiState.aiAnalysisError, null);
+  assert.equal(uiState.aiAnalysis?.overviewCards[0]?.title, "Debounced run");
+});
+
 test("analyse listener streams file summaries before overview completes and defers standards", async () => {
   const aggregate = createCommitAggregateFixture();
   const standards = createStandardsFixture(aggregate.commit.id, aggregate.files[0]?.path ?? "");

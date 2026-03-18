@@ -874,6 +874,14 @@ export function createReviewListenerMiddleware(
   startListening({
     actionCreator: analyseCommitRequested,
     effect: async (action, listenerApi) => {
+      const currentUiState = listenerApi.getState().reviewUi;
+      if (
+        currentUiState.aiAnalysisStatus === "analysing"
+        && currentUiState.activeCommitId === action.payload.commitId
+      ) {
+        return;
+      }
+
       listenerApi.cancelActiveListeners();
       const context = resolveCommitContext(listenerApi.getState(), action.payload.commitId);
       if (!context) {
@@ -1083,7 +1091,7 @@ export function createReviewListenerMiddleware(
           standardsResultCount: standardsResults.length,
         };
       } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") {
+        if (listenerApi.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
           trace.mark("ai-analysis-aborted");
           return;
         }
