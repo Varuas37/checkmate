@@ -256,9 +256,7 @@ impl acp::Client for AcpClientHandler {
     async fn session_notification(&self, args: acp::SessionNotification) -> acp::Result<()> {
         let mut turn_buffer = self.turn_buffer.borrow_mut();
         match args.update {
-            acp::SessionUpdate::AgentMessageChunk(chunk)
-            | acp::SessionUpdate::AgentThoughtChunk(chunk)
-            | acp::SessionUpdate::UserMessageChunk(chunk) => {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => {
                 if let Some(text) = acp_content_block_text(&chunk.content) {
                     turn_buffer.append_text(&args.session_id, &text);
                 }
@@ -422,7 +420,6 @@ impl AcpSessionManagerState {
 fn acp_content_block_text(content: &acp::ContentBlock) -> Option<String> {
     match content {
         acp::ContentBlock::Text(text) => Some(text.text.clone()),
-        acp::ContentBlock::ResourceLink(resource_link) => Some(resource_link.uri.clone()),
         _ => None,
     }
 }
@@ -1731,6 +1728,24 @@ fn sanitize_log_value(value: &str) -> String {
         .replace('\r', "\\r")
 }
 
+fn preview_for_log(value: &str, max_chars: usize) -> String {
+    let normalized = value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .replace('\n', "\\n");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+
+    let mut clipped = String::new();
+    for character in normalized.chars().take(max_chars.saturating_sub(1)) {
+        clipped.push(character);
+    }
+    clipped.push('…');
+    clipped
+}
+
 fn append_application_log_line(
     app: &tauri::AppHandle,
     source: &str,
@@ -2665,6 +2680,11 @@ async fn run_cli_agent_prompt(
 
     match &result {
         Ok(output) => {
+            let fields_json = serde_json::json!({
+                "outputLen": output.len(),
+                "outputPreview": preview_for_log(output, 260),
+            })
+            .to_string();
             let _ = append_application_log_line(
                 &app,
                 "backend_cli",
@@ -2675,7 +2695,7 @@ async fn run_cli_agent_prompt(
                     elapsed_ms,
                     output.len()
                 ),
-                None,
+                Some(&fields_json),
             );
         }
         Err(error_message) => {
@@ -2747,6 +2767,11 @@ async fn run_acp_agent_prompt(
 
     match &result {
         Ok(output) => {
+            let fields_json = serde_json::json!({
+                "outputLen": output.len(),
+                "outputPreview": preview_for_log(output, 260),
+            })
+            .to_string();
             let _ = append_application_log_line(
                 &app,
                 "backend_acp",
@@ -2757,7 +2782,7 @@ async fn run_acp_agent_prompt(
                     elapsed_ms,
                     output.len()
                 ),
-                None,
+                Some(&fields_json),
             );
         }
         Err(error_message) => {

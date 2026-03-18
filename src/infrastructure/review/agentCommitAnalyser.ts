@@ -72,6 +72,7 @@ const ACP_FILE_SUMMARY_CONCURRENCY = 3;
 const CLI_MAX_HUNKS_IN_PROMPT = 6;
 const CLI_MAX_LINES_PER_HUNK = 12;
 const CLI_MAX_FILES_IN_PROMPT = 8;
+const SUMMARY_UNAVAILABLE_TEXT = "Summary unavailable.";
 
 // ---------------------------------------------------------------------------
 // File exclusion — pattern-based + churn threshold
@@ -156,6 +157,15 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
     error.name = "AbortError";
     throw error;
   }
+}
+
+function normalizeSummaryText(value: string): string {
+  return value.replaceAll(/\s+/g, " ").trim().toLowerCase();
+}
+
+function isUnavailableFileSummary(summary: AiFileSummary): boolean {
+  return normalizeSummaryText(summary.summary) === normalizeSummaryText(SUMMARY_UNAVAILABLE_TEXT)
+    && normalizeSummaryText(summary.riskNote) === normalizeSummaryText(SUMMARY_UNAVAILABLE_TEXT);
 }
 
 function nowForTrace(): number {
@@ -318,6 +328,191 @@ function stripJsonFences(raw: string): string {
     .trim();
 }
 
+function extractFirstBalancedJsonObject(raw: string): string | null {
+  let startIndex = -1;
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+
+    if (startIndex < 0) {
+      if (char === "{") {
+        startIndex = index;
+        depth = 1;
+        inString = false;
+        escapeNext = false;
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === "\\") {
+        escapeNext = true;
+        continue;
+      }
+
+      if (char === "\"") {
+        inString = false;
+      }
+
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0 && startIndex >= 0) {
+        return raw.slice(startIndex, index + 1).trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractCodeFencePayloads(raw: string): readonly string[] {
+  const payloads: string[] = [];
+  const regex = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null = regex.exec(raw);
+
+  while (match) {
+    const payload = match[1]?.trim() ?? "";
+    if (payload.length > 0) {
+      payloads.push(payload);
+    }
+    match = regex.exec(raw);
+  }
+
+  return payloads;
+}
+
+function parseJsonObjectFromText(raw: string): Record<string, unknown> | null {
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const pushCandidate = (value: string | null): void => {
+    if (!value) {
+      return;
+    }
+
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      return;
+    }
+
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+
+  pushCandidate(stripJsonFences(raw));
+  pushCandidate(raw);
+  extractCodeFencePayloads(raw).forEach((payload) => {
+    pushCandidate(payload);
+  });
+
+  candidates.forEach((candidate) => {
+    pushCandidate(extractFirstBalancedJsonObject(candidate));
+  });
+
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object") {
+        if (Array.isArray(parsed)) {
+          const firstObject = parsed.find(
+            (item): item is Record<string, unknown> =>
+              Boolean(item) && typeof item === "object" && !Array.isArray(item),
+          );
+          if (firstObject) {
+            return firstObject;
+          }
+
+          continue;
+        }
+
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Continue trying alternative candidates.
+    }
+  }
+
+  return null;
+}
+
+function normalizeAgentPlainText(raw: string): string {
+  const normalized = raw
+    .replace(/```(?:json)?/gi, "")
+    .replace(/```/g, "")
+    .replace(/\r\n/g, "\n")
+    .trim();
+
+  return normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (line.length === 0) {
+        return false;
+      }
+      if (line === "{" || line === "}" || line === "[" || line === "]") {
+        return false;
+      }
+
+      return true;
+    })
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function clipText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function firstStringByKeys(
+  obj: Record<string, unknown>,
+  keys: readonly string[],
+): string | null {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const nested = value as Record<string, unknown>;
+      const nestedCandidate =
+        (typeof nested["text"] === "string" ? nested["text"] : null) ??
+        (typeof nested["value"] === "string" ? nested["value"] : null) ??
+        (typeof nested["body"] === "string" ? nested["body"] : null);
+      if (nestedCandidate && nestedCandidate.trim().length > 0) {
+        return nestedCandidate.trim();
+      }
+    }
+  }
+
+  return null;
+}
+
 function normalizeFlowTitle(value: string, fallback: string): string {
   const normalized = value.replaceAll(/\s+/g, " ").trim();
   if (normalized.length === 0) {
@@ -398,34 +593,69 @@ function parseFileSummaryResponse(
   raw: string,
   expectedPath: string,
 ): AiFileSummary | null {
-  try {
-    const parsed: unknown = JSON.parse(stripJsonFences(raw));
-    if (!parsed || typeof parsed !== "object") return null;
-    const obj = parsed as Record<string, unknown>;
-    if (
-      typeof obj["summary"] !== "string" ||
-      typeof obj["riskNote"] !== "string"
-    )
-      return null;
-    const technicalDetails =
-      typeof obj["technicalDetails"] === "string"
-        ? obj["technicalDetails"].trim()
-        : "";
+  const obj = parseJsonObjectFromText(raw);
+  if (obj) {
+    const candidateFromList = Array.isArray(obj["fileSummaries"])
+      ? (obj["fileSummaries"] as unknown[]).find(
+          (entry): entry is Record<string, unknown> =>
+            Boolean(entry)
+            && typeof entry === "object"
+            && !Array.isArray(entry)
+            && (
+              typeof (entry as Record<string, unknown>)["summary"] === "string"
+              || typeof (entry as Record<string, unknown>)["body"] === "string"
+              || typeof (entry as Record<string, unknown>)["analysis"] === "string"
+            ),
+        ) ?? null
+      : null;
+    const source = candidateFromList ?? obj;
+    const summaryText = firstStringByKeys(source, [
+      "summary",
+      "fileSummary",
+      "analysis",
+      "body",
+      "message",
+      "description",
+      "overview",
+      "afterBody",
+    ]);
+    const riskText = firstStringByKeys(source, [
+      "riskNote",
+      "risk",
+      "watchOuts",
+      "watchouts",
+      "riskSummary",
+    ]);
+    const technicalDetails = firstStringByKeys(source, [
+      "technicalDetails",
+      "details",
+      "implementationDetails",
+    ]);
+    if (summaryText) {
+      return {
+        filePath:
+          typeof source["filePath"] === "string" ? source["filePath"] : expectedPath,
+        summary: clipText(summaryText, 360),
+        riskNote: clipText(riskText ?? "Review the diff directly for risks.", 220),
+        ...(technicalDetails
+          ? {
+              technicalDetails: clipText(technicalDetails, 1200),
+            }
+          : {}),
+      };
+    }
+  }
 
-    return {
-      filePath:
-        typeof obj["filePath"] === "string" ? obj["filePath"] : expectedPath,
-      summary: obj["summary"],
-      riskNote: obj["riskNote"],
-      ...(technicalDetails.length > 0
-        ? {
-            technicalDetails,
-          }
-        : {}),
-    };
-  } catch {
+  const plainText = normalizeAgentPlainText(raw);
+  if (plainText.length === 0) {
     return null;
   }
+
+  return {
+    filePath: expectedPath,
+    summary: clipText(plainText, 360),
+    riskNote: "Review the diff directly for risks.",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -523,11 +753,24 @@ function parseOverviewResponse(raw: string): {
   readonly flowComparisons: readonly AiFlowComparison[];
 } {
   const empty = { overviewCards: [], flowComparisons: [] };
+  const obj = parseJsonObjectFromText(raw);
+  if (!obj) {
+    const plainText = normalizeAgentPlainText(raw);
+    if (plainText.length === 0) {
+      return empty;
+    }
 
-  try {
-    const parsed: unknown = JSON.parse(stripJsonFences(raw));
-    if (!parsed || typeof parsed !== "object") return empty;
-    const obj = parsed as Record<string, unknown>;
+    return {
+      overviewCards: [
+        {
+          kind: "summary",
+          title: "Commit Summary",
+          body: clipText(plainText, 600),
+        },
+      ],
+      flowComparisons: [],
+    };
+  }
 
     const overviewCards: AiOverviewCard[] = Array.isArray(obj["overviewCards"])
       ? (obj["overviewCards"] as unknown[])
@@ -551,44 +794,54 @@ function parseOverviewResponse(raw: string): {
           )
       : [];
 
+    if (overviewCards.length === 0) {
+      const summaryText = firstStringByKeys(obj, [
+        "summary",
+        "overview",
+        "analysis",
+        "body",
+        "message",
+        "description",
+      ]);
+      if (summaryText) {
+        overviewCards.push({
+          kind: "summary",
+          title: "Commit Summary",
+          body: clipText(summaryText, 600),
+        });
+      }
+    }
+
     const flowComparisons: AiFlowComparison[] = Array.isArray(
       obj["flowComparisons"],
     )
       ? (obj["flowComparisons"] as unknown[])
-          .filter(
-            (
-              item,
-            ): item is {
-              beforeTitle: string;
-              beforeBody: string;
-              afterTitle: string;
-              afterBody: string;
-              technicalDetails?: string;
-              filePaths: string[];
-              hunkHeadersByFile?: {
-                filePath: string;
-                hunkHeaders: string[];
-              }[];
-            } =>
-              !!item &&
-              typeof item === "object" &&
-              typeof (item as Record<string, unknown>)["beforeTitle"] ===
-                "string" &&
-              typeof (item as Record<string, unknown>)["beforeBody"] ===
-                "string" &&
-              typeof (item as Record<string, unknown>)["afterTitle"] ===
-                "string" &&
-              typeof (item as Record<string, unknown>)["afterBody"] ===
-                "string" &&
-              Array.isArray((item as Record<string, unknown>)["filePaths"]) &&
-              (
-                (item as Record<string, unknown>)["filePaths"] as unknown[]
-              ).every((p) => typeof p === "string"),
-          )
+          .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
           .map(
-            (item): AiFlowComparison => {
-              const beforeTitle = normalizeFlowTitle(item.beforeTitle, "Feature");
-              const afterTitle = normalizeFlowTitle(item.afterTitle, beforeTitle);
+            (item): AiFlowComparison | null => {
+              const beforeBody = firstStringByKeys(item, [
+                "beforeBody",
+                "before",
+                "prior",
+              ]);
+              const afterBody = firstStringByKeys(item, [
+                "afterBody",
+                "after",
+                "now",
+                "current",
+              ]);
+              if (!beforeBody || !afterBody) {
+                return null;
+              }
+
+              const beforeTitle = normalizeFlowTitle(
+                firstStringByKeys(item, ["beforeTitle", "title", "feature", "name"]) ?? "Feature",
+                "Feature",
+              );
+              const afterTitle = normalizeFlowTitle(
+                firstStringByKeys(item, ["afterTitle", "title", "feature", "name"]) ?? beforeTitle,
+                beforeTitle,
+              );
               const hunkHeadersByFile = Array.isArray(item.hunkHeadersByFile)
                 ? item.hunkHeadersByFile
                     .filter(
@@ -611,9 +864,9 @@ function parseOverviewResponse(raw: string): {
                 : [];
               return {
               beforeTitle,
-              beforeBody: item.beforeBody,
+              beforeBody,
               afterTitle,
-              afterBody: item.afterBody,
+              afterBody,
               ...(typeof item.technicalDetails === "string" &&
               item.technicalDetails.trim().length > 0
                 ? {
@@ -625,16 +878,27 @@ function parseOverviewResponse(raw: string): {
                     hunkHeadersByFile,
                   }
                 : {}),
-              filePaths: item.filePaths,
+              filePaths: Array.isArray(item.filePaths)
+                ? (item.filePaths as unknown[]).filter((path): path is string => typeof path === "string")
+                : [],
               };
             },
           )
+          .filter((item): item is AiFlowComparison => item !== null)
       : [];
 
-    return { overviewCards, flowComparisons };
-  } catch {
-    return empty;
+  if (overviewCards.length === 0 && flowComparisons.length === 0) {
+    const plainText = normalizeAgentPlainText(raw);
+    if (plainText.length > 0) {
+      overviewCards.push({
+        kind: "summary",
+        title: "Commit Summary",
+        body: clipText(plainText, 600),
+      });
+    }
   }
+
+  return { overviewCards, flowComparisons };
 }
 
 // ---------------------------------------------------------------------------
@@ -744,12 +1008,12 @@ function parseLegacyResponse(
   raw: string,
   commitId: string,
 ): AnalyseCommitOutput | null {
-  try {
-    const parsed: unknown = JSON.parse(stripJsonFences(raw));
-    if (!parsed || typeof parsed !== "object") return null;
-    const obj = parsed as Record<string, unknown>;
+  const obj = parseJsonObjectFromText(raw);
+  if (!obj) {
+    return null;
+  }
 
-    const { overviewCards, flowComparisons } = parseOverviewResponse(raw);
+  const { overviewCards, flowComparisons } = parseOverviewResponse(raw);
 
     const sequenceSteps: AiSequenceStep[] = Array.isArray(obj["sequenceSteps"])
       ? (obj["sequenceSteps"] as unknown[])
@@ -837,28 +1101,30 @@ function parseLegacyResponse(
           )
       : [];
 
-    if (
-      overviewCards.length === 0 &&
-      flowComparisons.length === 0 &&
-      sequenceSteps.length === 0 &&
-      fileSummaries.length === 0
-    ) {
-      return null;
-    }
-
-    return {
-      commitId,
-      overviewCards,
-      flowComparisons,
-      sequenceSteps,
-      fileSummaries,
-      standardsRules: [],
-      standardsResults: [],
-    };
-  } catch {
+  if (
+    overviewCards.length === 0 &&
+    flowComparisons.length === 0 &&
+    sequenceSteps.length === 0 &&
+    fileSummaries.length === 0
+  ) {
     return null;
   }
+
+  return {
+    commitId,
+    overviewCards,
+    flowComparisons,
+    sequenceSteps,
+    fileSummaries,
+    standardsRules: [],
+    standardsResults: [],
+  };
 }
+
+export const __agentCommitAnalyserParsersForTest = {
+  parseFileSummaryResponse,
+  parseOverviewResponse,
+};
 
 // ---------------------------------------------------------------------------
 // Exported adapter
@@ -904,8 +1170,8 @@ export class AgentCommitAnalyser implements CommitAnalyser {
     return (
       parseFileSummaryResponse(raw, file.path) ?? {
         filePath: file.path,
-        summary: `${file.status} — ${file.additions} additions, ${file.deletions} deletions.`,
-        riskNote: "Summary unavailable.",
+        summary: SUMMARY_UNAVAILABLE_TEXT,
+        riskNote: SUMMARY_UNAVAILABLE_TEXT,
       }
     );
   }
@@ -946,8 +1212,8 @@ export class AgentCommitAnalyser implements CommitAnalyser {
     return (
       parseFileSummaryResponse(raw, file.path) ?? {
         filePath: file.path,
-        summary: `${file.status} — ${file.additions} additions, ${file.deletions} deletions.`,
-        riskNote: "Summary unavailable.",
+        summary: SUMMARY_UNAVAILABLE_TEXT,
+        riskNote: SUMMARY_UNAVAILABLE_TEXT,
       }
     );
   }
@@ -1062,6 +1328,9 @@ export class AgentCommitAnalyser implements CommitAnalyser {
       concurrency: options.fileSummaryConcurrency,
     });
     const totalSummaries = partitioned.length;
+    let analysedSummaryCount = 0;
+    let unavailableAnalysedSummaryCount = 0;
+    let firstUnavailableAnalysisPath: string | null = null;
     const fileSummaries = await mapWithConcurrency<FilePartition, AiFileSummary>(partitioned, {
       concurrency: options.fileSummaryConcurrency,
       ...(input.abortSignal
@@ -1095,6 +1364,13 @@ export class AgentCommitAnalyser implements CommitAnalyser {
             partition.file,
             hunksByFileId.get(partition.file.id) ?? [],
           );
+          analysedSummaryCount += 1;
+          if (isUnavailableFileSummary(summary)) {
+            unavailableAnalysedSummaryCount += 1;
+            if (!firstUnavailableAnalysisPath) {
+              firstUnavailableAnalysisPath = partition.file.path;
+            }
+          }
           trace.mark("commit-analysis-file-summary-complete", {
             index,
             filePath: partition.file.path,
@@ -1116,9 +1392,14 @@ export class AgentCommitAnalyser implements CommitAnalyser {
 
           const fallbackSummary = {
             filePath: partition.file.path,
-            summary: "Summary unavailable.",
-            riskNote: "Summary unavailable.",
+            summary: SUMMARY_UNAVAILABLE_TEXT,
+            riskNote: SUMMARY_UNAVAILABLE_TEXT,
           };
+          analysedSummaryCount += 1;
+          unavailableAnalysedSummaryCount += 1;
+          if (!firstUnavailableAnalysisPath) {
+            firstUnavailableAnalysisPath = partition.file.path;
+          }
           await input.onFileSummary?.(fallbackSummary, index, totalSummaries);
           return fallbackSummary;
         } finally {
@@ -1143,6 +1424,19 @@ export class AgentCommitAnalyser implements CommitAnalyser {
       overviewCardCount: overviewCards.length,
       flowComparisonCount: flowComparisons.length,
     });
+
+    if (
+      analysedSummaryCount > 0
+      && unavailableAnalysedSummaryCount === analysedSummaryCount
+      && overviewCards.length === 0
+      && flowComparisons.length === 0
+    ) {
+      throw new Error(
+        firstUnavailableAnalysisPath
+          ? `AI analysis returned no usable output (first failure: ${firstUnavailableAnalysisPath}). Check the active provider settings and run AI analysis again.`
+          : "AI analysis returned no usable output. Check the active provider settings and run AI analysis again.",
+      );
+    }
 
     throwIfAborted(input.abortSignal);
 
